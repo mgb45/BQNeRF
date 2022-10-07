@@ -101,27 +101,25 @@ class NeRF(nn.Module):
         x = torch.concat([x, alpha], dim=-1)
         return x
 
-    def sample_stratified(self,rays_o,rays_d,near, far, n_samples, perturb=True, inverse_depth=False):
+    def sample_stratified(self,rays_o,rays_d,near, far, n_samples, perturb=True):
         r"""
         Sample along ray from regularly-spaced bins.
         """
 
         # Grab samples for space integration along ray
+        # t_vals = torch.linspace(0., 1., n_samples, device=rays_o.device)
         t_vals = torch.linspace(0., 1., n_samples, device=rays_o.device)
-        if not inverse_depth:
-            # Sample linearly between `near` and `far`
-            z_vals = near * (1.-t_vals) + far * (t_vals)
-        else:
-            # Sample linearly in inverse depth (disparity)
-            z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
-
+    
+        # Sample linearly between `near` and `far`
+        z_vals = near * (1.-t_vals) + far * (t_vals)
+        
         # Draw uniform samples from bins along ray
         if perturb:
             mids = .5 * (z_vals[1:] + z_vals[:-1])
             upper = torch.concat([mids, z_vals[-1:]], dim=-1)
             lower = torch.concat([z_vals[:1], mids], dim=-1)
-            t_rand = torch.rand([n_samples], device=z_vals.device)
-            z_vals = lower + (upper - lower) * t_rand
+            t_vals = torch.rand([n_samples], device=z_vals.device)
+            z_vals = lower + (upper - lower) * t_vals
         z_vals = z_vals.expand(list(rays_o.shape[:-1]) + [n_samples])
 
         # Apply scale from `rays_d` and offset from `rays_o` to samples
@@ -186,7 +184,7 @@ class NeRF(nn.Module):
         rays_d = rays_d.reshape([-1, 3])
 
         query_points, z_vals = self.sample_stratified(
-            rays_o, rays_d, self.near, self.far,self.nsamples,perturb=False)
+            rays_o, rays_d, self.near, self.far,self.nsamples,perturb=True)
 
         batches = self.prepare_chunks(query_points, self.encoder, chunksize=self.chunksize)
         batches_viewdirs = self.prepare_viewdirs_chunks(query_points, rays_d, self.encoder_viewdirs, chunksize=self.chunksize)
@@ -241,7 +239,7 @@ class NeRF(nn.Module):
     
         return y
 
-    def raw2outputs(self, raw, z_vals, rays_d, raw_noise_std=0.0):
+    def raw2outputs(self, raw, z_vals, rays_d, raw_noise_std=0.01):
         r"""
         Convert the raw NeRF output into RGB and other maps.
         """
@@ -259,18 +257,18 @@ class NeRF(nn.Module):
         # regularize network during training (prevents floater artifacts).
         noise = 0.
         if raw_noise_std > 0.:
-            noise = torch.randn(raw[..., 3].shape) * raw_noise_std
+            noise = (torch.randn(raw[..., 3].shape) * raw_noise_std).to(raw.device)
 
         rgb = torch.sigmoid(raw[..., :3])  # [n_rays, n_samples, 3]
 
         # Bayesian Quadrature rendering
         if self.bq:
 
+            t_vals = (z_vals[0,:]-self.near)/(self.far-self.near)
             weights = 1.0 - torch.exp(-nn.functional.relu(raw[..., 3] + noise))
-            zi = torch.linspace(0.,1.,self.nsamples).to(z_vals.device)
-            kxx = self.matern(zi.reshape(-1,1),zi.reshape(1,-1))
+            kxx = self.matern(t_vals.reshape(-1,1),t_vals.reshape(1,-1))
             
-            bqm = self.bayes_quad_mu(zi.reshape(-1,1)).reshape(1,-1)
+            bqm = self.bayes_quad_mu(t_vals.reshape(-1,1)).reshape(1,-1)
             bqs = self.bayes_quad_sig() - bqm@torch.linalg.solve(kxx,bqm.T)
             pre_mult = bqm@torch.linalg.inv(kxx)
 
@@ -301,6 +299,6 @@ class NeRF(nn.Module):
             # Sum of weights along each ray. In [0, 1] up to numerical error.
             acc_map = torch.sum(weights, dim=-1)
 
-            bqs=1
+            bqs = torch.ones(1).to(alpha.device)
 
         return rgb_map, depth_map, acc_map, weights, bqs
