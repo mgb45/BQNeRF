@@ -270,9 +270,11 @@ class NeRF(nn.Module):
             
             bqm = self.bayes_quad_mu(t_vals.reshape(-1,1)).reshape(1,-1)
             bqs = self.bayes_quad_sig() - bqm@torch.linalg.solve(kxx,bqm.T)
-            pre_mult = bqm@torch.linalg.inv(kxx)
+            # pre_mult = bqm@torch.linalg.inv(kxx)
 
-            rgb_map = (pre_mult.repeat(rgb.shape[0],1,1)@(weights.unsqueeze(-1)*rgb).squeeze()).squeeze()
+            # rgb_map = (pre_mult.repeat(rgb.shape[0],1,1)@(weights.unsqueeze(-1)*rgb).squeeze()).squeeze()
+
+            rgb_map = (bqm@torch.linalg.solve(kxx,weights.unsqueeze(-1)*rgb)).squeeze()
             depth_map = torch.sum(weights*z_vals,-1)
             acc_map = torch.sum(weights, dim=-1)
 
@@ -301,4 +303,4 @@ class NeRF(nn.Module):
 
             bqs = torch.ones(1).to(alpha.device)
 
-        return rgb_map, depth_map, acc_map, weights, bqs
+        return rgb_map, depth_map, acc_map, weights, torch.nn.functional.relu(bqs)

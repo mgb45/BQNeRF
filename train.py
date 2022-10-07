@@ -79,7 +79,7 @@ if __name__ == "__main__":
     renderer.to(device)
 
     # Train loop
-    lr = 1e-3
+    lr = 5e-4
     train_iters = 1000
     batch_size = 10
     batch_idxs = np.arange(100)
@@ -100,7 +100,6 @@ if __name__ == "__main__":
             target_img = images[idx].reshape([-1, 3])
 
             # loss = torch.nn.functional.mse_loss(img, target_img)
-            uncertainty = torch.nn.functional.relu(uncertainty)
             loss = torch.nn.functional.gaussian_nll_loss(img, target_img,uncertainty*torch.ones_like(target_img))
 
             loss.backward()
@@ -112,7 +111,6 @@ if __name__ == "__main__":
         
         renderer.eval()
         img, depth_map, acc_map, weights,uncertainty = renderer.render(height,width,focal,testpose)
-        uncertainty = torch.nn.functional.relu(uncertainty)
         val_loss = torch.nn.functional.gaussian_nll_loss(img, target_img,uncertainty*torch.ones_like(target_img))
         renderer.train()
 
@@ -123,7 +121,7 @@ if __name__ == "__main__":
         # Save test img
         img = (255*np.clip(img.detach().cpu().numpy(),0,1).reshape([100, 100, 3])).astype(np.uint8)
         imageio.imwrite(logdir+'Test_render_%05d.jpg'%i,img)
-        imageio.imwrite(logdir+'Test_depth_%05d.jpg'%i,(depth_map.detach().cpu().numpy().reshape([100, 100, 1])).astype(np.uint8))
+        imageio.imwrite(logdir+'Test_depth_%05d.jpg'%i,(((depth_map.detach().cpu().numpy()-renderer.near)/(renderer.far-renderer.near)).reshape([100, 100, 1])).astype(np.uint8))
 
         if (i%10)==0:
             # Pose generator
@@ -133,7 +131,7 @@ if __name__ == "__main__":
             renderer.eval()
             frames = []
             for th in tqdm(np.linspace(0., 360., 100, endpoint=False)):
-                c2w = pose_spherical(3, -30., th).to(device)
+                c2w = pose_spherical(4, -30., th).to(device)
             
                 img, depth_map, acc_map, weights,_ = renderer.render(height,width,focal,c2w)
                 
@@ -145,3 +143,4 @@ if __name__ == "__main__":
             imageio.mimwrite(f, frames, fps=30, quality=7)
 
             torch.save(renderer.state_dict(), logdir+'%05d.npy'%i)
+        renderer.train()
