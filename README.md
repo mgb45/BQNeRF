@@ -27,5 +27,9 @@ $$ vv([k(.,x)] = \int k(x,y)v(dx)v(dy) $$
 
 For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be computed analytically.
 
+### Volumetric Rendering in NeRFs
+
+The standard volumetric rendering equation using in NeRFs approximates the colour perceived at the end of a ray using Gaussian quadrature:
+
 
 
