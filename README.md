@@ -51,5 +51,5 @@ and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
 We replace the rendering equation above with the following integral:
 
-$$ \hat{C} = \int_{t_0}^{t_f} \left(1-\exp\left(-\sigma(r(t)\right)\right) c(r(t),d) dt  $$
+$$ \hat{C} = \int_{t_0}^{t_f} \left(1-\exp\left(-\alpha(r(t)\right)\right) c(r(t),d) dt  $$
 
