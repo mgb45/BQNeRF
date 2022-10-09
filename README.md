@@ -3,11 +3,11 @@
 ### What happens if we replace the rendering function of a NeRF with Bayesian quadrature?
 
 
-Let's assume transparency along the ray can be modelled using a Matern Kernel, and using this to compute the expected colour along each ray from samples drawn along these, along with it's uncertainty. This enables the use of a Gaussian log likelihood rendering loss, which accounts for sampling that may not necessarily be informative. This repository implements a very basic coarse NeRF, and is based heavily on this excellent [NeRF from nothing tutorial](https://towardsdatascience.com/its-nerf-from-nothing-build-a-vanilla-nerf-with-pytorch-7846e4c45666).
+This repo explores what happens if we assume transparency along the ray can be modelled using a Matern Kernel, and using this to compute the expected colour along each ray from samples drawn along these, along with it's uncertainty. This enables the use of a Gaussian log likelihood rendering loss, which accounts for sampling that may not necessarily be informative. This repository implements a very basic coarse NeRF, and is based heavily on this excellent [NeRF from nothing tutorial](https://towardsdatascience.com/its-nerf-from-nothing-build-a-vanilla-nerf-with-pytorch-7846e4c45666). Let's start with some background.
 
 ### Bayesian quadrature
 
-Bayesian quadrature typically uses a Gaussian process (GP) to apprximate the underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a Gaussian process with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is a Gaussian process with mean and covariance:
+Bayesian quadrature typically uses a Gaussian process (GP) to apprximate the underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a GP with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is also a GP with mean and covariance:
 
 $$ \mu(x) = m(x) + k(x,X)k(X,X)^{-1}f(X) $$
 
