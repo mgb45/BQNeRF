@@ -53,3 +53,4 @@ We replace the rendering equation above with the following integral:
 
 $$ \hat{C} = \int_{t_0}^{t_f} \left(1-\exp\left(-\alpha(r(t)\right)\right) c(r(t),d) dt  $$
 
+and apprixmate this integral using Bayesian quadrature with a matern kernel.
