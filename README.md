@@ -47,4 +47,9 @@ $$ T_i = \exp( - \sum_{j=1}^{i-1} \sigma_j \delta_j )$$
 
 and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
+### Volumentric Rendering using Bayesian Quadrature and a Matern kernel
+
+We replace the rendering equation above with the following integral:
+
+$$ \hat{C} = \int_{t_0}^{t_f} \left(1-\exp\left(-\sigma(r(t)\right)\right) c(r(t),d) dt  $$
 
