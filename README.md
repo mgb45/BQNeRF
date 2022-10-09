@@ -29,7 +29,22 @@ For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be co
 
 ### Volumetric Rendering in NeRFs
 
-The standard volumetric rendering equation using in NeRFs approximates the colour perceived at the end of a ray using Gaussian quadrature:
+The standard volumetric rendering equation used in NeRFs models the colour perceived at the end of a ray $r=o+td$ using the integral:
 
+$$ C(r) = \int_{t_0}^{t_f} T(t) \sigma(r(t)) c(r(t),d) dt $$
+
+where
+
+$$ T(t) = \exp \left(-\int_{t_0}^{t} \sigma(r(s)) ds\right) $$
+
+This is approximated using Gaussian quadrature withstratified sampling along the ray.
+
+$$ \hat{C}(r) = \sum_{i=1}^N T_i (1-\exp(-\sigma_i\delta_i))c_i $$
+
+where
+
+$$ T_i = \exp( - \sum_{j=1}^{i-1} \sigma_j \delta_j )$$ 
+
+and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
 
