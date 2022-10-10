@@ -49,7 +49,7 @@ For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be co
 
 ### Volumentric Rendering using Bayesian Quadrature and a Matern kernel
 
-We replace the rendering equation above with the following integral:
+Let's replace the rendering equation above with the following integral:
 
 $$ \hat{C} = \int_{t_0}^{t_f}\hat{\sigma}(r(t) c(r(t),d) dt  $$
 
