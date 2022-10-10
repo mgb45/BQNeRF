@@ -21,9 +21,9 @@ $$ \mathbb{V} \[{v(f)} \] = vv[k] + v[k(.,X)]k(X,X)^{-1}v[k(X,.)] $$
 
 where
 
-$$ v([k(.,x)] = \int k(x,y) dy $$
+$$ v[k(.,x)] = \int k(x,y) dy $$
 
-$$ vv([k(.,x)] = \int k(x,y)v(dx)v(dy) $$
+$$ vv[k(.,x)] = \int k(x,y)v(dx)v(dy) $$
 
 For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be computed analytically.
 
@@ -51,6 +51,18 @@ and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
 We replace the rendering equation above with the following integral:
 
-$$ \hat{C} = \left(1-\exp\left(-\int_{t_0}^{t_f}\sigma(r(t) c(r(t),d) dt\right)\right)  $$
+$$ \hat{C} = \int_{t_0}^{t_f}\hat{\sigma}(r(t) c(r(t),d) dt  $$
 
-and approximate this integral using Bayesian quadrature with a matern kernel.
+and approximate this integral using Bayesian quadrature with a matern kernel:
+
+$$ k(x,y,\rho) = \left(1 + \frac{\sqrt(3)\|x-y\|}{\rho}\right)*\exp\left(-\frac{\sqrt(3)\|x-y\|}{\rho}\right) $$
+
+which has closed form 
+
+$$ v[k(.,x)] = \frac{4\rho}{\sqrt{3}} - \frac{1}{3}\exp\left(\frac{\sqrt{3}(x-1)}{\rho}\right)(3 + 2\sqrt{3}\rho - 3x) - \frac{1}{3}\exp\left(-\frac{\sqrt{3}}{\rho}x\right)(3x + 2\sqrt{3}\rho) $$
+
+$$ vv[k(.,x)] = \frac{2\rho}{3}\left(2\sqrt{3} - 3\rho + \exp\left(-\frac{\sqrt{3}}{\rho}\right)(\sqrt{3}+3\rho)\right) $$
+
+and produces a posterior over the rendering integral as computed above.
+
+
