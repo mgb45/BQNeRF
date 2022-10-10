@@ -37,7 +37,7 @@ where
 
 $$ T(t) = \exp \left(-\int_{t_0}^{t} \sigma(r(s)) ds\right) $$
 
-This is approximated using Gaussian quadrature withstratified sampling along the ray.
+This is approximated using Gaussian quadrature with stratified sampling along the ray.
 
 $$ \hat{C}(r) = \sum_{i=1}^N T_i (1-\exp(-\sigma_i\delta_i))c_i $$
 
