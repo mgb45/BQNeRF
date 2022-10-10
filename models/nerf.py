@@ -176,7 +176,6 @@ class NeRF(nn.Module):
         viewdirs = self.get_chunks(viewdirs, chunksize=chunksize)
         return viewdirs
 
-
     def render(self, height, width, focal_length, c2w):
 
         rays_o, rays_d = self.get_rays(height, width, focal_length, c2w)
@@ -196,7 +195,10 @@ class NeRF(nn.Module):
         raw = raw.reshape(list(query_points.shape[:2]) + [raw.shape[-1]])
 
         # Perform differentiable volume rendering to re-synthesize the RGB image.
-        rgb_map, depth_map, acc_map, weights, uncertainty = self.raw2outputs(raw, z_vals, rays_d)
+        if self.training:
+            rgb_map, depth_map, acc_map, weights, uncertainty = self.raw2outputs(raw, z_vals, rays_d,raw_noise_std=0.01)
+        else:
+            rgb_map, depth_map, acc_map, weights, uncertainty = self.raw2outputs(raw, z_vals, rays_d,raw_noise_std=0.0)
 
         return rgb_map, depth_map, acc_map, weights, uncertainty
 
@@ -265,7 +267,7 @@ class NeRF(nn.Module):
         if self.bq:
 
             t_vals = (z_vals[0,:]-self.near)/(self.far-self.near)
-            weights = 1.0 - torch.exp(-nn.functional.relu(raw[..., 3] + noise))
+            weights = nn.functional.relu(raw[..., 3] + noise)
             kxx = self.matern(t_vals.reshape(-1,1),t_vals.reshape(1,-1))
             
             bqm = self.bayes_quad_mu(t_vals.reshape(-1,1)).reshape(1,-1)

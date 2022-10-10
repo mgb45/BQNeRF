@@ -1,58 +1,52 @@
 import torch
 import torch.nn as nn
 from models.nerf import NeRF
+from models.pose import CWT
 import numpy as np
 from tqdm import tqdm
 import imageio
 import torch.autograd.profiler as profiler
 import random
 from torch.utils.tensorboard import SummaryWriter
+import argparse
+import uuid
+import csv
 
+parser = argparse.ArgumentParser(description='Train a basic NeRF')
+parser.add_argument('--bq',type=str,default='BQ',help="Quadrature method (BQ/Std)")
+parser.add_argument('--epochs',type=int,default=5000,help="Number of epochs to train for")
+parser.add_argument('--lr',type=float,default=5e-4,help="Learning rate")
+parser.add_argument('--logdir',type=str,default='./logs/',help="Log directory")
+parser.add_argument('--chunksize',type=int,default=16384,help="Chunks to render at a time (memory issues)")
+parser.add_argument('--nsamples',type=int,default=64,help="Number of samples along ray")
+parser.add_argument('--video_log_freq',type=int,default=10,help="Frequency to log test render video")
+parser.add_argument('--frame_log_freq',type=int,default=10,help="Frequency to log test render frame")
+parser.add_argument('--model_save_freq',type=int,default=10,help="Frequency to save model")
+parser.add_argument('--seed',type=int,default=42,help="Random seed")
 
-# random.seed(0)
-# np.random.seed(0)
-# torch.manual_seed(0)
-
-# Class to generate Poses (4x4 transformations) from spherical coordinates
-class CWT(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        
-        
-    def forward(self, t, phi, th):
-        from math import cos,sin
-        
-        phi = phi/180.*np.pi
-        th = th/180.*np.pi
-        
-        trans = torch.from_numpy(np.array([[1,0,0,0],
-                [0,1,0,0],
-                [0,0,1,t],
-                [0,0,0,1]])).float()
-        
-        rot_phi = torch.from_numpy(np.array([[1,0,0,0],
-                [0,cos(phi),-sin(phi),0],
-                [0,sin(phi),cos(phi),0],
-                [0,0,0,1]])).float()
-        
-        rot_theta = torch.from_numpy(np.array([[cos(th),0,-sin(th),0],
-                [0,1,0,0],
-                [sin(th),0,cos(th),0],
-                [0,0,0,1]])).float()
-        
-        c2w = trans
-        c2w = rot_phi @ c2w
-        c2w = rot_theta @ c2w
-        c2w = torch.from_numpy(np.array([[-1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]])).float() @ c2w
-        
-        return c2w
-
+args = parser.parse_args()
 
 if __name__ == "__main__":
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     #Logging path
-    logdir = './logs/'
+
+    proc_id = str(uuid.uuid4())
+
+    logdir = args.logdir + proc_id + '/'
     writer = SummaryWriter(logdir)
+
+    print(args)
+
+    f = open(logdir+'parameters.csv',"w")
+    csv_writer = csv.writer(f)
+    for name,val in dict(vars(args)).items():
+        csv_writer.writerow([name,val])
+    f.close()
+
 
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,17 +65,17 @@ if __name__ == "__main__":
     testimg_idx = 101
     testimg, testpose = images[testimg_idx], poses[testimg_idx]
 
-    #Use BQ?
-    bq = True
+    bq = False
+    if args.bq == 'BQ':
+        bq = True
 
     # Initialise renderer
-    renderer = NeRF(d_input=3, n_layers=8, d_filter=256, skip=(4,),log_space=False,n_freqs_views=4, n_freqs=10,bq=bq,chunksize=16384)
+    renderer = NeRF(d_input=3, n_layers=8, d_filter=256, skip=(4,),log_space=False,n_freqs_views=4, n_freqs=10,bq=bq,chunksize=args.chunksize,nsamples=args.nsamples)
     renderer.to(device)
 
     # Train loop
-    lr = 5e-4
-    train_iters = 1000
-    batch_size = 10
+    lr = args.lr
+    train_iters = 10000
     batch_idxs = np.arange(100)
 
     optimizer = torch.optim.AdamW(renderer.parameters(), lr=lr)
@@ -107,7 +101,7 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             batch_losses.append(loss.item())
 
-            print("Loss %d %d: %f"%(i,j,np.mean(batch_losses)),end="\r")
+        print("Loss %d: %f"%(i,np.mean(batch_losses)),end="\r")
         
         renderer.eval()
         img, depth_map, acc_map, weights,uncertainty = renderer.render(height,width,focal,testpose)
@@ -119,11 +113,12 @@ if __name__ == "__main__":
         writer.add_scalar("Loss/test", val_loss.item(), i)
         
         # Save test img
-        img = (255*np.clip(img.detach().cpu().numpy(),0,1).reshape([100, 100, 3])).astype(np.uint8)
-        imageio.imwrite(logdir+'Test_render_%05d.jpg'%i,img)
-        imageio.imwrite(logdir+'Test_depth_%05d.jpg'%i,(((depth_map.detach().cpu().numpy()-renderer.near)/(renderer.far-renderer.near)).reshape([100, 100, 1])).astype(np.uint8))
+        if (i %args.frame_log_freq)==0:
+            img = (255*np.clip(img.detach().cpu().numpy(),0,1).reshape([100, 100, 3])).astype(np.uint8)
+            imageio.imwrite(logdir+'Test_render_%05d.jpg'%i,img)
+            imageio.imwrite(logdir+'Test_depth_%05d.jpg'%i,(((depth_map.detach().cpu().numpy()-renderer.near)/(renderer.far-renderer.near)).reshape([100, 100, 1])).astype(np.uint8))
 
-        if (i%10)==0:
+        if (i%args.video_log_freq)==0:
             # Pose generator
             pose_spherical = CWT().to(device)
 
@@ -141,6 +136,7 @@ if __name__ == "__main__":
 
             f = logdir+'video.mp4'
             imageio.mimwrite(f, frames, fps=30, quality=7)
+            renderer.train()
 
+        if (i%args.model_save_freq)==0:
             torch.save(renderer.state_dict(), logdir+'%05d.npy'%i)
-        renderer.train()
