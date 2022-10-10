@@ -63,6 +63,8 @@ $$ v[k(.,x)] = \frac{4\rho}{\sqrt{3}} - \frac{1}{3}\exp\left(\frac{\sqrt{3}(x-1)
 
 $$ vv[k(.,x)] = \frac{2\rho}{3}\left(2\sqrt{3} - 3\rho + \exp\left(-\frac{\sqrt{3}}{\rho}\right)(\sqrt{3}+3\rho)\right) $$
 
-and produces a posterior over the rendering integral as computed above.
+and produces a posterior over the rendering integral as computed above. We use this to train our NeRF using a Gaussian negative log likelihood loss.
 
+$$ \mathcal{L}  \propto \frac{1}{2} \left( \log \mathbb{V} \[{v(f)} \] + \frac{(\mathbb{E} \[{v(f)} \] - c_m)^2}{\[{v(f)} \]} \right) $$
 
+where $c_m$ is the pixel colour value of an image measurement.
