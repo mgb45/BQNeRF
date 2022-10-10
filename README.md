@@ -55,7 +55,7 @@ $$ \hat{C} = \int_{t_0}^{t_f}\hat{\sigma}(r(t) c(r(t),d) dt  $$
 
 and approximate this integral using Bayesian quadrature with a Matern kernel:
 
-$$ k(x,y,\rho) = \left(1 + \frac{\sqrt(3)\|x-y\|}{\rho}\right)*\exp\left(-\frac{\sqrt(3)\|x-y\|}{\rho}\right) $$
+$$ k(x,y,\rho) = \left(1 + \frac{\sqrt(3)\|x-y\|}{\rho}\right)\exp\left(-\frac{\sqrt(3)\|x-y\|}{\rho}\right) $$
 
 which has closed form 
 
