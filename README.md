@@ -68,3 +68,18 @@ and produces a posterior over the rendering integral as computed above. We use t
 $$ \mathcal{L}  \propto \frac{1}{2} \left( \log \mathbb{V} \[{v(f)} \] + \frac{(\mathbb{E} \[{v(f)} \] - c_m)^2}{\[{v(f)} \]} \right) $$
 
 where $c_m$ is the pixel colour value of an image measurement.
+
+
+### How to try this out?
+
+Train a model with Bayesian Quadrature and a Matern kernel
+```
+python3 train.py --bq BQ -nsamples 64 -lr 5e-4 -epochs 5000
+```
+Train a model with Gaussian Quadrature
+```
+python3 train.py --bq Std -nsamples 64 -lr 5e-4 -epochs 5000
+```
+
+This will log images, videos and model checkpoints at an alarming frequency. You can play around with a trained model using the jupyter notebook.
+
