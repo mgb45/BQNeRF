@@ -27,7 +27,7 @@ and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
 ### Bayesian quadrature
 
-Bayesian quadrature typically uses a Gaussian process (GP) to apprximate the underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a GP with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is also a GP with mean and covariance:
+Bayesian quadrature typically uses a Gaussian process (GP) to apprximate an underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a GP with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is also a GP with mean and covariance:
 
 $$ \mu(x) = m(x) + k(x,X)k(X,X)^{-1}f(X) $$
 
