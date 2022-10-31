@@ -85,7 +85,7 @@ This will log images, videos and model checkpoints at an alarming frequency. You
 
 ### So, how does it do?
 
-Sadly, not so well. At very low sample numbers (both for training and rendering, Bayesian Quadrature with the Matern kernel is better), but this quickly reverses.
+Sadly, not so well. At very low sample numbers (both for training and rendering, Bayesian Quadrature with the Matern kernel is better), but this quickly reverses. This is only on a *single* test image, so could change at scale, but I suspect this is not the case. Bayesian Quadrature makes most sense when sampling is extremely expensive, and the sampling requirements for high quality NeRF rendering don't quite line up in this slot. Some of these results around rendering with different sample numbers are interesting though, as they show that the NeRF is clearly overfitting to the sampling grid along the ray. I think this lines up with Plenoxels work - the network is not really learning a functional form of the transmittance along the array, but rather is just a compact occupancy grid estimator.
 
 
 ![10 samples shows generally outperforming Bayesian quadrature rule](/figs/Ns_10.png)![20 samples shows similar performance](./figs/Ns_20.png)
