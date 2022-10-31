@@ -27,7 +27,7 @@ and $\delta_i$ is the distance between adjacent samples drawn along the ray.
 
 ### Bayesian quadrature
 
-Bayesian quadrature typically uses a Gaussian process (GP) to apprximate the underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a GP with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is also a GP with mean and covariance:
+Bayesian quadrature typically uses a Gaussian process (GP) to apprximate an underlying integrand $f(x)$ using a set of samples $\[x_i, f(x_i)\]$, and then computes the integral by integrating the GP. Let's assume we model the integrand using a GP with mean function $m(x)$ and covariance function $k(x,x')$. The posterior distribution on $f$ is also a GP with mean and covariance:
 
 $$ \mu(x) = m(x) + k(x,X)k(X,X)^{-1}f(X) $$
 
@@ -51,9 +51,9 @@ For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be co
 
 Let's replace the rendering equation above with the following integral:
 
-$$ \hat{C} = \int_{t_0}^{t_f}\hat{\sigma}(r(t) c(r(t),d) dt  $$
+$$ \hat{C} = \int_{t_0}^{t_f} \alpha(r(t) c(r(t),d) dt  $$
 
-and approximate this integral using Bayesian quadrature with a Matern kernel:
+, where $\alpha$ is the accumulated transmittance, and approximate this integral using Bayesian quadrature with a Matern kernel:
 
 $$ k(x,y,\rho) = \left(1 + \frac{\sqrt(3)\|x-y\|}{\rho}\right)\exp\left(-\frac{\sqrt(3)\|x-y\|}{\rho}\right) $$
 
@@ -63,6 +63,23 @@ $$ v[k(.,x)] = \frac{4\rho}{\sqrt{3}} - \frac{1}{3}\exp\left(\frac{\sqrt{3}(x-1)
 
 $$ vv[k(.,x)] = \frac{2\rho}{3}\left(2\sqrt{3} - 3\rho + \exp\left(-\frac{\sqrt{3}}{\rho}\right)(\sqrt{3}+3\rho)\right) $$
 
-and produces a posterior over the rendering integral as computed above.
+and produces a posterior over the rendering integral as computed above. We use this to train our NeRF using a Gaussian negative log likelihood loss.
 
+$$ \mathcal{L}  \propto \frac{1}{2} \left( \log \mathbb{V} \[{v(f)} \] + \frac{(\mathbb{E} \[{v(f)} \] - c_m)^2}{\[{v(f)} \]} \right) $$
+
+where $c_m$ is the pixel colour value of an image measurement.
+
+
+### How to try this out?
+
+Train a model with Bayesian Quadrature and a Matern kernel
+```
+python3 train.py --bq BQ -nsamples 64 -lr 5e-4 -epochs 5000
+```
+Train a model with Gaussian Quadrature
+```
+python3 train.py --bq Std -nsamples 64 -lr 5e-4 -epochs 5000
+```
+
+This will log images, videos and model checkpoints at an alarming frequency. You can play around with a trained model using the jupyter notebook.
 
