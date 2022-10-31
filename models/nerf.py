@@ -176,24 +176,30 @@ class NeRF(nn.Module):
         viewdirs = self.get_chunks(viewdirs, chunksize=chunksize)
         return viewdirs
 
-    def render(self, height, width, focal_length, c2w):
-
+    def prepare_rays(self,height,width,focal_length,c2w):
         rays_o, rays_d = self.get_rays(height, width, focal_length, c2w)
         rays_o = rays_o.reshape([-1, 3])
         rays_d = rays_d.reshape([-1, 3])
 
+        perturb = self.training
         query_points, z_vals = self.sample_stratified(
-            rays_o, rays_d, self.near, self.far,self.nsamples,perturb=True)
+            rays_o, rays_d, self.near, self.far,self.nsamples,perturb=perturb)
 
         batches = self.prepare_chunks(query_points, self.encoder, chunksize=self.chunksize)
         batches_viewdirs = self.prepare_viewdirs_chunks(query_points, rays_d, self.encoder_viewdirs, chunksize=self.chunksize)
+
+        return batches, batches_viewdirs, z_vals, rays_d, query_points
+
+    def render(self, height, width, focal_length, c2w):
+
+        batches, batches_viewdirs, z_vals, rays_d, query_points = self.prepare_rays(height,width,focal_length,c2w)
 
         predictions = []
         for batch, batch_viewdirs in zip(batches, batches_viewdirs):
             predictions.append(self.forward(batch, viewdirs=batch_viewdirs))
         raw = torch.cat(predictions, dim=0)
         raw = raw.reshape(list(query_points.shape[:2]) + [raw.shape[-1]])
-
+        
         # Perform differentiable volume rendering to re-synthesize the RGB image.
         if self.training:
             rgb_map, depth_map, acc_map, weights, uncertainty = self.raw2outputs(raw, z_vals, rays_d,raw_noise_std=0.01)
@@ -266,8 +272,12 @@ class NeRF(nn.Module):
         # Bayesian Quadrature rendering
         if self.bq:
 
+
+            alpha = nn.functional.relu(raw[..., 3] + noise)
+
             t_vals = (z_vals[0,:]-self.near)/(self.far-self.near)
-            weights = nn.functional.relu(raw[..., 3] + noise)
+            weights = alpha
+
             kxx = self.matern(t_vals.reshape(-1,1),t_vals.reshape(1,-1))
             
             bqm = self.bayes_quad_mu(t_vals.reshape(-1,1)).reshape(1,-1)
@@ -275,9 +285,9 @@ class NeRF(nn.Module):
             # pre_mult = bqm@torch.linalg.inv(kxx)
 
             # rgb_map = (pre_mult.repeat(rgb.shape[0],1,1)@(weights.unsqueeze(-1)*rgb).squeeze()).squeeze()
-
-            rgb_map = (bqm@torch.linalg.solve(kxx,weights.unsqueeze(-1)*rgb)).squeeze()
-            depth_map = torch.sum(weights*z_vals,-1)
+            rgb = (bqm@torch.linalg.solve(kxx,weights.unsqueeze(-1)*rgb)).squeeze()
+            
+            depth_map = torch.mean(weights*z_vals,-1)
             acc_map = torch.sum(weights, dim=-1)
 
         else:
@@ -291,7 +301,7 @@ class NeRF(nn.Module):
             weights = alpha*self.cumprod_exclusive(1. - alpha + 1e-10)
 
             # Compute weighted RGB map.
-            rgb_map = torch.sum(weights[..., None] * rgb, dim=-2)  # [n_rays, 3]
+            rgb = torch.sum(weights[..., None] * rgb, dim=-2)  # [n_rays, 3]
 
             # Estimated depth map is predicted distance.
             depth_map = torch.sum(weights * z_vals, dim=-1)
@@ -305,4 +315,4 @@ class NeRF(nn.Module):
 
             bqs = torch.ones(1).to(alpha.device)
 
-        return rgb_map, depth_map, acc_map, weights, torch.nn.functional.relu(bqs)
+        return rgb, depth_map, acc_map, weights, torch.nn.functional.relu(bqs)

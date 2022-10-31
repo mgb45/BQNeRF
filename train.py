@@ -105,16 +105,16 @@ if __name__ == "__main__":
         
         renderer.eval()
         img, depth_map, acc_map, weights,uncertainty = renderer.render(height,width,focal,testpose)
-        val_loss = torch.nn.functional.gaussian_nll_loss(img, target_img,uncertainty*torch.ones_like(target_img))
+        val_psnr = -10.*torch.log10(torch.nn.functional.mse_loss(torch.clip(img.reshape(100, 100, 3),0,1), testimg))
         renderer.train()
 
         # Logs
         writer.add_scalar("Loss/train", np.mean(batch_losses), i)
-        writer.add_scalar("Loss/test", val_loss.item(), i)
+        writer.add_scalar("PSNR/test", val_psnr.item(), i)
         
         # Save test img
         if (i %args.frame_log_freq)==0:
-            img = (255*np.clip(img.detach().cpu().numpy(),0,1).reshape([100, 100, 3])).astype(np.uint8)
+            img = (255*np.clip(img.detach().cpu().numpy(),0,1).reshape(100, 100, 3)).astype(np.uint8)
             imageio.imwrite(logdir+'Test_render_%05d.jpg'%i,img)
             imageio.imwrite(logdir+'Test_depth_%05d.jpg'%i,(((depth_map.detach().cpu().numpy()-renderer.near)/(renderer.far-renderer.near)).reshape([100, 100, 1])).astype(np.uint8))
 
