@@ -18,7 +18,7 @@ parser.add_argument('--epochs',type=int,default=5000,help="Number of epochs to t
 parser.add_argument('--lr',type=float,default=5e-4,help="Learning rate")
 parser.add_argument('--logdir',type=str,default='./logs/',help="Log directory")
 parser.add_argument('--chunksize',type=int,default=16384,help="Chunks to render at a time (memory issues)")
-parser.add_argument('--nsamples',type=int,default=64,help="Number of samples along ray")
+parser.add_argument('--nsamples',type=int,default=10,help="Number of samples along ray")
 parser.add_argument('--video_log_freq',type=int,default=10,help="Frequency to log test render video")
 parser.add_argument('--frame_log_freq',type=int,default=10,help="Frequency to log test render frame")
 parser.add_argument('--model_save_freq',type=int,default=10,help="Frequency to save model")
