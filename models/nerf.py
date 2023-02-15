@@ -231,43 +231,43 @@ class NeRF(nn.Module):
 
         return cumprod
 
-    def matern(self,x,y,rho=1/5):
+    # def matern(self,x,y,rho=1/5):
 
-        return (1. + math.sqrt(3.)*torch.abs(x-y)/rho)*torch.exp(-math.sqrt(3.)*torch.abs(x-y)/rho)
+    #     return (1. + math.sqrt(3.)*torch.abs(x-y)/rho)*torch.exp(-math.sqrt(3.)*torch.abs(x-y)/rho)
 
-    def rbf(self,x,y,sigma=0.15):
+    # def matern_vf(self,x,rho=1/5):
+
+    #     y = 4.*rho/math.sqrt(3.) - 1./3.*torch.exp(math.sqrt(3.)*(x-1.)/rho)*(3.+2.*math.sqrt(3.)*rho -3.*x) - 1./3.*torch.exp(-math.sqrt(3.)/rho*x)*(3.*x + 2.*math.sqrt(3.)*rho)
+
+    #     return y  
+
+    # def matern_vff(self,rho=1/5):
+    
+    #     y = 2*rho/3*(2*math.sqrt(3) - 3*rho + math.exp(-math.sqrt(3)/rho)*(math.sqrt(3) + 3*rho))
+    
+    #     return y
+
+    def rbf(self,x,y,sigma=0.05):
 
         dists = (x-y)**2
         return 1/(sigma*math.sqrt(2*math.pi))*torch.exp(-dists/(2*sigma**2))
 
-    def bayes_quad_mu(self,x,rho=1/5):
-
-        y = 4.*rho/math.sqrt(3.) - 1./3.*torch.exp(math.sqrt(3.)*(x-1.)/rho)*(3.+2.*math.sqrt(3.)*rho -3.*x) - 1./3.*torch.exp(-math.sqrt(3.)/rho*x)*(3.*x + 2.*math.sqrt(3.)*rho)
-
-        return y  
-
-    def rbf_vf(self,x,sig=0.15):
+    def rbf_vf(self,x,sig=0.05):
         
-        return 0.5*torch.erf((1-x)/(sig*math.sqrt(2))) - 0.5*torch.erf((-x)/(sig*math.sqrt(2)))
+        return 0.5*torch.erf((self.far-x)/(sig*math.sqrt(2))) - 0.5*torch.erf((self.near-x)/(sig*math.sqrt(2)))
 
-    def rbf_vvf_part(self,y,sig=0.15):
+    def rbf_vvf_part(self,y,sig=0.05):
         
-        u1 = (1-y)/(sig*math.sqrt(2))
-        u2 = (-y)/(sig*math.sqrt(2))
+        u1 = (self.far-y)/(sig*math.sqrt(2))
+        u2 = (self.near-y)/(sig*math.sqrt(2))
 
         I1 = u1*math.erf(u1) + math.exp(-u1**2)/math.sqrt(math.pi)
         I2 = u1*math.erf(u2) + math.exp(-u2**2)/math.sqrt(math.pi)
 
         return -0.5*sig*math.sqrt(2)*(I1-I2)
 
-    def rbf_vff(self,sig=0.15):
-        return self.rbf_vvf_part(1)-self.rbf_vvf_part(0)
-
-    def bayes_quad_sig(self,rho=1/5):
-    
-        y = 2*rho/3*(2*math.sqrt(3) - 3*rho + math.exp(-math.sqrt(3)/rho)*(math.sqrt(3) + 3*rho))
-    
-        return y
+    def rbf_vff(self,sig=0.05):
+        return self.rbf_vvf_part(self.far,sig)-self.rbf_vvf_part(self.near,sig)
 
     def raw2outputs(self, raw, z_vals, rays_d, raw_noise_std=0.01):
         r"""
@@ -294,26 +294,25 @@ class NeRF(nn.Module):
         # Bayesian Quadrature rendering
         if self.bq:
 
-
+            sig = 0.25
             # alpha = nn.functional.relu(raw[..., 3] + noise)
 
             t_vals = (z_vals[0,:]-self.near)/(self.far-self.near)
             # weights = alpha
 
-            alpha = 1.0 - torch.exp(-nn.functional.relu(raw[..., 3] + noise) * dists)
+            alpha = torch.exp(-nn.functional.relu(raw[..., 3] + noise) * dists)
 
             # Compute weight for RGB of each sample along each ray. [n_rays, n_samples]
             # The higher the alpha, the lower subsequent weights are driven.
-            weights = alpha*self.cumprod_exclusive(1. - alpha + 1e-10)
+            weights = nn.functional.relu(raw[..., 3] + noise)*self.cumprod_exclusive(alpha + 1e-10)
 
-            kxx = self.rbf(t_vals.reshape(-1,1),t_vals.reshape(1,-1))
+            kxx = self.rbf(z_vals[0,:].reshape(-1,1),z_vals[0,:].reshape(1,-1),sigma=sig)
             
-            bqm = self.rbf_vf(t_vals.reshape(-1,1)).reshape(1,-1)
-            bqs = self.rbf_vff() - bqm@torch.linalg.solve(kxx,bqm.T)
-            # bqs = torch.ones(1).to(alpha.device)
+            bqm = self.rbf_vf(z_vals[0,:].reshape(-1,1),sig=sig).reshape(1,-1)
+            bqs = self.rbf_vff(sig=sig) - bqm@torch.linalg.solve(kxx,bqm.T)
             # pre_mult = bqm@torch.linalg.inv(kxx)
-
             # rgb_map = (pre_mult.repeat(rgb.shape[0],1,1)@(weights.unsqueeze(-1)*rgb).squeeze()).squeeze()
+
             rgb = (bqm@torch.linalg.solve(kxx,weights[:,:,None]*rgb)).squeeze()
             
             depth_map = torch.mean(weights*z_vals,-1)
