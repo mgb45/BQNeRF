@@ -45,25 +45,17 @@ $$ v[k(.,x)] = \int k(x,y) dy $$
 
 $$ vv[k(.,x)] = \int k(x,y)v(dx)v(dy) $$
 
-For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be computed analytically.
+For many kernel or covariance functions (eg. RBF, Matern, etc.), these can be computed analytically. This [tutorial notebook](tutorial/Intro%20to%20Bayesian%20quadrature.ipynb) explains this in more detail.
 
-### Volumentric Rendering using Bayesian Quadrature and a Matern kernel
+### Volumentric Rendering using Bayesian Quadrature and a RBF kernel
 
-Let's replace the rendering equation above with the following integral:
+Let's return to the original rendering equation above:
 
-$$ \hat{C} = \int_{t_0}^{t_f} \alpha(r(t) c(r(t),d) dt  $$
+$$ \hat{C}(r) = \int_{t_0}^{t_f} T(t) \sigma(r(t)) c(r(t),d) dt $$
 
-, where $\alpha$ is the accumulated transmittance, and approximate this integral using Bayesian quadrature with a Matern kernel:
+and approximate this integral using Bayesian quadrature with a RBF kernel to produce a posterior over the rendering integral as computed above, given predicted colours $c_i$. We will keep the inner cummulative opacity integral ($T_i = \exp( - \sum_{j=1}^{i-1} \sigma_j \delta_j )$) because it is a bit of a stretch to repeatedly approximate this one with quadrature too. 
 
-$$ k(x,y,\rho) = \left(1 + \frac{\sqrt(3)\|x-y\|}{\rho}\right)\exp\left(-\frac{\sqrt(3)\|x-y\|}{\rho}\right) $$
-
-which has closed form 
-
-$$ v[k(.,x)] = \frac{4\rho}{\sqrt{3}} - \frac{1}{3}\exp\left(\frac{\sqrt{3}(x-1)}{\rho}\right)(3 + 2\sqrt{3}\rho - 3x) - \frac{1}{3}\exp\left(-\frac{\sqrt{3}}{\rho}x\right)(3x + 2\sqrt{3}\rho) $$
-
-$$ vv[k(.,x)] = \frac{2\rho}{3}\left(2\sqrt{3} - 3\rho + \exp\left(-\frac{\sqrt{3}}{\rho}\right)(\sqrt{3}+3\rho)\right) $$
-
-and produces a posterior over the rendering integral as computed above. We use this to train our NeRF using a Gaussian negative log likelihood loss.
+We will use this posterior to train our NeRF using a Gaussian negative log likelihood loss.
 
 $$ \mathcal{L}  \propto \frac{1}{2} \left( \log \mathbb{V} \[{v(f)} \] + \frac{(\mathbb{E} \[{v(f)} \] - c_m)^2}{\[{v(f)} \]} \right) $$
 
@@ -72,7 +64,7 @@ where $c_m$ is the pixel colour value of an image measurement.
 
 ### How to try this out?
 
-Train a model with Bayesian Quadrature and a Matern kernel
+Train a model with Bayesian Quadrature and an RBF kernel
 ```
 python3 train.py --bq BQ --nsamples 64 --lr 5e-4 --epochs 5000
 ```
@@ -85,12 +77,12 @@ This will log images, videos and model checkpoints at an alarming frequency. You
 
 ### So, how does it do?
 
-Sadly, not so well. At very low sample numbers (both for training and rendering, Bayesian Quadrature with the Matern kernel is better), but this quickly reverses. This is only on a *single* test image, so could change at scale, but I suspect this is not the case. Bayesian Quadrature makes most sense when sampling is extremely expensive, and the sampling requirements for high quality NeRF rendering don't quite line up in this slot. Some of these results around rendering with different sample numbers are interesting though, as they show that the NeRF is clearly overfitting to the sampling grid along the ray. I think this lines up with Plenoxels work - the network is not really learning a functional form of the transmittance along the array, but rather is just a compact occupancy grid estimator.
+Re-running these results after fixing rendering bug. This is only on a *single* test image, so could change at scale, but I suspect this is not the case. 
 
 
-![10 samples shows generally outperforming Bayesian quadrature rule](/figs/Ns_10.png)![20 samples shows similar performance](./figs/Ns_20.png)
-![30 samples shows Bayesian quadrature performing slightly worse](/figs/Ns_30.png)![40 samples shows Bayesian quadrature performing worse](./figs/Ns_40.png)
-![50 samples shows Bayesian quadrature performing worse](/figs/Ns_50.png)![Stop looking, it isn't getting better](./figs/Ns_60.png)
+![10 samples](/figs/Ns_10.png)![20 samples](./figs/Ns_20.png)
+![30 samples](/figs/Ns_30.png)![40 samples](./figs/Ns_40.png)
+![50 samples ](/figs/Ns_50.png)![60 samples](./figs/Ns_60.png)
 
 
 
