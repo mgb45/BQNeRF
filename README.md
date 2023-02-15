@@ -53,9 +53,11 @@ Let's return to the original rendering equation above:
 
 $$ \hat{C}(r) = \int_{t_0}^{t_f} T(t) \sigma(r(t)) c(r(t),d) dt $$
 
-and approximate this integral using Bayesian quadrature with a RBF kernel to produce a posterior over the rendering integral as computed above, given predicted colours $c_i$. We will keep the inner cummulative opacity integral ($T_i = \exp( - \sum_{j=1}^{i-1} \sigma_j \delta_j )$) because it is a bit of a stretch to repeatedly approximate this one with quadrature too. 
+and approximate this integral using Bayesian quadrature with a RBF kernel to produce a posterior over the rendering integral as computed above, given predicted colours $c_i$. We will keep the inner cummulative opacity integral, 
 
-We will use this posterior to train our NeRF using a Gaussian negative log likelihood loss.
+$$T_i = \exp(-\sum_{j=1}^{i-1} \sigma_j \delta_j )$$
+
+because it is a bit of a stretch to repeatedly approximate this one with quadrature too. So we will be using Bayesian quadrature to approximate $\hat{C}(r)$ using samples $\{T_i, c_i\}$ along the ray. We will use this posterior to train our NeRF using a Gaussian negative log likelihood loss.
 
 $$ \mathcal{L}  \propto \frac{1}{2} \left( \log \mathbb{V} \[{v(f)} \] + \frac{(\mathbb{E} \[{v(f)} \] - c_m)^2}{\[{v(f)} \]} \right) $$
 
