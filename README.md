@@ -83,3 +83,14 @@ python3 train.py --bq Std --nsamples 64 --lr 5e-4 --epochs 5000
 
 This will log images, videos and model checkpoints at an alarming frequency. You can play around with a trained model using the jupyter notebook.
 
+### So, how does it do?
+
+Sadly, not so well. At very low sample numbers (both for training and rendering, Bayesian Quadrature with the Matern kernel is better), but this quickly reverses. This is only on a *single* test image, so could change at scale, but I suspect this is not the case. Bayesian Quadrature makes most sense when sampling is extremely expensive, and the sampling requirements for high quality NeRF rendering don't quite line up in this slot. Some of these results around rendering with different sample numbers are interesting though, as they show that the NeRF is clearly overfitting to the sampling grid along the ray. I think this lines up with Plenoxels work - the network is not really learning a functional form of the transmittance along the array, but rather is just a compact occupancy grid estimator.
+
+
+![10 samples shows generally outperforming Bayesian quadrature rule](/figs/Ns_10.png)![20 samples shows similar performance](./figs/Ns_20.png)
+![30 samples shows Bayesian quadrature performing slightly worse](/figs/Ns_30.png)![40 samples shows Bayesian quadrature performing worse](./figs/Ns_40.png)
+![50 samples shows Bayesian quadrature performing worse](/figs/Ns_50.png)![Stop looking, it isn't getting better](./figs/Ns_60.png)
+
+
+
