@@ -196,9 +196,22 @@ Native Uncertainty preprint, already summarized above):
 
 ## Milestones
 
-1. Derivation + small-scale validation (posterior mean ≈ alpha compositing;
-   posterior variance vs. brute-force baseline on a toy scene).
-2. The differentiation experiment — the real go/no-go gate.
+1. **Done** — derivation + small-scale validation, in `bq_splat/` (pure
+   numpy/scipy, no gsplat/torch dependency yet). RBF and Matérn-3/2 kernel
+   math is ported/derived and unit-tested against `models/nerf.py`'s exact
+   formula and against numerical integration. A 1D toy-ray Monte Carlo sweep
+   and a deliberate sparse-but-visible "gap" experiment are implemented and
+   run; see `bq_splat/results/FINDINGS.md` for the qualified-pass write-up
+   (BQ mean still loses to naive Riemann summation on raw accuracy, matching
+   the original NeRF-BQ result, but posterior variance is reasonably
+   calibrated for both kernels and the gap experiment shows ~6.5x higher
+   local variance in an under-sampled-but-visible region — supporting the
+   differentiation claim at toy scale). Also surfaced a real numerical-
+   conditioning issue (irregular node spacing can push the Gram matrix
+   condition number past 1e18 with a fixed jitter) and fixed it with a
+   relative jitter — a lesson that carries into the eventual gsplat port.
+2. The differentiation experiment — the real go/no-go gate, now to be run
+   on an actual GS scene rather than a 1D toy signal.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,
