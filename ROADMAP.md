@@ -204,9 +204,11 @@ Native Uncertainty preprint, already summarized above):
    run; see `bq_splat/results/FINDINGS.md` for the qualified-pass write-up
    (BQ mean still loses to naive Riemann summation on raw accuracy, matching
    the original NeRF-BQ result, but posterior variance is reasonably
-   calibrated for both kernels and the gap experiment shows ~6.5x higher
-   local variance in an under-sampled-but-visible region — supporting the
-   differentiation claim at toy scale). Also surfaced a real numerical-
+   calibrated for both kernels and the gap experiment shows ~3.9x higher
+   average local variance in an under-sampled-but-visible region, peaking at
+   the region's leading edge where sparse coverage meets real structure —
+   supporting the differentiation claim at toy scale, with a more specific
+   shape than a flat plateau. Also surfaced a real numerical-
    conditioning issue (irregular node spacing can push the Gram matrix
    condition number past 1e18 with a fixed jitter) and fixed it with a
    relative jitter — a lesson that carries into the eventual gsplat port.

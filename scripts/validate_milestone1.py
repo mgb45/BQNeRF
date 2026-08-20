@@ -124,9 +124,6 @@ def gap_experiment(seed=1):
         local_nodes_mask = (nodes >= lo) & (nodes <= hi)
         local_nodes = nodes[local_nodes_mask]
         local_values = values[local_nodes_mask]
-        if local_nodes.shape[0] < 2:
-            local_variances.append(np.nan)
-            continue
         result = bayesian_quadrature(local_nodes, local_values, kernel, lo, hi)
         local_variances.append(result.variance)
 

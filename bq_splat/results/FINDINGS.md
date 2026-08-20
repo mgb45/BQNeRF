@@ -54,20 +54,31 @@ A region interior to the domain (not occluded, not near an edge) was given
 deliberately sparse local node coverage while containing real high-frequency
 signal structure (two overlapping narrow bumps).
 
-- Mean local BQ variance **inside** the gap: 0.456
-- Mean local BQ variance **outside** the gap: 0.070
-- Ratio: **6.5x**
+- Mean local BQ variance **inside** the gap: 0.546
+- Mean local BQ variance **outside** the gap: 0.142
+- Ratio: **3.85x**
 
-See `gap_experiment.png`. This is the toy-scale version of the paper's
-central differentiation claim (quadrature uncertainty flags well-observed-
-but-under-resolved geometry, distinct from occlusion/visibility-based
-uncertainty) and it holds up here. One bonus observation from the plot:
-variance also spikes near a tall, narrow bump around t≈9.5 that's *outside*
-the designated gap and reasonably well-covered by node count — but the bump
-is narrow enough relative to local node spacing that it's still locally
-under-resolved. That's a good sign: the mechanism is responding to genuine
-local under-sampling-relative-to-structure in general, not just to the one
-region it was specifically constructed to flag.
+(An earlier version of this script had a plotting bug — a local window with
+fewer than 2 nodes was skipped and recorded as `NaN` instead of computing
+the variance `bayesian_quadrature` already supports for those cases. That
+silently broke the plotted curve inside the gap, at exactly the points that
+should matter most, and also biased the "inside"/"outside" means reported
+in an earlier draft of this file — 0.456/0.070/6.5x — since points nearest
+the gap's sparsest coverage were the ones being dropped. The numbers above
+are from the corrected script.)
+
+See `gap_experiment.png`. The curve is more specific than "rises uniformly
+inside the sparse region": variance peaks (~1.2) right at the gap's leading
+edge, where sparse coverage first meets the two-bump high-frequency
+structure, then stays moderately elevated (~0.4-0.6) through the gap's
+interior before dropping off outside it. That's still consistent with the
+paper's differentiation claim — variance is responding to under-sampling
+*relative to local signal structure*, not to node count in isolation — but
+it's a more specific and more interesting shape than a flat elevated
+plateau, and is worth designing the eventual real (GS-based) differentiation
+experiment around: expect the effect to be strongest at the boundary where
+coverage drops off against real structure, not necessarily uniform across
+an entire under-covered region.
 
 ## 4. Numerical conditioning: a real implementation lesson
 

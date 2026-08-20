@@ -40,8 +40,10 @@ NeRF-BQ result recorded in this repo's history, and further evidence that
 "beat accuracy" is the wrong frame for this paper (per ROADMAP.md). But BQ's
 posterior variance is reasonably well correlated with its own actual error
 for both kernels (~0.7), and a deliberately under-sampled-but-visible region
-shows ~6-7x higher local BQ variance than well-covered regions — a toy-scale
-replication of the paper's central differentiation claim. One implementation
+shows ~3.9x higher local BQ variance than well-covered regions on average —
+peaking (~1.2) right at the region's leading edge, where sparse coverage
+first meets real signal structure — a toy-scale replication of the paper's
+central differentiation claim. One implementation
 lesson worth carrying into the gsplat port: irregular (as opposed to evenly
 stratified) node placement can push the Gram matrix condition number past
 1e18 with a naive fixed jitter; a jitter relative to the kernel's own scale
