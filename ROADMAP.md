@@ -212,6 +212,16 @@ Native Uncertainty preprint, already summarized above):
    conditioning issue (irregular node spacing can push the Gram matrix
    condition number past 1e18 with a fixed jitter) and fixed it with a
    relative jitter — a lesson that carries into the eventual gsplat port.
+   Follow-up: `hyperparams.py` fits the kernel bandwidth per scene via
+   marginal likelihood instead of hardcoding it (as `models/nerf.py` and
+   this package's own baseline both do); fitting closes most of the
+   accuracy gap against Riemann summation and fitted Matern beats Riemann
+   outright at n=20/40 nodes — confirming the gap was substantially a
+   fixed-bandwidth mismatch, not a fundamental BQ limitation. See
+   `bq_splat/results/FINDINGS.md` §5. Any bandwidth used once this moves
+   into the gsplat-integrated code should be fit the same way (or made a
+   literal torch.nn.Parameter optimized jointly with the rest of the
+   pipeline), not hardcoded.
 2. The differentiation experiment — the real go/no-go gate, now to be run
    on an actual GS scene rather than a 1D toy signal.
 3. Densification/pruning combination experiment.
