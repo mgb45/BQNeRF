@@ -287,7 +287,24 @@ Native Uncertainty preprint, already summarized above):
    scale -- that comparison hasn't been attempted.
 2. The differentiation experiment — the real go/no-go gate, now to be run
    on an actual GS scene rather than a 1D or 2D toy signal. This is the
-   first milestone that needs a GPU (gsplat rasterization).
+   first milestone that needs a GPU (gsplat rasterization). **Scaffolding
+   in progress** on branch `claude/gs-experiment-scaffold`: a new
+   `gs_experiment/` package wires `bq_splat`'s validated kernels/quadrature
+   (including the directional extension) to real 3D splat/camera data
+   structures, reuses the KD-tree + vv-caching optimizations from
+   `benchmark_local_bq_scaling.py` via a `LocalUncertaintyEngine`, and runs
+   end-to-end on a mock scene now (`gs_experiment/differentiation_experiment.py`)
+   with no GPU/torch/gsplat dependency. `bq_splat.quadrature` gained an
+   optional `precomputed_vv`/`precomputed_pos_vv` parameter to make that
+   caching a first-class, reusable library feature. Real checkpoint loading
+   (`gs_experiment/splat_scene.load_from_gsplat_checkpoint`) is a documented
+   stub pending GPU access and a trained scene; see `gs_experiment/README.md`
+   for exactly what's real, what's mocked, and what to do once both are
+   available. Deliberately deferred: per-splat heterogeneous covariance as
+   the BQ kernel bandwidth (a real extension, but a second unvalidated
+   change best kept separate from the GPU integration itself) and
+   image-plane pixel reprojection (gsplat's own rasterizer should provide
+   this rather than it being reimplemented here).
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

@@ -1,0 +1,88 @@
+"""Camera pose representation and per-splat viewing-direction geometry.
+
+Pure numpy -- no torch/gsplat dependency, so this is testable right now.
+Real gsplat integration will need torch tensors at the rasterization
+boundary, but everything here is plain geometry that doesn't need it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass
+class CameraPose:
+    """A camera's position and orientation in world space.
+
+    `center`: (3,) camera position.
+    `forward`: (3,) unit vector the camera looks along.
+    `up`: (3,) unit vector, camera's "up" (for later full projection --
+    not needed for the direction-to-camera computation this module does).
+    """
+
+    center: np.ndarray
+    forward: np.ndarray
+    up: np.ndarray
+
+
+def turntable_camera(t: float, phi_deg: float, theta_deg: float) -> CameraPose:
+    """Camera on a sphere of radius `t`, at polar angle `phi_deg` and
+    azimuth `theta_deg`, looking at the origin -- the same spherical
+    turntable convention as models/pose.py's `CWT` (ported to plain numpy
+    rather than reusing that torch nn.Module, to keep this package's
+    geometry code dependency-light; the convention and the resulting poses
+    are the same).
+    """
+    phi = np.deg2rad(phi_deg)
+    theta = np.deg2rad(theta_deg)
+
+    trans = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, t], [0, 0, 0, 1]], dtype=float)
+    rot_phi = np.array(
+        [[1, 0, 0, 0], [0, np.cos(phi), -np.sin(phi), 0], [0, np.sin(phi), np.cos(phi), 0], [0, 0, 0, 1]],
+        dtype=float,
+    )
+    rot_theta = np.array(
+        [[np.cos(theta), 0, -np.sin(theta), 0], [0, 1, 0, 0], [np.sin(theta), 0, np.cos(theta), 0], [0, 0, 0, 1]],
+        dtype=float,
+    )
+    flip = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=float)
+
+    c2w = flip @ rot_theta @ rot_phi @ trans
+
+    center = c2w[:3, 3]
+    forward = -c2w[:3, 2]  # camera looks down its own -z axis, in camera-to-world convention
+    up = c2w[:3, 1]
+    forward = forward / np.linalg.norm(forward)
+    up = up / np.linalg.norm(up)
+    return CameraPose(center=center, forward=forward, up=up)
+
+
+def turntable_ring(radius: float, n_views: int, phi_deg: float = 0.0) -> list[CameraPose]:
+    """A ring of `n_views` cameras at fixed polar angle `phi_deg`, evenly
+    spaced in azimuth -- the "orbit the scene" pattern used for the "wide
+    coverage" case in the toy directional experiments, now over real 3D
+    poses instead of a 2D angle."""
+    return [turntable_camera(radius, phi_deg, theta) for theta in np.linspace(0, 360, n_views, endpoint=False)]
+
+
+def turntable_arc(radius: float, n_views: int, theta_center_deg: float, half_width_deg: float, phi_deg: float = 0.0) -> list[CameraPose]:
+    """A narrow arc of `n_views` cameras clustered within +/- half_width_deg
+    of theta_center_deg -- the "narrow cone" case: a robot passing by
+    quickly, glimpsing something from nearly the same angle each time."""
+    thetas = np.linspace(theta_center_deg - half_width_deg, theta_center_deg + half_width_deg, n_views)
+    return [turntable_camera(radius, phi_deg, theta) for theta in thetas]
+
+
+def directions_from_positions_to_camera(positions: np.ndarray, camera: CameraPose) -> np.ndarray:
+    """Unit vector from each of `positions` (N, 3) toward `camera.center` --
+    the "viewing direction" DirectionalKernel expects for each observation
+    of a splat: not the camera's own forward axis, but the direction from
+    the observed point back to the observer, which varies per splat even
+    for a single camera.
+    """
+    positions = np.asarray(positions, dtype=float)
+    to_camera = camera.center[None, :] - positions
+    norms = np.linalg.norm(to_camera, axis=1, keepdims=True)
+    return to_camera / norms

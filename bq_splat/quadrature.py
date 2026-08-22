@@ -37,6 +37,7 @@ def bayesian_quadrature_directional(
     pos_bounds,
     query_direction,
     rel_jitter: float = 1e-4,
+    precomputed_pos_vv: float | None = None,
 ) -> BQResult:
     """BQ over a joint (position, direction) domain, where position is
     integrated over (as in bayesian_quadrature_nd -- a genuine quadrature
@@ -60,6 +61,12 @@ def bayesian_quadrature_directional(
     v_i   = pos_kernel.v(x_i, pos_bounds) * dir_kernel.k(w_i, w_query)
     vv    = pos_kernel.vv(pos_bounds) * dir_kernel.k(w_query, w_query)
           = pos_kernel.vv(pos_bounds)               (self-similarity is 1)
+
+    `precomputed_pos_vv`: pass `pos_kernel.vv(pos_bounds)` in directly if
+    the caller already has it cached -- exact, not approximate, for a
+    stationary kernel evaluated on a fixed-size, translated window (see
+    bq_splat/results/FINDINGS.md section 8; gs_experiment/pixel_uncertainty.py
+    is the first real caller of this).
     """
     positions = np.asarray(positions, dtype=float)
     if positions.ndim == 1:
@@ -68,7 +75,7 @@ def bayesian_quadrature_directional(
     values = np.asarray(values, dtype=float).reshape(-1)
     n = positions.shape[0]
 
-    vv = float(pos_kernel.vv(pos_bounds))  # dir_kernel.k(q, q) == 1, omitted
+    vv = float(precomputed_pos_vv) if precomputed_pos_vv is not None else float(pos_kernel.vv(pos_bounds))
     if n == 0:
         return BQResult(mean=0.0, variance=vv)
 
@@ -123,19 +130,27 @@ def directional_posterior_variance(
     return BQResult(mean=mean, variance=max(variance, 0.0))
 
 
-def bayesian_quadrature_nd(nodes, values, kernel: ProductKernel, bounds, rel_jitter: float = 1e-4) -> BQResult:
+def bayesian_quadrature_nd(
+    nodes, values, kernel: ProductKernel, bounds, rel_jitter: float = 1e-4, precomputed_vv: float | None = None
+) -> BQResult:
     """Same as `bayesian_quadrature`, generalized to a D-dimensional domain
     via a `ProductKernel` and a per-axis `bounds` list of (a_d, b_d) pairs.
     Kept as a separate function (rather than folding the 1D case into this
     one) so the already-tested 1D `bayesian_quadrature` path is untouched.
+
+    `precomputed_vv`: pass `kernel.vv(bounds)` in directly if the caller
+    already has it cached -- exact, not approximate, for a stationary
+    kernel evaluated on a fixed-size, translated window (see
+    bq_splat/results/FINDINGS.md section 8).
     """
     nodes = np.asarray(nodes, dtype=float)
     if nodes.ndim == 1:
         nodes = nodes.reshape(-1, 1)
     values = np.asarray(values, dtype=float).reshape(-1)
     n = nodes.shape[0]
+    vv = float(precomputed_vv) if precomputed_vv is not None else float(kernel.vv(bounds))
     if n == 0:
-        return BQResult(mean=0.0, variance=float(kernel.vv(bounds)))
+        return BQResult(mean=0.0, variance=vv)
 
     kxx = kernel.k(nodes, nodes)
     jitter = rel_jitter * np.mean(np.diag(kxx))
@@ -146,7 +161,7 @@ def bayesian_quadrature_nd(nodes, values, kernel: ProductKernel, bounds, rel_jit
     mean = float(v @ solved)
 
     solved_v = np.linalg.solve(kxx, v)
-    variance = float(kernel.vv(bounds) - v @ solved_v)
+    variance = float(vv - v @ solved_v)
 
     return BQResult(mean=mean, variance=max(variance, 0.0))
 
