@@ -31,21 +31,58 @@ whole pipeline end-to-end right now.
   directions, standard circular statistics), standing in for a real
   visibility field (GAVIS-style) or Hessian sensitivity (PUP-style) per
   ROADMAP.md's "combination not competition" framing.
-- `differentiation_experiment.py` — wires all of the above together and
-  runs end-to-end on a mock scene right now (see below).
+- `spherical_harmonics.py` — `eval_sh`, matching the standard 3DGS/gsplat
+  SH color convention (the widely-reused Plenoxels/instant-ngp `eval_sh`
+  utility) exactly, including its "+0.5" DC-offset convention. The
+  hardcoded normalization constants (`SH_C0`, `SH_C1`, `SH_C2`) are checked
+  against their closed-form analytic values (e.g. `SH_C0 == 1/sqrt(4*pi)`)
+  in tests, not just trusted as literals. Real splats store view-dependent
+  color this way, not as the flat scalar `colors` field used to; a splat's
+  color now genuinely depends on viewing direction when `sh_coeffs` is set
+  on its `SplatScene` (`splat_observations` uses `eval_sh` per observation
+  when available, falling back to flat `colors` otherwise).
+- `visibility_attribution.py` — frustum + occlusion attribution: which
+  cameras plausibly saw each splat, from pure geometry (no rendering).
+  `in_frustum` checks field-of-view and being in front of the camera;
+  `occlusion_mask` is a soft z-buffer (project splats to camera-local
+  angular bearing via a KD-tree, flag a splat as occluded if a
+  meaningfully-closer splat shares its bearing). Real training pipelines
+  don't record "which views actually constrained this splat," so this is a
+  genuine proxy, validated against a synthetic occluder (one splat directly
+  behind another, same bearing, gets flagged; a splat at the same depth but
+  a different bearing doesn't) rather than assumed correct.
+- `splat_scene.make_occluder_scene` — the integration test that SH color
+  and real visibility attribution actually compose with the rest of the
+  pipeline, not just that each works alone: a "wall" of splats occludes a
+  cluster of "target" splats behind it from cameras in front, while cameras
+  behind the targets see them directly — `observed_camera_idx` comes from
+  `attribute_observations`, not an assignment rule, and colors come from
+  random SH coefficients. Confirmed front cameras see none of the targets
+  and back cameras see most of them.
+- `differentiation_experiment.py` — wires the original (non-occluder)
+  pipeline together and runs end-to-end on a mock scene right now (see
+  below); doesn't yet use `make_occluder_scene`/SH colors, since that
+  script's zone-based mock predates them — a reasonable next follow-up.
 
 **Stubbed, needs GPU/real data:**
 - `splat_scene.load_from_gsplat_checkpoint` raises `NotImplementedError`
   with the intended real implementation documented in its docstring: read
   a 3DGS `.ply` checkpoint (needs the optional `plyfile`/`torch`/`gsplat`
   dependencies in `requirements-gsplat.txt`, not installed in this
-  environment), extract positions/scales/rotations/opacities/colors,
+  environment), extract positions/scales/rotations/opacities/SH colors,
   and load training camera poses from `transforms.json` or COLMAP output.
+  `spherical_harmonics.py` and `visibility_attribution.py` are exactly the
+  two pieces that loader will need to populate `SplatScene.sh_coeffs` and
+  `observed_camera_idx` from a real checkpoint.
 - Everything currently operates on 3D world-space query points, not 2D
   image-plane pixels. Mapping world-space uncertainty to a specific
   camera's per-pixel image is a reprojection step that a live gsplat
   renderer's own projection/ray logic should provide directly — deferred
   rather than reimplemented here.
+- `visibility_attribution.py`'s occlusion test is a bearing-based soft
+  z-buffer, not what the actual training/rendering pipeline used to decide
+  which views constrained which splat. Good enough to unblock building the
+  rest of the pipeline; revisit if real-data results look sensitive to it.
 
 **Deliberately not attempted (documented decision, see module docstrings):**
 per-splat heterogeneous covariance as the BQ kernel bandwidth. Real splats
@@ -60,7 +97,7 @@ are carried as scene metadata for this reason, not consumed by the kernel.
 ## Running it now
 
 ```
-python -m pytest tests/test_gs_camera.py tests/test_gs_splat_scene.py tests/test_gs_pixel_uncertainty.py -v
+python -m pytest tests/test_gs_camera.py tests/test_gs_splat_scene.py tests/test_gs_pixel_uncertainty.py tests/test_gs_visibility_attribution.py tests/test_spherical_harmonics.py -v
 python gs_experiment/differentiation_experiment.py
 ```
 
@@ -90,7 +127,10 @@ rather than just used to confirm the code runs.
 
 1. `pip install -r requirements-gsplat.txt` (torch, gsplat, plyfile).
 2. Implement `load_from_gsplat_checkpoint` per its docstring, against an
-   actual trained scene and its `transforms.json`/COLMAP cameras.
+   actual trained scene and its `transforms.json`/COLMAP cameras — using
+   `spherical_harmonics.eval_sh` for color and
+   `visibility_attribution.attribute_observations` for `observed_camera_idx`,
+   both already built and tested against synthetic cases.
 3. Swap `make_mock_scene(...)` for `load_from_gsplat_checkpoint(...)` in
    `differentiation_experiment.py` — nothing else in the pipeline should
    need to change, since `SplatScene`/`splat_observations` are the

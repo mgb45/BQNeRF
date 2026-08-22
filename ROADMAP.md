@@ -304,7 +304,21 @@ Native Uncertainty preprint, already summarized above):
    the BQ kernel bandwidth (a real extension, but a second unvalidated
    change best kept separate from the GPU integration itself) and
    image-plane pixel reprojection (gsplat's own rasterizer should provide
-   this rather than it being reimplemented here).
+   this rather than it being reimplemented here). Two follow-up pieces of
+   the real-checkpoint-loading gap are now built and tested (still no
+   GPU/torch/gsplat needed): `spherical_harmonics.eval_sh`, matching the
+   standard 3DGS/gsplat SH color convention exactly (its normalization
+   constants checked against closed-form values, not just trusted as
+   literals) — replacing `splat_observations`'s flat, direction-independent
+   color with genuinely view-dependent color when a scene sets
+   `sh_coeffs`; and `visibility_attribution.py`, a frustum + soft-z-buffer
+   occlusion proxy for `observed_camera_idx` (real training pipelines don't
+   record which views actually constrained which splat), validated against
+   a synthetic occluder case. `splat_scene.make_occluder_scene` is the
+   integration test that both compose with the rest of the pipeline, not
+   just that each works alone: a wall of splats correctly occludes a
+   target cluster from front cameras while back cameras see it directly,
+   using real geometric attribution rather than an assignment rule.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

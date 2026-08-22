@@ -31,12 +31,14 @@ from typing import List, Optional
 import numpy as np
 
 from gs_experiment.camera import CameraPose, directions_from_positions_to_camera
+from gs_experiment.spherical_harmonics import eval_sh
+from gs_experiment.visibility_attribution import attribute_observations, invert_to_observed_camera_idx
 
 
 @dataclass
 class SplatScene:
     positions: np.ndarray  # (N, 3)
-    colors: np.ndarray  # (N,) scalar for now -- real gsplat is (N, 3) or spherical-harmonic coefficients
+    colors: np.ndarray  # (N,) scalar -- ignored if sh_coeffs is set (see splat_observations)
     opacities: np.ndarray  # (N,)
     scales: np.ndarray  # (N, 3) -- metadata only, see module docstring
     rotations: np.ndarray  # (N, 4) quaternions -- metadata only, see module docstring
@@ -50,6 +52,12 @@ class SplatScene:
     # camera, not distance-gated) since it isn't rendering anything for real.
     observed_camera_idx: List[np.ndarray]
     cameras: List[CameraPose]
+
+    # Optional: real spherical-harmonic color, (N, n_channels, n_coeffs).
+    # When set, splat_observations evaluates genuinely view-dependent color
+    # per observation instead of falling back to the flat `colors` field.
+    sh_coeffs: Optional[np.ndarray] = None
+    sh_degree: int = 0
 
 
 def make_mock_scene(
@@ -104,9 +112,15 @@ def make_mock_scene(
 def splat_observations(scene: SplatScene):
     """Expand a SplatScene into parallel (position, direction, value)
     arrays -- one row per (splat, observing-camera) pair -- the input
-    format bayesian_quadrature_directional expects. `value` here is just
-    each splat's color; a real pipeline would use each training view's
-    actual rendered contribution instead."""
+    format bayesian_quadrature_directional expects.
+
+    `value` is genuinely view-dependent (`eval_sh(scene.sh_coeffs[i],
+    direction, scene.sh_degree)`) when `scene.sh_coeffs` is set; otherwise
+    it falls back to the flat `scene.colors[i]` for every observation of a
+    splat, same as before SH support existed. The flat-color path is a
+    known simplification (the same value regardless of viewing direction),
+    kept only for scenes that don't set sh_coeffs.
+    """
     positions, directions, values = [], [], []
     for i, cam_idx in enumerate(scene.observed_camera_idx):
         for c in cam_idx:
@@ -114,8 +128,78 @@ def splat_observations(scene: SplatScene):
             direction = directions_from_positions_to_camera(scene.positions[i : i + 1], camera)[0]
             positions.append(scene.positions[i])
             directions.append(direction)
-            values.append(scene.colors[i])
+            if scene.sh_coeffs is not None:
+                color = eval_sh(scene.sh_coeffs[i], direction, scene.sh_degree)
+                values.append(float(np.mean(color)))  # collapse channels to one scalar, matching the flat-color path
+            else:
+                values.append(scene.colors[i])
     return np.array(positions), np.array(directions), np.array(values)
+
+
+def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_target_splats: int = 40, n_cameras_per_side: int = 6):
+    """A more realistic scene than make_mock_scene's zone-based fiat
+    assignment: a "wall" of splats at x=wall_x, a cluster of "target"
+    splats behind it, front cameras (which the wall should occlude the
+    targets from) and back cameras (which should see the targets directly,
+    nothing in the way). observed_camera_idx comes from real frustum +
+    occlusion attribution (visibility_attribution.py), not an assignment
+    rule -- this is the integration test that SH color and real visibility
+    attribution actually compose with the rest of the pipeline, not just
+    that each works in isolation.
+    """
+    from gs_experiment.camera import CameraPose
+    from gs_experiment.spherical_harmonics import random_sh_coeffs
+
+    wall_x = 3.0
+    wall_y = rng.uniform(-2.0, 2.0, n_wall_splats)
+    wall_z = rng.uniform(-2.0, 2.0, n_wall_splats)
+    wall_positions = np.stack([np.full(n_wall_splats, wall_x), wall_y, wall_z], axis=1)
+
+    target_x = rng.uniform(wall_x + 1.0, wall_x + 2.5, n_target_splats)
+    target_y = rng.uniform(-1.0, 1.0, n_target_splats)
+    target_z = rng.uniform(-1.0, 1.0, n_target_splats)
+    target_positions = np.stack([target_x, target_y, target_z], axis=1)
+
+    positions = np.concatenate([wall_positions, target_positions], axis=0)
+    n_splats = positions.shape[0]
+
+    front_cameras = [
+        CameraPose(center=np.array([-5.0, y, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+        for y in np.linspace(-1.5, 1.5, n_cameras_per_side)
+    ]
+    back_cameras = [
+        CameraPose(center=np.array([wall_x + 6.0, y, 0.0]), forward=np.array([-1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+        for y in np.linspace(-1.5, 1.5, n_cameras_per_side)
+    ]
+    all_cameras = front_cameras + back_cameras
+
+    per_camera = attribute_observations(positions, all_cameras, fov_deg=70.0, angular_tol=0.08, depth_margin=0.05)
+    observed_camera_idx = invert_to_observed_camera_idx(per_camera, n_splats)
+
+    sh_coeffs = random_sh_coeffs(rng, n_splats, degree=2)
+    colors = sh_coeffs[:, :, 0].mean(axis=1)  # unused fallback value, sh_coeffs takes priority
+
+    opacities = rng.uniform(0.5, 1.0, n_splats)
+    scales = rng.uniform(0.02, 0.08, size=(n_splats, 3))
+    rotations = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n_splats, 1))
+
+    scene = SplatScene(
+        positions=positions,
+        colors=colors,
+        opacities=opacities,
+        scales=scales,
+        rotations=rotations,
+        observed_camera_idx=observed_camera_idx,
+        cameras=all_cameras,
+        sh_coeffs=sh_coeffs,
+        sh_degree=2,
+    )
+    return scene, dict(
+        wall_x=wall_x,
+        n_wall_splats=n_wall_splats,
+        front_camera_idx=np.arange(len(front_cameras)),
+        back_camera_idx=np.arange(len(front_cameras), len(all_cameras)),
+    )
 
 
 def load_from_gsplat_checkpoint(path: str) -> SplatScene:
