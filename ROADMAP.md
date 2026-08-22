@@ -265,10 +265,60 @@ Native Uncertainty preprint, already summarized above):
    ~2,400-3,000s single-threaded per-800x800-image estimate down to
    ~140-420s, still CPU-only, up to a million synthetic splats. See
    `bq_splat/results/FINDINGS.md` §8; this substantially updates the
-   engineering-risk assessment in the plan below.
+   engineering-risk assessment in the plan below. Fifth follow-up, prompted
+   by a design question about SLAM deployment (splats accumulating over
+   time -- does this give both quadrature *and* visibility/epistemic
+   uncertainty?): on its own, no -- a position-only kernel can't tell "seen
+   from every angle" apart from "seen once, obliquely." `DirectionalKernel`
+   (a von Mises-Fisher kernel on viewing direction) extends the same
+   `ProductKernel` structure to fix this: position stays integrated as
+   before, direction is evaluated pointwise at a query direction (a
+   rendered pixel looks in one direction, it doesn't integrate over a
+   range), via `bayesian_quadrature_directional`. A controlled toy
+   experiment (`validate_directional_combined.py`) with spatial density
+   held exactly equal between two zones (by construction, not luck -- see
+   `bq_splat/results/FINDINGS.md` §9 for a real confound this caught and
+   fixed) shows position-only variance reports no difference between a
+   widely-observed and a narrow-cone-observed zone (0.97x) while
+   position+direction variance correctly reports 2.46x higher variance in
+   the narrow-cone zone. Toy-scale evidence the unification is
+   mathematically real, not yet evidence it's a better or cheaper way to
+   get visibility uncertainty than a dedicated field (GAVIS-style) at GS
+   scale -- that comparison hasn't been attempted.
 2. The differentiation experiment — the real go/no-go gate, now to be run
    on an actual GS scene rather than a 1D or 2D toy signal. This is the
-   first milestone that needs a GPU (gsplat rasterization).
+   first milestone that needs a GPU (gsplat rasterization). **Scaffolding
+   in progress** on branch `claude/gs-experiment-scaffold`: a new
+   `gs_experiment/` package wires `bq_splat`'s validated kernels/quadrature
+   (including the directional extension) to real 3D splat/camera data
+   structures, reuses the KD-tree + vv-caching optimizations from
+   `benchmark_local_bq_scaling.py` via a `LocalUncertaintyEngine`, and runs
+   end-to-end on a mock scene now (`gs_experiment/differentiation_experiment.py`)
+   with no GPU/torch/gsplat dependency. `bq_splat.quadrature` gained an
+   optional `precomputed_vv`/`precomputed_pos_vv` parameter to make that
+   caching a first-class, reusable library feature. Real checkpoint loading
+   (`gs_experiment/splat_scene.load_from_gsplat_checkpoint`) is a documented
+   stub pending GPU access and a trained scene; see `gs_experiment/README.md`
+   for exactly what's real, what's mocked, and what to do once both are
+   available. Deliberately deferred: per-splat heterogeneous covariance as
+   the BQ kernel bandwidth (a real extension, but a second unvalidated
+   change best kept separate from the GPU integration itself) and
+   image-plane pixel reprojection (gsplat's own rasterizer should provide
+   this rather than it being reimplemented here). Two follow-up pieces of
+   the real-checkpoint-loading gap are now built and tested (still no
+   GPU/torch/gsplat needed): `spherical_harmonics.eval_sh`, matching the
+   standard 3DGS/gsplat SH color convention exactly (its normalization
+   constants checked against closed-form values, not just trusted as
+   literals) — replacing `splat_observations`'s flat, direction-independent
+   color with genuinely view-dependent color when a scene sets
+   `sh_coeffs`; and `visibility_attribution.py`, a frustum + soft-z-buffer
+   occlusion proxy for `observed_camera_idx` (real training pipelines don't
+   record which views actually constrained which splat), validated against
+   a synthetic occluder case. `splat_scene.make_occluder_scene` is the
+   integration test that both compose with the rest of the pipeline, not
+   just that each works alone: a wall of splats correctly occludes a
+   target cluster from front cameras while back cameras see it directly,
+   using real geometric attribution rather than an assignment rule.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

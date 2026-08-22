@@ -1,0 +1,11 @@
+# Needed only for gs_experiment.splat_scene.load_from_gsplat_checkpoint and
+# actually rendering/training real Gaussian Splatting scenes -- not
+# installed in this environment (no GPU). Everything else in gs_experiment/
+# and bq_splat/ runs on requirements.txt alone.
+#
+# torch: CPU-only wheels install fine without a GPU, but gsplat's
+# rasterizer needs CUDA to be useful -- there is no point installing torch
+# here without also being able to compile/run gsplat's CUDA kernels.
+torch
+gsplat
+plyfile
