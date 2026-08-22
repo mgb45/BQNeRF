@@ -25,18 +25,27 @@ before touching gsplat. No torch/gsplat dependency — pure numpy/scipy.
   hardcoded bandwidth `models/nerf.py` and the rest of this package default
   to. No torch/autodiff — a log-spaced grid search plus a bounded 1D
   refinement, same as classic GP-library hyperparameter fitting.
+- `toy_scene_2d.py` / `ProductKernel` (in `kernels.py`) / `bayesian_quadrature_nd`
+  (in `quadrature.py`) — the 2D, image-plane generalization: splat centers
+  scattered over a patch rather than along a ray's depth axis, which is the
+  geometry a real GS scene actually has. `ProductKernel` builds a D-D kernel
+  as a product of 1D kernels per axis — exact for RBF, so `v`/`vv` reduce to
+  products of the already-tested 1D formulas with no new integration code.
 
 ## Running it
 
 ```
-python -m pytest tests/ -v                          # 14 correctness/sanity tests
-python scripts/validate_milestone1.py                # the milestone-1 experiment
-python scripts/validate_trainable_kernel.py           # fixed vs. fitted bandwidth
+python -m pytest tests/ -v                          # 20 correctness/sanity tests
+python scripts/validate_milestone1.py                # the milestone-1 experiment (1D)
+python scripts/validate_trainable_kernel.py           # fixed vs. fitted bandwidth (1D)
+python scripts/validate_2d_gap_experiment.py          # the 2D image-plane bridge experiment
 ```
 
 `validate_milestone1.py` prints an accuracy/calibration summary and writes
 two plots to `bq_splat/results/`. `validate_trainable_kernel.py` prints a
-comparison table of fixed-bandwidth BQ, fitted-bandwidth BQ, and Riemann sum.
+comparison table of fixed-bandwidth BQ, fitted-bandwidth BQ, and Riemann
+sum. `validate_2d_gap_experiment.py` writes a heatmap comparing the true 2D
+signal/splat placement against local BQ variance.
 
 ## Findings so far
 
@@ -58,3 +67,9 @@ the gsplat port: irregular (as opposed to evenly stratified) node placement
 can push the Gram matrix condition number past 1e18 with a naive fixed
 jitter; a jitter relative to the kernel's own scale fixes it and materially
 changes downstream numbers (see FINDINGS.md).
+
+Separately, the differentiation effect survives moving from a 1D ray-depth
+domain to a 2D image-plane domain with scattered splat-center placement —
+the geometry a real GS scene actually has — with a 4.85x inside/outside
+variance ratio and the same "peaks near the coverage boundary" shape found
+in 1D (see FINDINGS.md §6 and `results/gap_experiment_2d.png`).

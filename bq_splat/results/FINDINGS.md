@@ -145,6 +145,51 @@ quality. That's standard practice for this kind of hyperparameter fitting,
 but worth keeping in mind before treating "fitted Matern beats Riemann" as
 a claim about generalization rather than about in-sample fit quality.
 
+## 6. 2D bridge experiment: does the effect survive moving to an image-plane domain?
+
+Sections 1-5 all work in 1D: nodes along a ray's depth axis, treated as
+point evaluations of a signal to be integrated over depth. Real GS splats
+don't work that way -- they're scattered over the 2D image plane with
+anisotropic footprints, and a pixel's color comes from depth-sorted alpha
+blending over whichever splats' footprints overlap it, not a 1D ray
+integral. Before spending any GPU time on a real GS scene (ROADMAP.md
+milestone 2), it's worth checking the central claim survives that change of
+domain.
+
+`bq_splat/kernels.py` adds `ProductKernel`: a D-dimensional kernel built as
+the product of D 1D kernels, one per axis. For RBF this is *exact* -- an
+isotropic Gaussian factorizes exactly into per-axis 1D Gaussians because
+squared Euclidean distance is a sum over axes -- so this required no new
+integration code or numerical risk; `v`/`vv` over an axis-aligned box just
+become products of the already-tested 1D `v`/`vv` calls.
+`bq_splat/quadrature.py` adds `bayesian_quadrature_nd` generalizing the
+posterior mean/variance computation to this setting (kept as a separate
+function from the tested 1D `bayesian_quadrature` to avoid any regression
+risk to already-passing tests). `bq_splat/toy_scene_2d.py` mirrors
+`toy_scene.py`: a mixture of 2D Gaussian bumps as the true signal, and a
+deliberate circular sparse-coverage gap in splat-center placement.
+
+`scripts/validate_2d_gap_experiment.py` reruns the gap experiment over a
+10x10 image-plane domain with 250 scattered splat centers and a circular
+gap of thinned coverage containing real signal structure:
+
+- Mean local BQ variance **inside** the gap: 2.096
+- Mean local BQ variance **outside** the gap: 0.432
+- Ratio: **4.85x**
+
+See `gap_experiment_2d.png`. The effect survives the move to 2D, and the
+same qualitative shape from the 1D experiment (FINDINGS.md §3) shows up
+again: the variance hotspot concentrates near the gap's *coverage boundary*
+rather than filling the circle uniformly, not exactly centered on the
+brightest visible bump inside it. That's consistent with the mechanism
+being "sparse coverage relative to nearby real structure," which is exactly
+what a real GS densification/NBV signal would need to be sensitive to. This
+doesn't replace the real GS-based differentiation experiment ROADMAP.md
+calls for -- it's still an analytic mixture-of-Gaussians signal and
+isotropic splat placement, not actual learned splat covariances or camera
+geometry -- but it's meaningfully closer, needed no GPU, and the effect
+held up rather than disappearing when the domain got harder.
+
 ## Bottom line for the go/no-go gate
 
 Milestone 1 (derivation + small-scale validation) is a qualified pass:
@@ -158,9 +203,11 @@ mismatch, and fitting the bandwidth per scene closes most of it, with fitted
 Matern beating Riemann at n=20 and n=40. That both strengthens the accuracy
 story (it's not a dead end, it's an unfitted hyperparameter) and reinforces
 why the paper's real claim should be about calibrated uncertainty and the
-differentiation experiment rather than accuracy alone. Proceeding to
-ROADMAP.md's milestone 2 (the real, GS-based differentiation experiment) is
-reasonable; if bandwidth fitting carries into that setting (fitting per-ray
-or per-pixel, jointly with or alongside splat optimization), it should use
-the same marginal-likelihood approach validated here rather than a
-hardcoded value.
+differentiation experiment rather than accuracy alone. §6 further shows the
+differentiation effect survives moving from a 1D ray-depth domain to a 2D
+image-plane domain with GS-realistic scattered node placement, which is the
+more relevant geometry for milestone 2. Proceeding to ROADMAP.md's milestone
+2 (the real, GS-based differentiation experiment) is reasonable; if
+bandwidth fitting carries into that setting (fitting per-ray or per-pixel,
+jointly with or alongside splat optimization), it should use the same
+marginal-likelihood approach validated here rather than a hardcoded value.

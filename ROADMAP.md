@@ -221,9 +221,21 @@ Native Uncertainty preprint, already summarized above):
    `bq_splat/results/FINDINGS.md` §5. Any bandwidth used once this moves
    into the gsplat-integrated code should be fit the same way (or made a
    literal torch.nn.Parameter optimized jointly with the rest of the
-   pipeline), not hardcoded.
+   pipeline), not hardcoded. Second follow-up (all still CPU-only, ahead of
+   any GPU work): `toy_scene_2d.py` + `ProductKernel` +
+   `bayesian_quadrature_nd` generalize the whole toy setup from a 1D
+   ray-depth domain to a 2D image-plane domain with scattered splat-center
+   placement -- the geometry a real GS scene actually has, unlike a 1D ray
+   integral. The differentiation effect survives the move (4.85x
+   inside/outside variance ratio, same "peaks near the coverage boundary"
+   shape as the 1D case) -- see `bq_splat/results/FINDINGS.md` §6 and
+   `gap_experiment_2d.png`. This still isn't the real GS-based experiment
+   below (analytic mixture-of-Gaussians signal, isotropic placement, no
+   learned covariances or camera geometry), but de-risks it further before
+   any GPU time is spent.
 2. The differentiation experiment — the real go/no-go gate, now to be run
-   on an actual GS scene rather than a 1D toy signal.
+   on an actual GS scene rather than a 1D or 2D toy signal. This is the
+   first milestone that needs a GPU (gsplat rasterization).
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,
