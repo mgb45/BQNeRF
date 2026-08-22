@@ -34,16 +34,26 @@ before touching gsplat. No torch/gsplat dependency — pure numpy/scipy.
   `fit_kernel_param_pooled` (in `hyperparams.py`) fits one shared bandwidth
   across many datasets, for testing whether a single fitted bandwidth
   generalizes across scenes instead of needing to be refit per instance.
+- `DirectionalKernel` (in `kernels.py`) / `bayesian_quadrature_directional`
+  / `directional_posterior_variance` (in `quadrature.py`) — a von
+  Mises-Fisher kernel on viewing direction, combined multiplicatively with
+  a position kernel (position integrated as usual, direction evaluated
+  pointwise at a query direction, since a rendered pixel looks in one
+  direction, it doesn't integrate over a range of them). Lets the same BQ
+  formalism catch "seen from a narrow cone of angles" epistemic
+  uncertainty, not just spatial under-sampling — see FINDINGS.md §9.
 
 ## Running it
 
 ```
-python -m pytest tests/ -v                                  # 21 correctness/sanity tests
+python -m pytest tests/ -v                                  # 27 correctness/sanity tests
 python scripts/validate_milestone1.py                        # the milestone-1 experiment (1D)
 python scripts/validate_trainable_kernel.py                   # fixed vs. fitted bandwidth (1D)
 python scripts/validate_trainable_kernel_heldout.py            # is the fitted bandwidth held-out-valid?
 python scripts/validate_2d_gap_experiment.py                  # the 2D image-plane bridge experiment
 python scripts/benchmark_local_bq_scaling.py                  # GS-scale computational feasibility
+python scripts/validate_directional_isolation.py              # directional kernel, isolated
+python scripts/validate_directional_combined.py                # position+direction vs. position-only
 ```
 
 `validate_milestone1.py` prints an accuracy/calibration summary and writes
@@ -53,6 +63,9 @@ fixed/fitted/held-out-fitted BQ vs. Riemann sum. `validate_2d_gap_experiment.py`
 writes a heatmap comparing the true 2D signal/splat placement against local
 BQ variance. `benchmark_local_bq_scaling.py` prints neighbor-lookup and
 local-solve timing at up to 10^6 synthetic splats, with no plot output.
+`validate_directional_isolation.py` and `validate_directional_combined.py`
+write plots showing directional-coverage effects on posterior variance,
+alone and combined with the spatial signal.
 
 ## Findings so far
 
@@ -95,3 +108,18 @@ position-independent for a fixed-size window under a stationary kernel.
 That plus a KD-tree for neighbor lookup takes a naive ~2,400-3,000s
 single-threaded per-800x800-image estimate down to ~140-420s, on CPU, with
 up to a million synthetic splats — before any GPU code is written.
+
+A follow-up question (§9): does any of this give you visibility/epistemic
+uncertainty too, as splats accumulate in a SLAM setting, or only quadrature
+uncertainty? On its own, only the latter — a position-only kernel can't
+tell "seen from every angle" apart from "seen once, obliquely." Extending
+`ProductKernel`'s multiplicative structure with a directional (von
+Mises-Fisher) factor fixes that with the same closed-form machinery: a
+controlled toy experiment holding spatial density *exactly* equal between
+two zones (by construction — an earlier attempt relying on independently-
+random equal-count placement wasn't actually matched, a real confound worth
+having caught) shows position-only variance correctly reports no
+difference (0.97x) while position+direction variance correctly reports
+2.46x higher variance in the zone observed from a narrow cone. Toy-scale
+evidence the unification is mathematically real, not a demonstration it's
+better or cheaper than a dedicated visibility field at GS scale.

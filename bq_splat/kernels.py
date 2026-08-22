@@ -116,6 +116,46 @@ class ProductKernel:
         return val
 
 
+class DirectionalKernel:
+    """Von Mises-Fisher-style kernel on directions (unit vectors on
+    S^(d-1)): k(w, w') = exp(kappa * (w . w' - 1)).
+
+    Positive-definite for kappa >= 0: w.w' is itself a (linear, hence PD)
+    kernel, exp() of a PD kernel scaled by a positive constant is PD (each
+    term of its power series is a nonnegative combination of PD kernels, by
+    the Schur product theorem), and this is that PD kernel times the
+    positive constant exp(-kappa). `kappa` plays the role RBF's 1/sigma^2
+    plays for spatial separation, but for angular separation: large kappa
+    means only very similar directions are considered correlated (a highly
+    view-dependent/specular surface needs many close viewing angles to be
+    well-constrained); small kappa means most directions are considered
+    similar (near-Lambertian, one observation generalizes across angles).
+
+    Self-similarity k(w, w) = exp(kappa * (1 - 1)) = 1 always — this is
+    what makes the mixed integrate-position/evaluate-direction Bayesian
+    quadrature in bayesian_quadrature_directional work out cleanly (see
+    that function's docstring): the *prior* variance term doesn't depend on
+    which direction is queried, only the *posterior reduction* does, via
+    the k(w_i, w_query) terms in the mean-embedding-like vector.
+
+    Unlike Kernel (RBFKernel, MaternKernel), this has no v/vv — it's never
+    integrated over, only evaluated pointwise at a query direction, since a
+    rendered image evaluates one specific outgoing direction per pixel, not
+    an integral over a range of directions.
+    """
+
+    name = "vonmises"
+
+    def __init__(self, kappa: float):
+        self.kappa = float(kappa)
+
+    def k(self, w, w_prime):
+        w = np.atleast_2d(np.asarray(w, dtype=float))
+        w_prime = np.atleast_2d(np.asarray(w_prime, dtype=float))
+        dot = w @ w_prime.T
+        return np.exp(self.kappa * (dot - 1.0))
+
+
 class MaternKernel(Kernel):
     """Matern-3/2 kernel: k(r) = (1 + sqrt(3)|r|/rho) exp(-sqrt(3)|r|/rho).
 

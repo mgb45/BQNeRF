@@ -265,7 +265,26 @@ Native Uncertainty preprint, already summarized above):
    ~2,400-3,000s single-threaded per-800x800-image estimate down to
    ~140-420s, still CPU-only, up to a million synthetic splats. See
    `bq_splat/results/FINDINGS.md` §8; this substantially updates the
-   engineering-risk assessment in the plan below.
+   engineering-risk assessment in the plan below. Fifth follow-up, prompted
+   by a design question about SLAM deployment (splats accumulating over
+   time -- does this give both quadrature *and* visibility/epistemic
+   uncertainty?): on its own, no -- a position-only kernel can't tell "seen
+   from every angle" apart from "seen once, obliquely." `DirectionalKernel`
+   (a von Mises-Fisher kernel on viewing direction) extends the same
+   `ProductKernel` structure to fix this: position stays integrated as
+   before, direction is evaluated pointwise at a query direction (a
+   rendered pixel looks in one direction, it doesn't integrate over a
+   range), via `bayesian_quadrature_directional`. A controlled toy
+   experiment (`validate_directional_combined.py`) with spatial density
+   held exactly equal between two zones (by construction, not luck -- see
+   `bq_splat/results/FINDINGS.md` §9 for a real confound this caught and
+   fixed) shows position-only variance reports no difference between a
+   widely-observed and a narrow-cone-observed zone (0.97x) while
+   position+direction variance correctly reports 2.46x higher variance in
+   the narrow-cone zone. Toy-scale evidence the unification is
+   mathematically real, not yet evidence it's a better or cheaper way to
+   get visibility uncertainty than a dedicated field (GAVIS-style) at GS
+   scale -- that comparison hasn't been attempted.
 2. The differentiation experiment — the real go/no-go gate, now to be run
    on an actual GS scene rather than a 1D or 2D toy signal. This is the
    first milestone that needs a GPU (gsplat rasterization).

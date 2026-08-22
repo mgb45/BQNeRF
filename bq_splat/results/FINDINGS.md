@@ -324,6 +324,91 @@ minutes per image on CPU alone -- a very different, much less risky
 starting point for the real experiment than ROADMAP.md's original framing
 assumed.
 
+## 9. Directional kernel: does the same BQ formalism catch visibility uncertainty too?
+
+Prompted by a design conversation about SLAM: as splats accumulate over
+time, does this project's BQ machinery give you *both* quadrature
+uncertainty and the kind of view-direction epistemic uncertainty methods
+like GAVIS target? The honest answer worked out in that conversation: not
+automatically. A splat existing near a query point reads as "well covered"
+to a position-only kernel regardless of whether it was seen from one
+grazing angle or from all around -- there's no notion of viewing direction
+in `bayesian_quadrature_nd` at all. But the same kernel-product structure
+`ProductKernel` already uses generalizes to fix this, rather than needing a
+second, separate mechanism.
+
+**Construction.** `DirectionalKernel` (`kernels.py`) is a von Mises-Fisher
+kernel on unit direction vectors: `k(w, w') = exp(kappa * (w.w' - 1))`,
+positive-definite for kappa >= 0 (w.w' is itself PD; exp of a
+positive-scaled PD kernel is PD by the Schur product theorem), with
+self-similarity `k(w,w) = 1` always. `bayesian_quadrature_directional`
+(`quadrature.py`) combines it with a position kernel multiplicatively --
+but *not* symmetrically with position: a rendered pixel integrates over a
+spatial footprint but evaluates one specific outgoing direction, it doesn't
+integrate over a range of directions. So position is integrated as before
+(`v_pos`, `vv_pos`, unchanged) while direction is evaluated pointwise at
+the query direction (`k(w_i, w_query)`), giving:
+
+```
+K_ij = k_pos(x_i, x_j) * k_dir(w_i, w_j)
+v_i  = v_pos(x_i, bounds) * k_dir(w_i, w_query)
+vv   = vv_pos(bounds)                            (k_dir(w_query, w_query) == 1)
+```
+
+This is a known pattern in Bayesian quadrature (some dimensions integrated
+out, one held at a query point), not an ad hoc mixing. A clean correctness
+check confirms it: with `kappa=0`, `k_dir` is identically 1 for every pair
+regardless of the actual directions, so the whole computation must collapse
+EXACTLY onto `bayesian_quadrature_nd`'s answer -- verified to `1e-10` for
+random (nonsense) directions in `tests/test_directional.py`, not just
+approximately close.
+
+**Isolation experiment** (`validate_directional_isolation.py`, single fixed
+spatial location, no position kernel involved at all): a synthetic
+view-dependent signal observed from either a wide spread of angles or a
+narrow ±0.35 rad cone. Posterior variance at the observed directions is
+~0 in both cases; at the direction directly opposite the observations, wide
+coverage gives 0.22 (still finite -- 12 random points over the full circle
+leave some gaps by chance) while narrow coverage gives exactly 1.0, the
+full prior variance -- a **28,715x** ratio vs. wide coverage's 1,452x. See
+`directional_isolation.png`.
+
+**Combined experiment** (`validate_directional_combined.py`) is the one
+that actually answers the SLAM question: two zones with *spatial* splat
+density held exactly equal by construction (both zones get the identical
+set of relative offsets from their own center, translated -- not just an
+equal count, since two independently-random equal-count placements turned
+out to still differ in how clumped vs. spread the points were, a real
+confound caught and fixed during this work, not a hypothetical one), one
+zone's splats each seen from a wide spread of directions, the other's each
+seen from a narrow cone, querying from a direction outside that cone:
+
+- Position-only BQ variance (`bayesian_quadrature_nd`, blind to direction):
+  wide zone 1.890, narrow zone 1.831 -- **ratio 0.97x, i.e. no difference**,
+  exactly as expected since spatial density is provably matched.
+- Position+direction BQ variance (`bayesian_quadrature_directional`): wide
+  zone 2.983, narrow zone 7.325 -- **ratio 2.46x**, purely from the
+  directional-coverage difference.
+
+See `directional_combined.png`: panel (a) shows both zones as similarly
+dark; panel (b) shows the narrow-cone zone lit up while the wide-angle zone
+stays dark. This is a direct demonstration that a position-only signal
+(everything built through section 8) genuinely cannot see this failure
+mode, and a directional extension of the *same* kernel-product formalism
+does -- not a different mechanism bolted on, the same one extended.
+
+**What this doesn't yet do.** This is still a toy validation: single
+synthetic view-dependent signal, hand-picked kappa, no real per-splat
+multi-view observation data, and no attempt yet to fit kappa the way
+sections 5/7 fit spatial bandwidths (a natural next step -- kappa fit
+per-region would double as a learned specularity estimate, since a
+view-dependent/specular surface needs a short angular correlation length
+to be well-constrained while a diffuse one doesn't). It also doesn't
+replace a real visibility field like GAVIS's -- it's evidence the same
+closed-form BQ machinery *can* represent this failure mode mathematically,
+which is a different and smaller claim than "this is a better or cheaper
+way to compute it at GS scale," which hasn't been tested.
+
 ## Bottom line for the go/no-go gate
 
 Milestone 1 (derivation + small-scale validation) is a qualified pass:
@@ -363,9 +448,31 @@ naive ~2,400-3,000s single-threaded per-image estimate down to ~140-420s
 with no approximation and no GPU involved. This meaningfully de-risks
 milestone 2's engineering scope before any of it is built.
 
+§9 answers a question that came up while thinking through deployment in a
+SLAM context, where splats accumulate incrementally: does this machinery
+give you visibility/epistemic uncertainty too, or only quadrature
+uncertainty? On its own, only quadrature uncertainty -- a position-only
+kernel can't distinguish a splat seen from every angle from one seen once,
+obliquely. But extending the same `ProductKernel` structure with a
+directional (von Mises-Fisher) factor, integrated over position as before
+but evaluated pointwise at a query viewing direction, lets the identical
+closed-form BQ machinery catch that failure mode too: a controlled toy
+experiment with spatial density held *exactly* equal between two zones
+(by construction, not by luck -- an earlier version of this check relied on
+independently-random equal-count placement and it wasn't actually matched,
+a real confound worth having caught) shows position-only variance
+correctly reports no difference (0.97x) while position+direction variance
+correctly reports 2.46x higher variance in the zone observed from a narrow
+cone. This doesn't replace a real visibility field, and doesn't yet fit
+`kappa` the way spatial bandwidths get fit in §5/§7, but it's evidence the
+unification is mathematically real, not just a nice story.
+
 Proceeding to ROADMAP.md's milestone 2 (the real, GS-based differentiation
-experiment) is reasonable, now on a firmer footing on both the statistical
-side (§7) and the computational side (§8) than when this section was first
-written. If bandwidth fitting carries into that setting, use the
-pooled/global marginal-likelihood approach from §7 rather than per-pixel
-fitting or a hardcoded value -- both simpler and, per §7, no worse.
+experiment) is reasonable, now on a firmer footing on the statistical side
+(§7), the computational side (§8), and -- more speculatively, since §9 is
+toy-scale and single-signal, not yet combined with the spatial toy work --
+the scope of what one formalism might eventually cover, than when this
+section was first written. If bandwidth fitting carries into that setting,
+use the pooled/global marginal-likelihood approach from §7 rather than
+per-pixel fitting or a hardcoded value -- both simpler and, per §7, no
+worse.

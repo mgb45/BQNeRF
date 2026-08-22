@@ -19,13 +19,108 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bq_splat.kernels import Kernel, ProductKernel
+from bq_splat.kernels import DirectionalKernel, Kernel, ProductKernel
 
 
 @dataclass
 class BQResult:
     mean: float
     variance: float
+
+
+def bayesian_quadrature_directional(
+    positions,
+    directions,
+    values,
+    pos_kernel,
+    dir_kernel: DirectionalKernel,
+    pos_bounds,
+    query_direction,
+    rel_jitter: float = 1e-4,
+) -> BQResult:
+    """BQ over a joint (position, direction) domain, where position is
+    integrated over (as in bayesian_quadrature_nd -- a genuine quadrature
+    integral, e.g. a pixel footprint) but direction is evaluated at one
+    query direction, not integrated -- a rendered pixel looks in one
+    specific outgoing direction, it doesn't average over a range of them.
+    See DirectionalKernel's docstring for why this asymmetry is the correct
+    generalization, not an approximation of a "properly" symmetric one.
+
+    `positions`/`directions`/`values` are parallel arrays: `values[i]` is an
+    observation at `positions[i]` from `directions[i]` (e.g. one training
+    view's contribution to one splat). `pos_kernel` must use the
+    ProductKernel-style interface -- `v(x, bounds)`/`vv(bounds)` with
+    `bounds` a list of (a, b) pairs, even in 1D (wrap a plain Kernel like
+    `ProductKernel([RBFKernel(sigma)])`) -- rather than plain Kernel's
+    `v(x, a, b)`/`vv(a, b)`, so callers don't need to special-case
+    dimensionality. `dir_kernel` is a DirectionalKernel (no v/vv, evaluated
+    pointwise).
+
+    K_ij = pos_kernel.k(x_i, x_j) * dir_kernel.k(w_i, w_j)
+    v_i   = pos_kernel.v(x_i, pos_bounds) * dir_kernel.k(w_i, w_query)
+    vv    = pos_kernel.vv(pos_bounds) * dir_kernel.k(w_query, w_query)
+          = pos_kernel.vv(pos_bounds)               (self-similarity is 1)
+    """
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim == 1:
+        positions = positions.reshape(-1, 1)
+    directions = np.asarray(directions, dtype=float)
+    values = np.asarray(values, dtype=float).reshape(-1)
+    n = positions.shape[0]
+
+    vv = float(pos_kernel.vv(pos_bounds))  # dir_kernel.k(q, q) == 1, omitted
+    if n == 0:
+        return BQResult(mean=0.0, variance=vv)
+
+    kxx = pos_kernel.k(positions, positions) * dir_kernel.k(directions, directions)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + jitter * np.eye(n)
+
+    v_pos = np.asarray(pos_kernel.v(positions, pos_bounds)).reshape(-1)
+    v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
+    v = v_pos * v_dir
+
+    solved = np.linalg.solve(kxx, values)
+    mean = float(v @ solved)
+
+    solved_v = np.linalg.solve(kxx, v)
+    variance = float(vv - v @ solved_v)
+
+    return BQResult(mean=mean, variance=max(variance, 0.0))
+
+
+def directional_posterior_variance(
+    directions, values, dir_kernel: DirectionalKernel, query_direction, rel_jitter: float = 1e-4
+) -> BQResult:
+    """Pure-directional special case of bayesian_quadrature_directional,
+    for a single fixed spatial location (position integration dropped
+    entirely rather than degenerated into it) -- standard GP regression
+    posterior mean/variance at one query direction, given observations from
+    other directions. Used to validate DirectionalKernel's behavior in
+    isolation, without conflating it with the position-integration
+    machinery bayesian_quadrature_directional also does.
+    """
+    directions = np.asarray(directions, dtype=float)
+    values = np.asarray(values, dtype=float).reshape(-1)
+    n = directions.shape[0]
+
+    prior_variance = 1.0  # dir_kernel.k(q, q) == 1 always
+    if n == 0:
+        return BQResult(mean=0.0, variance=prior_variance)
+
+    kxx = dir_kernel.k(directions, directions)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + jitter * np.eye(n)
+
+    k_query = dir_kernel.k(directions, query_direction).reshape(-1)
+
+    solved = np.linalg.solve(kxx, values)
+    mean = float(k_query @ solved)
+
+    solved_k = np.linalg.solve(kxx, k_query)
+    variance = float(prior_variance - k_query @ solved_k)
+
+    return BQResult(mean=mean, variance=max(variance, 0.0))
 
 
 def bayesian_quadrature_nd(nodes, values, kernel: ProductKernel, bounds, rel_jitter: float = 1e-4) -> BQResult:
