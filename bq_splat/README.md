@@ -31,21 +31,28 @@ before touching gsplat. No torch/gsplat dependency — pure numpy/scipy.
   geometry a real GS scene actually has. `ProductKernel` builds a D-D kernel
   as a product of 1D kernels per axis — exact for RBF, so `v`/`vv` reduce to
   products of the already-tested 1D formulas with no new integration code.
+  `fit_kernel_param_pooled` (in `hyperparams.py`) fits one shared bandwidth
+  across many datasets, for testing whether a single fitted bandwidth
+  generalizes across scenes instead of needing to be refit per instance.
 
 ## Running it
 
 ```
-python -m pytest tests/ -v                          # 20 correctness/sanity tests
-python scripts/validate_milestone1.py                # the milestone-1 experiment (1D)
-python scripts/validate_trainable_kernel.py           # fixed vs. fitted bandwidth (1D)
-python scripts/validate_2d_gap_experiment.py          # the 2D image-plane bridge experiment
+python -m pytest tests/ -v                                  # 21 correctness/sanity tests
+python scripts/validate_milestone1.py                        # the milestone-1 experiment (1D)
+python scripts/validate_trainable_kernel.py                   # fixed vs. fitted bandwidth (1D)
+python scripts/validate_trainable_kernel_heldout.py            # is the fitted bandwidth held-out-valid?
+python scripts/validate_2d_gap_experiment.py                  # the 2D image-plane bridge experiment
+python scripts/benchmark_local_bq_scaling.py                  # GS-scale computational feasibility
 ```
 
 `validate_milestone1.py` prints an accuracy/calibration summary and writes
-two plots to `bq_splat/results/`. `validate_trainable_kernel.py` prints a
-comparison table of fixed-bandwidth BQ, fitted-bandwidth BQ, and Riemann
-sum. `validate_2d_gap_experiment.py` writes a heatmap comparing the true 2D
-signal/splat placement against local BQ variance.
+two plots to `bq_splat/results/`. `validate_trainable_kernel.py` and
+`validate_trainable_kernel_heldout.py` print comparison tables of
+fixed/fitted/held-out-fitted BQ vs. Riemann sum. `validate_2d_gap_experiment.py`
+writes a heatmap comparing the true 2D signal/splat placement against local
+BQ variance. `benchmark_local_bq_scaling.py` prints neighbor-lookup and
+local-solve timing at up to 10^6 synthetic splats, with no plot output.
 
 ## Findings so far
 
@@ -73,3 +80,18 @@ domain to a 2D image-plane domain with scattered splat-center placement —
 the geometry a real GS scene actually has — with a 4.85x inside/outside
 variance ratio and the same "peaks near the coverage boundary" shape found
 in 1D (see FINDINGS.md §6 and `results/gap_experiment_2d.png`).
+
+A held-out check (§7) refines the bandwidth-fitting story: it's real and
+generalizes for Matern (a bandwidth fit once on a calibration set nearly
+matches an in-sample oracle on unseen scenes) but not for RBF (the
+population-optimal RBF bandwidth turned out to be almost exactly the
+original hardcoded 0.35 — RBF's earlier per-scene gains were mostly
+overfitting to each scene's specific sample layout). And a computational
+scaling check (§8) found the bottleneck ROADMAP.md worried about — an
+expensive linear solve at GS scale — wasn't the real one: profiling found
+94% of per-query cost was a numerically-integrated `vv` term, fixed exactly
+(not approximated) by caching it per window size, since it's provably
+position-independent for a fixed-size window under a stationary kernel.
+That plus a KD-tree for neighbor lookup takes a naive ~2,400-3,000s
+single-threaded per-800x800-image estimate down to ~140-420s, on CPU, with
+up to a million synthetic splats — before any GPU code is written.

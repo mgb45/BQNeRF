@@ -1,6 +1,6 @@
 import numpy as np
 
-from bq_splat.hyperparams import fit_kernel_param, log_marginal_likelihood
+from bq_splat.hyperparams import fit_kernel_param, fit_kernel_param_pooled, log_marginal_likelihood
 from bq_splat.kernels import MaternKernel, RBFKernel
 
 
@@ -34,6 +34,21 @@ def test_fit_kernel_param_recovers_reasonable_bandwidth_for_gp_samples():
     fit = fit_kernel_param(nodes, values, lambda s: RBFKernel(sigma=s), bounds=(0.05, 3.0))
 
     assert 0.2 < fit.param < 1.2
+
+
+def test_fit_kernel_param_pooled_recovers_shared_bandwidth_across_datasets():
+    rng = np.random.default_rng(3)
+    true_sigma = 0.6
+    datasets = []
+    for _ in range(5):
+        nodes = np.sort(rng.uniform(0, 10, size=25))
+        kxx = RBFKernel(sigma=true_sigma).k(nodes.reshape(-1, 1), nodes.reshape(1, -1))
+        kxx = kxx + 1e-6 * np.eye(len(nodes))
+        values = rng.multivariate_normal(np.zeros(len(nodes)), kxx)
+        datasets.append((nodes, values))
+
+    fit = fit_kernel_param_pooled(datasets, lambda s: RBFKernel(sigma=s), bounds=(0.05, 3.0))
+    assert 0.3 < fit.param < 1.1
 
 
 def test_fit_kernel_param_works_for_matern_too():

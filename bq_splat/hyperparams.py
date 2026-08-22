@@ -63,6 +63,46 @@ class FitResult:
     log_marginal_likelihood: float
 
 
+def pooled_log_marginal_likelihood(datasets, kernel: Kernel) -> float:
+    """Sum of `log_marginal_likelihood` across multiple (nodes, values)
+    pairs under one shared kernel -- the objective for fitting a single
+    bandwidth across many scenes/regions rather than one per scene. Used to
+    test whether a bandwidth fit once on a calibration set generalizes to
+    unseen scenes (see scripts/validate_trainable_kernel_heldout.py) --
+    which matters for deployment cost too: a bandwidth that needs
+    refitting per query is a very different computational proposition at
+    GS scale than one fit once and reused.
+    """
+    total = 0.0
+    for nodes, values in datasets:
+        lml = log_marginal_likelihood(nodes, values, kernel)
+        if not np.isfinite(lml):
+            return -np.inf
+        total += lml
+    return total
+
+
+def _grid_search_then_refine(objective: Callable[[float], float], bounds, n_grid: int) -> FitResult:
+    lo, hi = bounds
+    grid = np.geomspace(lo, hi, n_grid)
+    values = np.array([objective(p) for p in grid])
+    best_idx = int(np.argmax(values))
+
+    refine_lo = grid[max(best_idx - 1, 0)]
+    refine_hi = grid[min(best_idx + 1, n_grid - 1)]
+
+    result = optimize.minimize_scalar(lambda p: -objective(p), bounds=(refine_lo, refine_hi), method="bounded")
+    best_param = float(result.x)
+    best_value = -float(result.fun)
+
+    if best_value < values[best_idx]:
+        # bounded line search can, rarely, undershoot the grid optimum near
+        # a boundary -- fall back to the grid point itself if so.
+        return FitResult(param=float(grid[best_idx]), log_marginal_likelihood=float(values[best_idx]))
+
+    return FitResult(param=best_param, log_marginal_likelihood=best_value)
+
+
 def fit_kernel_param(
     nodes,
     values,
@@ -70,7 +110,8 @@ def fit_kernel_param(
     bounds=(1e-3, 5.0),
     n_grid: int = 25,
 ) -> FitResult:
-    """Find the bandwidth maximizing the log marginal likelihood.
+    """Find the bandwidth maximizing the log marginal likelihood for a
+    single (nodes, values) dataset.
 
     `kernel_factory` maps a scalar bandwidth to a Kernel instance, e.g.
     `lambda sig: RBFKernel(sigma=sig)`. Does a log-spaced grid pre-search
@@ -79,24 +120,18 @@ def fit_kernel_param(
     bounded 1D line search, rather than trusting a single local optimizer
     call from one starting point.
     """
-    lo, hi = bounds
-    grid = np.geomspace(lo, hi, n_grid)
-    lmls = np.array([log_marginal_likelihood(nodes, values, kernel_factory(p)) for p in grid])
-    best_idx = int(np.argmax(lmls))
+    objective = lambda p: log_marginal_likelihood(nodes, values, kernel_factory(p))
+    return _grid_search_then_refine(objective, bounds, n_grid)
 
-    refine_lo = grid[max(best_idx - 1, 0)]
-    refine_hi = grid[min(best_idx + 1, n_grid - 1)]
 
-    def neg_lml(p):
-        return -log_marginal_likelihood(nodes, values, kernel_factory(p))
-
-    result = optimize.minimize_scalar(neg_lml, bounds=(refine_lo, refine_hi), method="bounded")
-    best_param = float(result.x)
-    best_lml = -float(result.fun)
-
-    if best_lml < lmls[best_idx]:
-        # bounded line search can, rarely, undershoot the grid optimum near
-        # a boundary -- fall back to the grid point itself if so.
-        return FitResult(param=float(grid[best_idx]), log_marginal_likelihood=float(lmls[best_idx]))
-
-    return FitResult(param=best_param, log_marginal_likelihood=best_lml)
+def fit_kernel_param_pooled(
+    datasets,
+    kernel_factory: Callable[[float], Kernel],
+    bounds=(1e-3, 5.0),
+    n_grid: int = 25,
+) -> FitResult:
+    """Same procedure as `fit_kernel_param`, but maximizing
+    `pooled_log_marginal_likelihood` across many (nodes, values) datasets
+    under one shared bandwidth."""
+    objective = lambda p: pooled_log_marginal_likelihood(datasets, kernel_factory(p))
+    return _grid_search_then_refine(objective, bounds, n_grid)
