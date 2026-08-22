@@ -60,6 +60,62 @@ class RBFKernel(Kernel):
         return val
 
 
+class ProductKernel:
+    """A D-dimensional kernel built as the product of D 1D kernels, one per
+    axis: k(x, y) = prod_d k_d(x_d, y_d).
+
+    For RBF this is *exact*: an isotropic Gaussian in D dimensions with
+    squared-Euclidean distance factorizes exactly into a product of 1D
+    Gaussians along each axis (a standard identity, since
+    ||x-y||^2 = sum_d (x_d-y_d)^2 and exp of a sum is a product of exps),
+    so `ProductKernel([RBFKernel(sigma)]*D)` is exactly the isotropic D-D
+    RBF kernel, not an approximation of it. For Matern this is a legitimate
+    but different (axis-aligned, "tensor-product"/ARD-style) kernel, not
+    identical to the radially-isotropic Matern -- a standard, positive-
+    definite construction, just worth naming precisely.
+
+    Building it this way means `v`/`vv` over an axis-aligned box domain also
+    factorize into products of the already-implemented/tested 1D `v`/`vv`
+    calls -- no new integration code, and no new numerical risk, for either
+    kernel family.
+    """
+
+    name = "product"
+
+    def __init__(self, kernels_per_axis):
+        self.kernels_per_axis = list(kernels_per_axis)
+
+    @property
+    def d(self):
+        return len(self.kernels_per_axis)
+
+    def k(self, X, Y):
+        """X: (N, D) or (D,); Y: (M, D) or (D,). Returns (N, M)."""
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        Y = np.atleast_2d(np.asarray(Y, dtype=float))
+        out = np.ones((X.shape[0], Y.shape[0]))
+        for dim, kernel in enumerate(self.kernels_per_axis):
+            out = out * kernel.k(X[:, dim].reshape(-1, 1), Y[:, dim].reshape(1, -1))
+        return out
+
+    def v(self, X, bounds):
+        """X: (N, D) or (D,). bounds: sequence of D (a_d, b_d) pairs.
+        Returns shape (N,)."""
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        out = np.ones(X.shape[0])
+        for dim, kernel in enumerate(self.kernels_per_axis):
+            a_d, b_d = bounds[dim]
+            out = out * np.atleast_1d(kernel.v(X[:, dim], a_d, b_d))
+        return out
+
+    def vv(self, bounds):
+        val = 1.0
+        for dim, kernel in enumerate(self.kernels_per_axis):
+            a_d, b_d = bounds[dim]
+            val = val * kernel.vv(a_d, b_d)
+        return val
+
+
 class MaternKernel(Kernel):
     """Matern-3/2 kernel: k(r) = (1 + sqrt(3)|r|/rho) exp(-sqrt(3)|r|/rho).
 

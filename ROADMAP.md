@@ -157,10 +157,23 @@ optimized, real-time implementations outright.
   Inria CUDA 3DGS repo, so a custom densification criterion and per-splat
   uncertainty computation don't require hand-writing CUDA.
 - New components needed (none exist yet):
-  1. Batched closed-form BQ posterior-variance computation compatible with
-     GS's typical splat counts (hundreds of thousands to millions) — the
-     main engineering risk; naive per-pixel GP regression won't scale.
-     Validate first on small synthetic scenes.
+  1. Per-pixel local BQ posterior-variance computation compatible with GS's
+     typical splat counts (hundreds of thousands to millions). Originally
+     flagged as needing a hard batched-closed-form solution because the
+     linear solve was assumed to be the bottleneck at scale — a CPU
+     benchmark (`bq_splat/scripts/benchmark_local_bq_scaling.py`,
+     `bq_splat/results/FINDINGS.md` §8) found that assumption wrong: the
+     solve is negligible even at hundreds of local neighbors, and the real
+     cost (94% of it) was a numerically-integrated `vv` term. Two concrete,
+     already-validated fixes carry over directly instead of requiring new
+     numerical-linear-algebra work: (a) KD-tree (or gsplat's own existing
+     tile/neighbor structures) for O(log N) local neighbor lookup instead
+     of brute force, and (b) caching `vv` per window size, exact rather
+     than approximate for a stationary kernel on a fixed-size, translated
+     window. Together these took a naive ~2,400-3,000s/image estimate to
+     ~140-420s on CPU alone, up to 10^6 synthetic splats — validate this
+     holds on small real synthetic scenes next, before assuming GPU
+     batching is required from day one.
   2. A validation harness with two modes: (a) BQ posterior variance vs. a
      brute-force baseline (leave-one-splat-out variance, or a GS-model
      ensemble) on a small scene, to sanity-check the closed-form
@@ -212,8 +225,50 @@ Native Uncertainty preprint, already summarized above):
    conditioning issue (irregular node spacing can push the Gram matrix
    condition number past 1e18 with a fixed jitter) and fixed it with a
    relative jitter — a lesson that carries into the eventual gsplat port.
+   Follow-up: `hyperparams.py` fits the kernel bandwidth per scene via
+   marginal likelihood instead of hardcoding it (as `models/nerf.py` and
+   this package's own baseline both do); fitting closes most of the
+   accuracy gap against Riemann summation and fitted Matern beats Riemann
+   outright at n=20/40 nodes — confirming the gap was substantially a
+   fixed-bandwidth mismatch, not a fundamental BQ limitation. See
+   `bq_splat/results/FINDINGS.md` §5. Any bandwidth used once this moves
+   into the gsplat-integrated code should be fit the same way (or made a
+   literal torch.nn.Parameter optimized jointly with the rest of the
+   pipeline), not hardcoded. Second follow-up (all still CPU-only, ahead of
+   any GPU work): `toy_scene_2d.py` + `ProductKernel` +
+   `bayesian_quadrature_nd` generalize the whole toy setup from a 1D
+   ray-depth domain to a 2D image-plane domain with scattered splat-center
+   placement -- the geometry a real GS scene actually has, unlike a 1D ray
+   integral. The differentiation effect survives the move (4.85x
+   inside/outside variance ratio, same "peaks near the coverage boundary"
+   shape as the 1D case) -- see `bq_splat/results/FINDINGS.md` §6 and
+   `gap_experiment_2d.png`. This still isn't the real GS-based experiment
+   below (analytic mixture-of-Gaussians signal, isotropic placement, no
+   learned covariances or camera geometry), but de-risks it further before
+   any GPU time is spent. Third follow-up: a proper held-out test (fit a
+   bandwidth on one set of scenes, evaluate on disjoint unseen scenes) in
+   `validate_trainable_kernel_heldout.py` refines the fitted-bandwidth
+   story rather than just confirming it -- it generalizes for Matern (a
+   bandwidth fit once nearly matches, sometimes beats, an in-sample oracle
+   on unseen scenes) but not for RBF (the population-optimal RBF bandwidth
+   turned out to be almost exactly the original hardcoded 0.35, so RBF's
+   earlier per-scene gains were mostly overfitting to each scene's specific
+   sample layout, not a real mismatch worth fixing). See
+   `bq_splat/results/FINDINGS.md` §7. Fourth follow-up: computational
+   feasibility at GS scale (10^5-10^6 splats), benchmarked in
+   `benchmark_local_bq_scaling.py` -- the bottleneck was assumed to be an
+   expensive linear solve at scale, but profiling found 94% of per-query
+   cost was actually a numerically-integrated `vv` term; caching it per
+   window size (exact, not approximate, since a stationary kernel's `vv`
+   only depends on window size/shape, not position -- confirmed
+   numerically) plus a KD-tree for neighbor lookup takes a naive
+   ~2,400-3,000s single-threaded per-800x800-image estimate down to
+   ~140-420s, still CPU-only, up to a million synthetic splats. See
+   `bq_splat/results/FINDINGS.md` §8; this substantially updates the
+   engineering-risk assessment in the plan below.
 2. The differentiation experiment — the real go/no-go gate, now to be run
-   on an actual GS scene rather than a 1D toy signal.
+   on an actual GS scene rather than a 1D or 2D toy signal. This is the
+   first milestone that needs a GPU (gsplat rasterization).
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

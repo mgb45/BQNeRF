@@ -19,13 +19,41 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from bq_splat.kernels import Kernel
+from bq_splat.kernels import Kernel, ProductKernel
 
 
 @dataclass
 class BQResult:
     mean: float
     variance: float
+
+
+def bayesian_quadrature_nd(nodes, values, kernel: ProductKernel, bounds, rel_jitter: float = 1e-4) -> BQResult:
+    """Same as `bayesian_quadrature`, generalized to a D-dimensional domain
+    via a `ProductKernel` and a per-axis `bounds` list of (a_d, b_d) pairs.
+    Kept as a separate function (rather than folding the 1D case into this
+    one) so the already-tested 1D `bayesian_quadrature` path is untouched.
+    """
+    nodes = np.asarray(nodes, dtype=float)
+    if nodes.ndim == 1:
+        nodes = nodes.reshape(-1, 1)
+    values = np.asarray(values, dtype=float).reshape(-1)
+    n = nodes.shape[0]
+    if n == 0:
+        return BQResult(mean=0.0, variance=float(kernel.vv(bounds)))
+
+    kxx = kernel.k(nodes, nodes)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + jitter * np.eye(n)
+    v = kernel.v(nodes, bounds).reshape(-1)
+
+    solved = np.linalg.solve(kxx, values)
+    mean = float(v @ solved)
+
+    solved_v = np.linalg.solve(kxx, v)
+    variance = float(kernel.vv(bounds) - v @ solved_v)
+
+    return BQResult(mean=mean, variance=max(variance, 0.0))
 
 
 def bayesian_quadrature(nodes, values, kernel: Kernel, a: float, b: float, rel_jitter: float = 1e-4) -> BQResult:
