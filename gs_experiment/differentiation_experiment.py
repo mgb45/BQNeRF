@@ -205,11 +205,28 @@ def run(
             idx = engine.local_neighbors(q, window_radius)
             visibility_grid[j, i] = visibility_uncertainty_proxy(directions[idx])
 
+    xx, yy = np.meshgrid(xs, ys)
+    in_wide = np.linalg.norm(np.stack([xx, yy], axis=-1) - wide_zone_center[:2], axis=-1) < zone_radius
+    in_narrow = np.linalg.norm(np.stack([xx, yy], axis=-1) - narrow_zone_center[:2], axis=-1) < zone_radius
+    in_either_zone = in_wide | in_narrow
+
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     panel_titles = ["(a) position-only BQ variance\n(blind to direction)", "(b) position+direction BQ variance", "(c) visibility proxy (non-BQ)"]
     grids = [spatial_grid, directional_grid, visibility_grid]
     for ax, grid, panel_title in zip(axes, grids, panel_titles):
-        im = ax.imshow(grid, extent=[x0, x1, y0, y1], origin="lower", cmap="inferno", aspect="auto")
+        # vmax capped to what's actually inside the two zones being
+        # compared (with headroom), not the grid's global max: a region
+        # far from either zone with too little local data to constrain
+        # anything reads as very high variance (correctly -- that's not a
+        # bug), but on a shared color scale it's a much larger swing than
+        # the wide-vs-narrow comparison this plot exists to show, and
+        # silently crushes both zones to the same-looking dark color.
+        # Cells outside this range still render (clipped, not hidden),
+        # just at the same saturated color -- the printed wide/narrow/
+        # ratio numbers below are the actual quantitative comparison in
+        # every case, this is a visibility fix for the figure only.
+        zone_vmax = float(np.nanmax(grid[in_either_zone])) * 1.3 if in_either_zone.any() else None
+        im = ax.imshow(grid, extent=[x0, x1, y0, y1], origin="lower", cmap="inferno", aspect="auto", vmin=0, vmax=zone_vmax)
         for center, color in [(wide_zone_center, "lime"), (narrow_zone_center, "cyan")]:
             ax.add_patch(plt.Circle(center[:2], zone_radius, fill=False, color=color, linewidth=2))
         ax.set_title(panel_title, fontsize=10)
@@ -221,10 +238,6 @@ def run(
     fig.savefig(out, dpi=150)
     plt.close(fig)
     print(f"Saved {out}")
-
-    xx, yy = np.meshgrid(xs, ys)
-    in_wide = np.linalg.norm(np.stack([xx, yy], axis=-1) - wide_zone_center[:2], axis=-1) < zone_radius
-    in_narrow = np.linalg.norm(np.stack([xx, yy], axis=-1) - narrow_zone_center[:2], axis=-1) < zone_radius
 
     for name, grid in [("position-only", spatial_grid), ("position+direction", directional_grid), ("visibility proxy", visibility_grid)]:
         wide_mean = np.nanmean(grid[in_wide])

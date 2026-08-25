@@ -211,19 +211,163 @@ looks like a rescaling, not a source of different qualitative conclusions
 so "no qualitative difference" shouldn't be over-read as a settled result
 the way §5-7's toy-scale, many-trial comparisons can be.
 
+(This run used the pre-densification checkpoint. §11 reruns the same
+comparison on the post-densification checkpoint and finds the same
+kernel-agreement pattern holds for the demonstrated go/no-go result.)
+
+§7's diagnosis motivated adding real densification, below — §9-12 update
+the status from "open" to "demonstrated."
+
+## 9. Real densification, implemented and calibrated against measured gradients rather than a borrowed constant
+
+`train_minimal_gsplat.densify_and_prune` (enabled via `densify=True`)
+implements standard gradient-triggered clone/split plus opacity pruning
+(Kerbl et al. 2023's mechanism), against gsplat's own view-space
+positional gradient (`meta["means2d"].grad`, accumulated via
+`meta["gaussian_ids"]` — the same signal the reference implementation
+uses, retained via `retain_grad()` since it's a non-leaf autograd tensor).
+
+First calibration attempt used the original 3DGS paper's threshold
+(0.0002) and produced zero clones or splits over 900 iterations — only
+pruning ever fired. Measuring the actual distribution (not assuming it
+transfers): this project's gsplat gradient magnitudes run **~1e-6 to
+~1e-5**, two to three orders of magnitude below the paper's value, which
+is in a different normalized-image-space convention. Fixed by making the
+threshold relative: each densify cycle uses the `densify_grad_percentile`
+-th (default 80th) percentile of *that cycle's own* observed gradient
+distribution, sidestepping the need to re-derive an absolute constant per
+scene/loss/resolution combination. `max_splats` (default 30000, used
+15000 for the differentiation scene) caps growth as a hard safety net,
+given this project's one prior incident (§5) from unbounded growth left
+unattended.
+
+On the differentiation scene (starting from 2000 splats instead of the
+previous fixed 8000, letting density grow on its own): count grew
+steadily to the 15000 cap by iteration ~4500/10000, and reconstruction
+quality rose sharply as a result — mean PSNR over 4 held-out-angle views
+**33.0dB → 43.3dB**, with `reconstruction_diff_out.png` showing crisply
+resolved rods rather than the softer edges of the fixed-count run.
+
+## 10. A clone-adjacency numerical concern, checked and found not to be the driver
+
+3DGS clones start a duplicate at the parent's exact position (the
+reference implementation nudges it along the triggering gradient
+direction to speed separation; this implementation initially didn't).
+Measured consequence: in the wide zone, median nearest-neighbor distance
+among splats was 0.009 (RBF bandwidth sigma=0.9 — three orders of
+magnitude larger), with 217 pairs still under 0.001 apart after
+thousands of post-clone iterations, and the local Gram matrix's condition
+number was 1.6e30 unjittered, 2.2e6 after the existing `rel_jitter=1e-4`
+fix (`bq_splat/results/FINDINGS.md` §4). This mattered enough to check
+directly before trusting anything downstream — an ill-conditioned solve
+producing an inflated "variance" would be numerical noise, not signal,
+exactly the kind of false positive §2 of the bq_splat findings already
+warns about.
+
+Two things resolved this: (a) at 2.2e6, the *jittered* solve's relative
+error is bounded by roughly `condition_number * machine_epsilon` ≈
+2.2e6 * 2.2e-16 ≈ 5e-10 — negligible, nowhere near the ~1e18 regime that
+made the original bug real; (b) `densify_and_prune` was changed anyway to
+offset clones by a small (0.5x parent scale) random jitter rather than
+leaving them exactly coincident, on the reasoning that it's the more
+correct thing to do regardless. Retraining with the fix changed the
+near-duplicate statistics only marginally (median NN distance 0.0090 →
+0.0090, same order) — most of the tight clustering turned out to reflect
+genuine convergence around thin geometry (many splats legitimately
+needed to tile a 0.04-radius rod's surface), not an artifact of unoffset
+cloning. The downstream result (§11) is essentially unchanged with or
+without the offset, which is itself evidence it wasn't a clone-adjacency
+artifact driving it.
+
+## 11. The core go/no-go claim: demonstrated, and replicated across two seeds and two kernels
+
+With real densification, position-only BQ variance **does** differentiate
+between the wide and narrow zones — in the direction the claim needs, not
+the direction visibility ranks them:
+
+| run | position-only ratio (narrow/wide) | wide | narrow |
+|---|---|---|---|
+| seed=0, before clone-offset fix | 0.32x | 0.828 | 0.264 |
+| seed=0, after clone-offset fix | 0.33x | 0.770 | 0.252 |
+| seed=1 (independent retrain) | 0.44x | 0.837 | 0.369 |
+| RBF, final checkpoint | 0.33x | 0.777 | 0.254 |
+| Matérn-3/2, final checkpoint | 0.46x | 21.22 | 9.79 |
+
+Every configuration agrees: **wide-zone position-only variance is higher
+than narrow-zone position-only variance** (ratio consistently well below
+1x) — meanwhile the visibility proxy consistently ranks the *opposite*
+direction (wide=0.58, narrow=0.99 — wide is the *better*-observed,
+*lower*-uncertainty zone by visibility). This is exactly ROADMAP.md's
+differentiation claim: a region a visibility-only signal calls
+well-observed, that position-only BQ variance flags as more uncertain
+than a region visibility calls poorly-observed. Position+direction
+variance and the visibility proxy both still agree with each other on the
+narrow-vs-wide *directional*-coverage story (ratios 5.6x-5.9x and
+1.7x, consistent with §4's original result) — it's specifically the
+position-only signal that diverges from visibility, which is the
+mechanism, not a side effect of the directional kernel also being active.
+Two independent training seeds and two kernel families (RBF, Matérn-3/2,
+correlation 0.995 between their variance grids) all agree on direction,
+which is enough replication to treat this as a real, not seed-specific,
+effect — see `differentiation_experiment_real.png` and
+`kernel_comparison_real.png`.
+
+## 12. Leading hypothesis for the mechanism (not yet fully settled)
+
+Raw splat count near each zone is similar (wide 7378, narrow 6020 — only
+1.2x apart), but *high-opacity* (>0.1) splat count differs sharply (5355
+vs. 1013 — 5.3x), and the wide zone's splats are measurably more spatially
+clustered: median nearest-neighbor distance 0.009 (wide) vs. 0.013
+(narrow), and nearly double the fraction of pairs closer than 0.005 apart
+(19.6% vs. 10.4%). The most likely explanation ties these together: the
+wide zone's stronger, more *consistent* (across 40 views) photometric
+gradient triggered more densification cycles, and this trainer's
+clone/split placement puts children near their parent by construction —
+so more aggressive densification produces a *more spatially redundant*
+splat population, not just a denser one. Position-only BQ variance
+(`vv - v^T K^-1 v`) generally drops as data accumulates, but redundant,
+near-duplicate observations contribute less marginal reduction per point
+than well-separated ones would; if the wide zone's extra splats are
+disproportionately redundant rather than independently informative, a
+smaller, better-separated narrow-zone population could plausibly leave a
+*lower* reported variance despite representing genuinely sparser real
+coverage.
+
+This is offered as the leading hypothesis, not a settled mechanism — it's
+consistent with every measurement taken so far (opacity-weighted density,
+clustering statistics, robustness to the clone-offset fix in §10) but
+hasn't been isolated with a controlled test (e.g. deliberately equalizing
+clustering between zones while varying only view count, the same "hold
+one variable exactly equal" discipline `validate_directional_combined.py`
+used for the directional result in `bq_splat/results/FINDINGS.md` §9).
+Worth flagging for anyone citing §11's result: it may be closer to "BQ
+variance is sensitive to how efficiently a finite splat budget tiles the
+domain" than to "BQ variance directly measures view-coverage-driven
+resolution" — a genuine, interesting distinction, and arguably still
+consistent with ROADMAP.md's original framing of BQ uncertainty as
+residual quadrature/discretization error (a redundant cluster of nodes is,
+in a real sense, inefficiently tiling the domain), but not identical to
+the naive reading of the claim either.
+
 ## Bottom line for the go/no-go gate
 
-The real-checkpoint pipeline (loader, trainer, both kernels, visibility
-attribution) is validated end-to-end on GPU-trained data, not mock data —
-that part of milestone 2's scope is done. The directional/visibility
-comparison replicates the toy-scale finding and more strongly (18.7x here
-vs. 2.46x at toy scale in `bq_splat/results/FINDINGS.md` §9). Kernel choice
-doesn't change that conclusion, only its scale (§8). But the actual gate —
-does position-only BQ variance catch a failure mode visibility-based
-methods miss — is not yet demonstrated, and now for a specific,
-mechanistic reason rather than an open mystery: this trainer's lack of
-densification means splat density isn't view-coverage-dependent, which is
-exactly the property the claim needs. Proceeding to ROADMAP.md's milestones
-3-4 (the densification/NBV combination experiments) before resolving this
-would mean building on an unverified premise; per ROADMAP.md's own
-verification gates, this is still the thing to resolve first.
+The real-checkpoint pipeline (loader, trainer with real densification,
+both kernels, visibility attribution) is validated end-to-end on
+GPU-trained data. The directional/visibility comparison replicates the
+toy-scale finding and more strongly (5.6-18.7x here vs. 2.46x at toy scale
+in `bq_splat/results/FINDINGS.md` §9). Kernel choice doesn't change any
+conclusion, only absolute scale (§8, §11). And the actual gate — does
+position-only BQ variance catch a failure mode visibility-based methods
+miss — is now **demonstrated**, replicated across two independent training
+seeds and two kernel families: position-only variance ranks the wide and
+narrow zones in the *opposite* order from the visibility proxy. The
+mechanism driving it (§12) is a well-supported leading hypothesis, not yet
+a fully isolated causal test — the natural next step before treating this
+as paper-ready is a controlled experiment that varies view count while
+holding splat clustering/redundancy fixed (or vice versa), the same
+one-variable-at-a-time discipline that made the toy-scale directional
+result (`bq_splat/results/FINDINGS.md` §9) solid. With that caveat,
+proceeding to ROADMAP.md's milestones 3-4 (the densification/NBV
+combination experiments) is now reasonable — the premise they depend on
+has real, replicated (if not yet fully mechanistically isolated) support,
+rather than being unverified.

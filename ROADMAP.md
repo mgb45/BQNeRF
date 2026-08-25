@@ -320,7 +320,7 @@ Native Uncertainty preprint, already summarized above):
    target cluster from front cameras while back cameras see it directly,
    using real geometric attribution rather than an assignment rule.
 
-   **GPU access obtained; real-checkpoint run complete, gate still open.**
+   **GPU access obtained; real-checkpoint run complete, go/no-go claim demonstrated.**
    `load_from_gsplat_checkpoint` is now real (reads a standard 3DGS `.ply`
    plus `transforms.json`), backed by a new Blender-based synthetic-scene
    renderer (`gs_experiment/blender_render.py`) and a minimal from-scratch
@@ -341,15 +341,37 @@ Native Uncertainty preprint, already summarized above):
    on this same real checkpoint agree on spatial pattern (correlation
    0.98) but differ ~150x in absolute scale — the first real-data run of
    the kernel-choice question from `bq_splat/results/FINDINGS.md` §5-7.
-   But the core go/no-go claim — position-only variance flagging a
-   well-observed-but-poorly-resolved region — is *not yet* demonstrated:
-   ratio 0.98x-1.02x regardless of kernel, because this trainer has no
-   densification, so splat density near a region doesn't depend on view
-   coverage the way a real 3DGS trainer's would. Closing the gate for
-   real needs either real densification or a scene redesigned so pure
-   geometric fineness forces a resolution gap on its own — neither
-   attempted yet. Per the verification gates below, this is the thing to
-   resolve before investing in milestones 3-4.
+   The core go/no-go claim — position-only variance flagging a
+   well-observed-but-poorly-resolved region — was initially *not*
+   demonstrated (ratio 0.98x-1.02x regardless of kernel), traced to the
+   trainer having no densification, so splat density near a region didn't
+   depend on view coverage the way a real 3DGS trainer's would.
+   **Real densification (gradient-triggered clone/split + opacity
+   pruning, against gsplat's own view-space gradient) was added and
+   calibrated against measured gradient magnitudes** (empirically
+   ~1e-6-1e-5 for this project's scenes, not the original 3DGS paper's
+   0.0002 -- a different image-space convention -- so the threshold is
+   now a per-cycle percentile of the observed distribution, not a
+   borrowed constant). With it, mean reconstruction PSNR rose from 33dB
+   to 43dB, and **the core claim is now demonstrated**: position-only BQ
+   variance ranks the wide (40-view) zone as *more* uncertain than the
+   narrow (10-view) zone (ratio ~0.33x-0.46x), the opposite ranking from
+   the visibility proxy (which correctly calls the wide zone
+   better-observed) -- replicated across two independent training seeds
+   and both kernel families (RBF and Matérn-3/2, correlation 0.995). The
+   leading mechanistic hypothesis (not yet fully isolated): the
+   well-observed zone's stronger, more consistent gradient triggers more
+   densification, and this trainer's clone/split placement makes that
+   produce a more spatially *redundant* splat population, not just a
+   denser one -- position-only BQ variance is plausibly sensitive to that
+   redundancy specifically. Full account, including a numerical-
+   conditioning check this result was verified against before being
+   trusted, in `gs_experiment/results/FINDINGS.md` §9-12. The natural next
+   step before treating this as paper-ready is a controlled experiment
+   isolating view-count from splat clustering/redundancy, the same
+   one-variable-at-a-time discipline section 9's toy-scale directional
+   result used. With that caveat, the premise milestones 3-4 depend on
+   now has real, replicated support.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

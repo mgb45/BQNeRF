@@ -149,29 +149,38 @@ max_neighbors`), and a scale-initialization bug that produced a blank
 reconstruction behind a deceptively reasonable PSNR (`train_minimal_
 gsplat`'s `init_scale`).
 
-Run it:
+Run it (with real densification, the setup that demonstrated the go/no-go
+claim below):
 ```
-.venv-gsplat/bin/python -m gs_experiment.train_minimal_gsplat <scene_dir> <out.ply> --init-scale 0.1 --n-iters 8000
+.venv-gsplat/bin/python -m gs_experiment.train_minimal_gsplat <scene_dir> <out.ply> \
+    --init-scale 0.1 --n-iters 10000 --n-splats 2000 \
+    --densify --densify-interval 300 --densify-start 300 --max-splats 15000
 .venv-gsplat/bin/python gs_experiment/render_reconstruction.py <scene_dir>   # sanity-check before trusting anything below
 .venv-gsplat/bin/python gs_experiment/differentiation_experiment.py --checkpoint <scene_dir> --angular-tol 0.01
 .venv-gsplat/bin/python gs_experiment/kernel_comparison.py <scene_dir> --angular-tol 0.01
 ```
 
-**What's not resolved:** the core go/no-go claim (position-only BQ
-variance flagging a well-observed-but-poorly-resolved region) isn't
-demonstrated yet — position-only variance comes back statistically equal
-between the wide and narrow zones regardless of kernel, because
-`train_minimal_gsplat` has no densification, so splat density near a
-region doesn't depend on view coverage the way a real 3DGS trainer's
-would. See `FINDINGS.md` §7 for the full reasoning and the two options
-for actually closing this (real densification, or a scene where a
-deliberately-undersized splat budget forces a resolution gap on its own).
+**Core go/no-go claim: demonstrated.** With real densification (gradient-
+triggered clone/split + opacity pruning, calibrated against measured
+gradient magnitudes rather than a borrowed constant — see `FINDINGS.md`
+§9), position-only BQ variance ranks the wide (well-observed-by-
+visibility) zone as *more* uncertain than the narrow zone — the opposite
+ranking from the visibility proxy — replicated across two training seeds
+and both kernel families. See `FINDINGS.md` §9-12 for the full account,
+including a numerical-conditioning check this was verified against before
+being trusted, and the leading (not yet fully isolated) hypothesis for
+the mechanism: densification in a well-observed region produces a more
+spatially *redundant* splat population, and BQ variance is plausibly
+sensitive to that redundancy specifically, not just to splat count.
 
-Still open, unrelated to the above:
-5. Add the real visibility-field/Hessian-sensitivity comparison ROADMAP.md
+Still open:
+5. A controlled experiment isolating view-count from splat clustering/
+   redundancy (§12's suggested next step, before treating the result as
+   fully mechanistically settled).
+6. Add the real visibility-field/Hessian-sensitivity comparison ROADMAP.md
    calls for (reproducing or citing PUP/GAVIS numbers) — `visibility_
    baseline.py`'s proxy is intentionally simple and not meant to stand in
    for that comparison.
-6. Real captured data (photographs + COLMAP or similar SfM pose
+7. Real captured data (photographs + COLMAP or similar SfM pose
    estimation) rather than synthetic Blender renders with known ground-
    truth poses — not started.

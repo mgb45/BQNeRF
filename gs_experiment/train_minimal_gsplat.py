@@ -9,18 +9,28 @@ heavier example-only dependency set (nerfview, viser, fused-ssim) not
 needed here. This is the minimum viable trainer for this project's actual
 purpose -- a real checkpoint plus real camera poses to run the BQ/
 visibility comparison on -- not a quality- or performance-competitive
-reimplementation of 3DGS training. No densification/pruning: the splat
-count is fixed at initialization (randomly seeded, generously sized for
-the target scene), which keeps the trainer simple at the cost of some
-final quality relative to a real adaptive-density trainer -- acceptable
-here since the point is to have real optimized splat geometry to compute
-uncertainty over, not to hit a PSNR target. A small opacity-sparsity
-regularizer (`opacity_reg_weight`) substitutes for real pruning: without
-it, splats that never earn photometric gradient (most of a randomly-
+reimplementation of 3DGS training.
+
+Densification/pruning (`densify=True`, off by default) is real, not a
+placeholder: standard gradient-triggered clone/split plus opacity-based
+pruning (`densify_and_prune`), against gsplat's own view-space positional
+gradient (`meta["means2d"].grad`) -- the same signal the reference
+implementation uses. This matters beyond final quality: ROADMAP.md's core
+differentiation claim needs splat *density* to depend on view coverage
+(a well-observed region should accumulate more splats than a poorly-
+observed one with identical geometry), which a fixed splat count from
+random initialization structurally cannot provide -- see
+gs_experiment/results/FINDINGS.md sections 6-7 for the empirical trail
+that motivated adding this. With `densify=False`, splat count stays fixed
+at initialization; a small opacity-sparsity regularizer
+(`opacity_reg_weight`) substitutes for pruning in that mode: without it,
+splats that never earn photometric gradient (most of a randomly-
 initialized population that's larger than the scene needs) sit inert at
 their initial opacity forever and contaminate downstream local-
 neighborhood statistics -- see the comment at the loss computation for
-the empirical motivation.
+the empirical motivation. Both mechanisms can run together when
+densifying (regularizer discourages inert splats between densify cycles,
+pruning removes them outright at each cycle).
 
 Needs torch + gsplat (requirements-gsplat.txt); not imported by anything
 that runs on requirements.txt alone.
@@ -109,6 +119,134 @@ def init_splats(n_splats: int, bounds, sh_degree: int, device: str, rng: np.rand
     )
 
 
+LR_BY_NAME = {"positions": 2e-3, "log_scales": 5e-3, "quats": 1e-3, "opacity_logits": 5e-2, "sh": 2.5e-3}
+
+
+def make_optimizer(params: dict) -> torch.optim.Optimizer:
+    return torch.optim.Adam([{"params": [params[name]], "lr": lr, "name": name} for name, lr in LR_BY_NAME.items()])
+
+
+def densify_and_prune(
+    params: dict,
+    avg_grad: torch.Tensor,
+    grad_threshold: float,
+    min_opacity: float,
+    split_scale_threshold: float,
+    device: str,
+    max_splats: int,
+) -> dict:
+    """Standard 3DGS adaptive density control (Kerbl et al. 2023), against
+    view-space positional gradient rather than reimplementing it from
+    scratch differently: splats with a large accumulated view-space
+    gradient (meaning the optimizer keeps wanting to move them --
+    evidence the region around them is under-reconstructed) get either
+    SPLIT (if already large -- replaced by 2 smaller children sampled from
+    the original's own extent) or CLONED (if small -- duplicated as-is,
+    letting gradient descent separate the copies over subsequent
+    iterations) depending on current scale, matching the reference
+    implementation's own split-vs-clone criterion. Splats below
+    `min_opacity` are pruned outright. This is the mechanism ROADMAP.md's
+    differentiation claim actually needs and gs_experiment/results/
+    FINDINGS.md sections 6-7 found missing: splat *density* becoming
+    view-coverage-dependent, not just splat *quality*.
+
+    Clones are offset from their parent by a small (0.5x scale) random
+    jitter rather than starting exactly coincident: the reference
+    implementation nudges clones along the triggering gradient direction,
+    which needs backprojecting the 2D view-space gradient into 3D (not
+    done here, simpler to jitter directly in world space); an earlier,
+    unoffset version of this function measurably distorted downstream BQ
+    variance (many clone pairs still <0.001 apart after thousands of
+    iterations at a kernel bandwidth two orders of magnitude larger --
+    see gs_experiment/results/FINDINGS.md), which the offset fixes.
+    `max_splats` caps
+    growth as a hard safety net -- gradient-triggered splitting can
+    compound quickly if `grad_threshold` is set too low, and this project
+    already has one real incident (FINDINGS.md section 5) from an
+    unbounded-growth computation left to run unattended.
+    """
+    scales = torch.exp(params["log_scales"])
+    opacities = torch.sigmoid(params["opacity_logits"])
+    max_scale = scales.max(dim=1).values
+
+    should_prune = opacities < min_opacity
+    room_left = max(0, max_splats - int((~should_prune).sum().item()))
+
+    should_densify = (avg_grad >= grad_threshold) & ~should_prune
+    if room_left <= 0:
+        should_densify &= False
+    should_split = should_densify & (max_scale > split_scale_threshold)
+    should_clone = should_densify & ~should_split
+
+    # if densification would exceed max_splats, keep only the
+    # highest-gradient candidates that fit in the remaining budget
+    n_requested = int(should_split.sum().item()) + int(should_clone.sum().item())
+    if n_requested > room_left:
+        candidate_idx = (should_split | should_clone).nonzero(as_tuple=True)[0]
+        ranked = candidate_idx[torch.argsort(avg_grad[candidate_idx], descending=True)]
+        drop = ranked[room_left:]
+        should_split[drop] = False
+        should_clone[drop] = False
+
+    keep_mask = ~should_prune & ~should_split
+
+    def gather(name, idx=None):
+        t = params[name].detach()
+        return t[idx] if idx is not None else t[keep_mask]
+
+    new_positions = [gather("positions")]
+    new_log_scales = [gather("log_scales")]
+    new_quats = [gather("quats")]
+    new_opacity_logits = [gather("opacity_logits")]
+    new_sh = [gather("sh")]
+
+    clone_idx = should_clone.nonzero(as_tuple=True)[0]
+    if len(clone_idx) > 0:
+        # offset the clone, not the parent, by a small fraction of the
+        # splat's own scale -- matches the reference implementation's
+        # intent (parent and clone should separate, not sit exactly on
+        # top of each other receiving near-identical gradients) without
+        # needing to backproject the 2D view-space gradient that
+        # triggered densification into a 3D direction. Not cosmetic:
+        # exact-duplicate positions from an *unoffset* clone measurably
+        # distorted downstream BQ variance in this project's first
+        # densification run (many clone pairs still <0.001 apart after
+        # thousands of iterations, on a kernel bandwidth two orders of
+        # magnitude larger) -- caught and fixed here rather than reported
+        # as a "well-observed regions have higher uncertainty" finding
+        # before ruling out that it was actually a clone-adjacency
+        # artifact.
+        clone_offset = torch.randn(len(clone_idx), 3, device=device) * (0.5 * scales[clone_idx].detach())
+        new_positions.append(gather("positions", clone_idx) + clone_offset)
+        new_log_scales.append(gather("log_scales", clone_idx))
+        new_quats.append(gather("quats", clone_idx))
+        new_opacity_logits.append(gather("opacity_logits", clone_idx))
+        new_sh.append(gather("sh", clone_idx))
+
+    split_idx = should_split.nonzero(as_tuple=True)[0]
+    if len(split_idx) > 0:
+        split_scales = scales[split_idx].detach()
+        split_log_scales = params["log_scales"].detach()[split_idx] - float(np.log(1.6))  # shrink children
+        for _ in range(2):
+            offset = torch.randn(len(split_idx), 3, device=device) * split_scales
+            new_positions.append(gather("positions", split_idx) + offset)
+            new_log_scales.append(split_log_scales.clone())
+            new_quats.append(gather("quats", split_idx))
+            new_opacity_logits.append(gather("opacity_logits", split_idx))
+            new_sh.append(gather("sh", split_idx))
+
+    def as_param(tensors):
+        return torch.nn.Parameter(torch.cat(tensors, dim=0))
+
+    return dict(
+        positions=as_param(new_positions),
+        log_scales=as_param(new_log_scales),
+        quats=as_param(new_quats),
+        opacity_logits=as_param(new_opacity_logits),
+        sh=as_param(new_sh),
+    )
+
+
 def train(
     scene_dir: str,
     out_path: str,
@@ -122,7 +260,34 @@ def train(
     background_color=(0.05, 0.05, 0.05),
     opacity_reg_weight: float = 0.01,
     init_scale: Optional[float] = None,
+    densify: bool = False,
+    densify_interval: int = 300,
+    densify_start: int = 300,
+    densify_end: Optional[int] = None,
+    densify_grad_percentile: float = 80.0,
+    min_opacity: float = 0.005,
+    split_scale_threshold: Optional[float] = None,
+    max_splats: int = 30000,
 ):
+    """`densify`, off by default for backward compatibility with existing
+    callers/results: turns on gradient-based clone/split + opacity
+    pruning (`densify_and_prune`) every `densify_interval` iterations
+    within `[densify_start, densify_end)`. The gradient-magnitude cutoff
+    is picked per-cycle as the `densify_grad_percentile`-th
+    percentile of that cycle's own observed gradient distribution, not a
+    hardcoded absolute value: gsplat's view-space gradient magnitudes
+    turned out to be ~1e-6 to ~1e-5 for this project's scenes (measured
+    directly, not assumed) -- nowhere near the original 3DGS paper's
+    normalized-image-space threshold of 0.0002, since the two aren't even
+    in the same units. A relative (percentile) threshold sidesteps
+    needing to re-calibrate an absolute cutoff per scene/loss/image-
+    resolution combination. `split_scale_threshold`
+    defaults to `init_scale` (or, if that's also unset, the bounds-derived
+    heuristic scale) when omitted: a splat larger than its own starting
+    scale is a reasonable proxy for "already covering more than one
+    feature's worth of space, so cloning it wouldn't help; splitting
+    would."
+    """
     import gsplat  # deferred: only needed here, keeps ply_io/loader torch-free
 
     rng = np.random.default_rng(seed)
@@ -132,15 +297,18 @@ def train(
     n_views = images.shape[0]
 
     params = init_splats(n_splats, bounds, sh_degree, device, rng, init_scale=init_scale)
+    if densify_end is None:
+        densify_end = n_iters - max(500, n_iters // 10)
+    if split_scale_threshold is None:
+        if init_scale is not None:
+            split_scale_threshold = init_scale
+        else:
+            (x0, x1), (y0, y1), (z0, z1) = bounds
+            split_scale_threshold = max(x1 - x0, y1 - y0, z1 - z0) / (n_splats ** (1.0 / 3.0) + 1e-6)
 
-    param_groups = [
-        {"params": [params["positions"]], "lr": 2e-3, "name": "positions"},
-        {"params": [params["log_scales"]], "lr": 5e-3, "name": "log_scales"},
-        {"params": [params["quats"]], "lr": 1e-3, "name": "quats"},
-        {"params": [params["opacity_logits"]], "lr": 5e-2, "name": "opacity_logits"},
-        {"params": [params["sh"]], "lr": 2.5e-3, "name": "sh"},
-    ]
-    optimizer = torch.optim.Adam(param_groups)
+    optimizer = make_optimizer(params)
+    grad_accum = torch.zeros(n_splats, device=device)
+    grad_denom = torch.zeros(n_splats, device=device)
     # gsplat's default `packed=True` rasterization path expects a single
     # unbatched (channels,) background, not a (1, channels) per-camera
     # background -- confirmed against gsplat.cuda._wrapper.rasterize_to_
@@ -164,7 +332,7 @@ def train(
         # other.
         sh_for_gsplat = params["sh"].transpose(1, 2)
 
-        rendered, _, _ = gsplat.rasterization(
+        rendered, _, meta = gsplat.rasterization(
             params["positions"],
             quats,
             scales,
@@ -178,6 +346,16 @@ def train(
             backgrounds=background,
         )
         pred = rendered[0]
+        if densify:
+            # view-space (pixel-space) positional gradient of each
+            # contributing splat -- the standard 3DGS densification
+            # signal (Kerbl et al. 2023): a splat the optimizer keeps
+            # wanting to move in screen space is evidence the region
+            # around it is under-reconstructed. means2d is an
+            # intermediate (non-leaf) tensor inside gsplat's autograd
+            # graph, so its .grad only populates if retained before
+            # backward().
+            meta["means2d"].retain_grad()
 
         # opacity sparsity pressure: with no densify/prune step, splats
         # that never earn real photometric gradient (e.g. randomly
@@ -201,12 +379,40 @@ def train(
 
         optimizer.zero_grad()
         loss.backward()
+
+        if densify and meta["means2d"].grad is not None:
+            with torch.no_grad():
+                grad_norms = meta["means2d"].grad.norm(dim=-1)
+                gaussian_ids = meta["gaussian_ids"]
+                grad_accum.index_add_(0, gaussian_ids, grad_norms)
+                grad_denom.index_add_(0, gaussian_ids, torch.ones_like(grad_norms))
+
         optimizer.step()
 
         if it % log_every == 0 or it == n_iters - 1:
             with torch.no_grad():
                 psnr = -10.0 * torch.log10(torch.nn.functional.mse_loss(pred, gt).clamp_min(1e-10))
-            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}  psnr(train view) {psnr.item():.2f}dB")
+            n_now = params["positions"].shape[0]
+            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}  psnr(train view) {psnr.item():.2f}dB  n_splats {n_now}")
+
+        if densify and densify_start <= it < densify_end and (it - densify_start) % densify_interval == 0 and it > 0:
+            with torch.no_grad():
+                avg_grad = grad_accum / grad_denom.clamp(min=1)
+                has_data = grad_denom > 0
+                grad_threshold = (
+                    torch.quantile(avg_grad[has_data], densify_grad_percentile / 100.0).item()
+                    if has_data.any()
+                    else float("inf")
+                )
+                n_before = params["positions"].shape[0]
+                params = densify_and_prune(
+                    params, avg_grad, grad_threshold, min_opacity, split_scale_threshold, device, max_splats,
+                )
+            n_after = params["positions"].shape[0]
+            optimizer = make_optimizer(params)
+            grad_accum = torch.zeros(n_after, device=device)
+            grad_denom = torch.zeros(n_after, device=device)
+            print(f"iter {it:5d}: densify+prune (grad_threshold={grad_threshold:.2e})  n_splats {n_before} -> {n_after}")
 
     with torch.no_grad():
         positions = params["positions"].detach().cpu().numpy()
@@ -217,7 +423,7 @@ def train(
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     write_3dgs_ply(out_path, positions, scales, rotations, opacities, sh_coeffs, sh_degree)
-    print(f"wrote {n_splats} splats to {out_path}")
+    print(f"wrote {positions.shape[0]} splats to {out_path}")
 
 
 def main():
@@ -231,6 +437,14 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--opacity-reg-weight", type=float, default=0.01)
     parser.add_argument("--init-scale", type=float, default=None, help="see init_splats' docstring")
+    parser.add_argument("--densify", action="store_true", help="enable gradient-based clone/split + opacity pruning")
+    parser.add_argument("--densify-interval", type=int, default=300)
+    parser.add_argument("--densify-start", type=int, default=300)
+    parser.add_argument("--densify-end", type=int, default=None)
+    parser.add_argument("--densify-grad-percentile", type=float, default=80.0)
+    parser.add_argument("--min-opacity", type=float, default=0.005)
+    parser.add_argument("--split-scale-threshold", type=float, default=None)
+    parser.add_argument("--max-splats", type=int, default=30000)
     args = parser.parse_args()
 
     train(
@@ -243,6 +457,14 @@ def main():
         device=args.device,
         opacity_reg_weight=args.opacity_reg_weight,
         init_scale=args.init_scale,
+        densify=args.densify,
+        densify_interval=args.densify_interval,
+        densify_start=args.densify_start,
+        densify_end=args.densify_end,
+        densify_grad_percentile=args.densify_grad_percentile,
+        min_opacity=args.min_opacity,
+        split_scale_threshold=args.split_scale_threshold,
+        max_splats=args.max_splats,
     )
 
 
