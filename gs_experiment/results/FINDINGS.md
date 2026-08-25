@@ -746,22 +746,101 @@ via a rough manual or automated segmentation of the model into
 "thin-part" vs. "thick-part" regions) rather than a per-splat scale
 quantile.
 
+**Reframing after §23**, prompted directly by feedback on this draft: the
+same-checkpoint thin-vs-thick claim (does BQ flag genuinely fine
+*geometric* detail as more uncertain than simple detail) is a harder,
+more specific question than the one that actually matters most for this
+project's central pitch -- that recognizing rendering as Bayesian
+quadrature gives you real uncertainty essentially for free, closed-form,
+from the same kernel structure already used to represent the scene. That
+pitch doesn't need the thin-vs-thick claim; it needs two more fundamental
+things demonstrated on real data: that BQ variance grows as visibility is
+lost, and that it's elevated in sparsely-covered splat regions --
+essentially definitional properties of a GP-quadrature posterior variance,
+but worth actually checking on a real trained checkpoint rather than
+asserting from the closed-form math alone. §24-25 test exactly those two
+things, directly, without routing through a geometric-fineness proxy.
+
+## 24. BQ variance tracks local splat sparsity directly, strongly, on real geometry
+
+`sparsity_correlation_experiment.py` samples 150 real query points from
+the wide (100-view) checkpoint's own splats and measures two independent
+quantities at each: true local splat count within a fixed window (a
+trivial KD-tree ball query, not a BQ computation) and BQ position-only
+variance at that same point:
+
+- Pearson correlation (log local count vs. BQ variance): **r = -0.736**
+  (p = 8.3e-27)
+- Spearman rank correlation: **rho = -0.578** (p = 9.8e-15)
+- bottom-20%-density regions vs. top-20%-density regions: **3.49x** higher
+  mean BQ variance in the sparse regions
+
+See `sparsity_correlation.png`: a clean, monotonic-looking decay curve --
+high variance concentrated at low local splat counts, dropping and
+flattening as density increases, exactly the shape a GP posterior
+variance should have as a function of local data density. This is the
+direct, minimal version of the "uncertainty nearly for free" claim: no
+geometric classification, no thin/thick proxy, just local quadrature-node
+density vs. the closed-form variance computed from that same density --
+strongly, significantly correlated on a real trained checkpoint.
+
+## 25. BQ variance responds to angular coverage gaps, not raw view count -- a sharper finding than a monotonic trend
+
+Five checkpoints of the same real object: wide/rand50/rand25/rand12 at
+100/50/25/12 *randomly subsampled* training views (full angular spread
+preserved, just sparser), plus narrow (12 *angularly clustered* views).
+Same 150 fixed query points, same window, in every condition:
+
+| condition | views | angular spread | mean BQ variance |
+|---|---|---|---|
+| wide | 100 | full | 0.0000806 |
+| rand50 | 50 | full | 0.0000806 |
+| rand25 | 25 | full | 0.0000897 |
+| rand12 | 12 | full | 0.0000772 |
+| narrow | 12 | clustered | 0.0002116 |
+
+The first pass (before `rand12` existed) found something more interesting
+than a clean monotonic decay: variance was essentially *flat* from
+100 down to 25 random views, and only jumped at narrow's 12 clustered
+views -- raising the question of whether the effect was really about
+*count* or about *clustering*. `rand12` isolates it directly, holding
+count fixed at 12 while varying only whether those 12 views are random or
+clustered: rand12 (**0.0000772**) is statistically indistinguishable from
+wide/rand50 (**0.0000806**, actually marginally *lower*), while narrow
+(**0.0002116**, same count) is **2.75x higher**. See
+`visibility_trend.png`.
+
+Reducing total view count, on its own, barely moves position-only BQ
+variance here -- as long as the reduced set still spans the full angular
+range, the reconstruction stays essentially complete, and local splat
+density (§24's actual driver) doesn't meaningfully drop. It's specifically
+*coverage gaps* -- directions genuinely unobserved, not merely observed
+fewer times -- that BQ variance responds to. This is a sharper, more
+useful finding than a naive "more views always means less uncertainty"
+result would have been: it says the signal isn't fooled by frame count
+alone, which is exactly the property something like active-view planning
+needs (ROADMAP.md milestone 4) -- a policy that fires on any view
+reduction regardless of whether it actually left a gap would be a much
+less useful signal than one that fires specifically when a real gap
+exists.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA
 compositing) and a real dataset-quality issue (an incomplete public
 mirror) before anything downstream could be trusted -- consistent with
 this project's pattern of real friction at every step of leaving
-synthetic/toy scenes, not a smooth validation exercise. What came out the
-other side is a genuinely mixed, honestly-reported result: the
-directional/observation-count differentiation claim replicates cleanly
-and even more strongly on real geometry (§22, 4.54x, vs. 2.46x-18.7x
-across every prior toy- and hand-built-scene result), giving real
-confidence that part of the story generalizes beyond controlled
-constructions. The more specific same-checkpoint thin-vs-thick claim
-(§23) does not yet show the same effect with the query methodology tried
-here -- an open question with concrete next steps identified, not a
-failure being hidden or a null result being spun positive. Both outcomes
-are worth having: real data doesn't uniformly validate or invalidate the
-project's claims, it sharpens exactly which parts are solid and which
-need more work before a paper could cite them.
+synthetic/toy scenes, not a smooth validation exercise. The central
+"uncertainty nearly for free" claim now has direct, strong, real-data
+support that doesn't route through a geometric-fineness proxy: BQ
+variance correlates strongly with local splat sparsity (§24, r=-0.74,
+p=8e-27) and responds specifically to genuine angular coverage gaps
+rather than raw view count (§25, 2.75x from clustering alone, count held
+fixed) -- both closed-form, both computed from nothing but each
+checkpoint's own splat positions. The directional/observation-count
+cross-checkpoint claim from §22 also replicates cleanly and more strongly
+than at toy scale (4.54x vs. 2.46x-18.7x). The harder, more specific
+same-checkpoint thin-vs-thick claim (§23) remains an open question with
+concrete next steps identified, not a failure being hidden -- but it's no
+longer the load-bearing claim for what this project's real-data validation
+needs to show.

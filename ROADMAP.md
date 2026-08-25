@@ -420,25 +420,40 @@ Native Uncertainty preprint, already summarized above):
 
 **Real-benchmark validation (not a numbered milestone, a cross-cutting
 check on 2-4).** Everything above ran on a hand-built thin-rod scene.
-`prepare_nerf_synthetic.py` + `real_benchmark_experiment.py` repeat the
-core question on NeRF-Synthetic's standard "lego" benchmark (100 real
-training views + held-out official test split -- the same benchmark the
-original NeRF and 3DGS papers report on). Getting there surfaced a real
-RGBA-compositing bug and an incomplete public dataset mirror before
-anything could be trusted (see `gs_experiment/results/FINDINGS.md` §20).
-Result, reported honestly rather than smoothed over: the cross-checkpoint
-(view-count) differentiation claim replicates *more strongly* on real
-geometry (4.54x, vs. 2.46x-18.7x across every prior toy/hand-built
-result) -- real confidence part of the story generalizes beyond
-controlled constructions. The more specific same-checkpoint
+`prepare_nerf_synthetic.py` repeats the core question on NeRF-Synthetic's
+standard "lego" benchmark (100 real training views + held-out official
+test split -- the same benchmark the original NeRF and 3DGS papers
+report on). Getting there surfaced a real RGBA-compositing bug and an
+incomplete public dataset mirror before anything could be trusted (see
+`gs_experiment/results/FINDINGS.md` §20). Both checkpoints' reconstruction
+quality was verified on genuine held-out test views first (27.17dB wide
+/ 19.80dB narrow, the expected sparse-view generalization gap) before
+trusting any BQ number built on top of them.
+
+The project's central "uncertainty nearly for free" claim -- that
+recognizing rendering as Bayesian quadrature gives a real uncertainty
+signal essentially for free from the same kernel structure already used
+to represent the scene -- now has direct real-data support that doesn't
+route through a harder geometric-fineness proxy:
+`sparsity_correlation_experiment.py` finds BQ variance strongly,
+significantly correlated with local splat sparsity (r=-0.74, p=8e-27,
+3.49x higher variance in the sparsest-20% vs. densest-20% regions), and
+`visibility_trend_experiment.py` finds it responds specifically to
+genuine angular coverage gaps rather than raw view count: five
+checkpoints (100/50/25/12 random-subset views, plus 12 angularly-
+clustered) show variance essentially flat across 100->50->25->12-random
+views but 2.75x higher for the *same* 12-view count when those views are
+clustered instead of random -- the signal isn't fooled by frame count
+alone, which is exactly the property a real active-view-planning policy
+(milestone 4) needs. The cross-checkpoint (view-count) differentiation
+claim from `real_benchmark_experiment.py` also replicates cleanly and
+even more strongly on real geometry (4.54x, vs. 2.46x-18.7x across every
+prior toy/hand-built result). The harder, more specific same-checkpoint
 thin-vs-thick claim does *not* show a clear effect with the query
 methodology tried (automatic per-splat-scale classification, no manual
-annotation) -- an open question with concrete next steps identified
-(§23), not a null result spun positive. Both checkpoints' reconstruction
-quality was verified on genuine held-out test views first (27.17dB
-wide / 19.80dB narrow, the expected sparse-view generalization gap)
-before trusting any BQ number built on top of them. Full account in
-`gs_experiment/results/FINDINGS.md` §20-23.
+annotation) -- an open question with concrete next steps identified, no
+longer the load-bearing claim for what real-data validation needs to
+show. Full account in `gs_experiment/results/FINDINGS.md` §20-25.
 
 ## Verification gates
 

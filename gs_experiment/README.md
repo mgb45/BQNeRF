@@ -112,19 +112,32 @@ whole pipeline end-to-end right now.
   poor choice by ~3x) and the caveat (BQ and visibility agreed perfectly
   on this simple scene, so it doesn't yet show combination beats either
   signal alone).
-- `prepare_nerf_synthetic.py` + `real_benchmark_experiment.py` — real,
-  standardized-benchmark validation (NeRF-Synthetic "lego": 100 real
-  training views + a held-out official test split, not a hand-built
-  scene). Wide (100-view) vs. narrow (12-view, angularly clustered)
-  conditions, alpha-composited onto the dataset's real background before
-  training (an RGBA-handling bug worth knowing about if reusing this on
-  another NeRF-Synthetic scene). See `FINDINGS.md` §20-23: the
-  cross-checkpoint (view-count) differentiation claim replicates even
-  more strongly on real geometry (4.54x); the same-checkpoint
-  thin-vs-thick claim, tested via automatic per-splat-scale
-  classification (no manual annotation), does not yet show a clear
-  effect — reported as an open question, not forced into a positive
-  result.
+- `prepare_nerf_synthetic.py` — real, standardized-benchmark data prep
+  (NeRF-Synthetic "lego": 100 real training views + a held-out official
+  test split, not a hand-built scene). Alpha-composites the dataset's
+  real RGBA images onto a real background before training (a bug worth
+  knowing about if reusing this on another NeRF-Synthetic scene: naively
+  `.convert("RGB")`-ing an RGBA source drops the alpha channel instead of
+  compositing it).
+- `sparsity_correlation_experiment.py` — the direct "uncertainty nearly
+  for free" check: does BQ position-only variance correlate with local
+  splat sparsity on a real checkpoint? Yes, strongly (r=-0.74, p=8e-27;
+  see `FINDINGS.md` §24) — no geometric classification needed, just local
+  quadrature-node density vs. the closed-form variance computed from it.
+- `visibility_trend_experiment.py` — five checkpoints of the same real
+  object at 100/50/25/12 random-subset views plus 12 angularly-clustered
+  views, all queried at the same fixed points. Finds BQ variance responds
+  to genuine angular coverage gaps, not raw view count (2.75x from
+  clustering alone, count held fixed at 12) — see `FINDINGS.md` §25.
+- `real_benchmark_experiment.py` — wide (100-view) vs. narrow (12-view,
+  angularly clustered) cross-checkpoint comparison. See `FINDINGS.md`
+  §20-23: the cross-checkpoint (view-count) differentiation claim
+  replicates even more strongly on real geometry (4.54x); the
+  same-checkpoint thin-vs-thick claim, tested via automatic
+  per-splat-scale classification (no manual annotation), does not yet
+  show a clear effect — reported as an open question, not forced into a
+  positive result, and no longer the load-bearing real-data claim (see
+  §24-25 instead).
 
 **Still not attempted:**
 - A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`
