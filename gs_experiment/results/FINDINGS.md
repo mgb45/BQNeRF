@@ -974,6 +974,61 @@ the framing implicitly hoped for. This is exactly the kind of finding this
 project's process is supposed to surface rather than avoid running the
 experiment that might produce it.
 
+**Addendum: testing the opacity-floor hypothesis directly (asked, and
+answered, in the same session).** The hypothesis above -- that
+`bq_densify`'s regression is the same "BQ variance is high in empty space
+too" problem `pruning_experiment.py` already found and fixed (§15-16) --
+was tested, not left as a guess. `train_minimal_gsplat.py` gained
+`bq_densify_min_opacity`, and the result is a genuinely three-way story,
+not a clean confirmation:
+
+| variant | n_splats | train PSNR | held-out PSNR |
+|---|---|---|---|
+| baseline (gradient densify) | 5462 | 46.13dB | 21.14dB |
+| bq_densify, no floor (original regression) | 3303 | 38.86dB | 20.66dB |
+| bq_densify, floor v1 (zeroed, but still counted in the percentile) | 6000 (capped) | 45.95dB | 19.81dB |
+| bq_densify, floor v2 (zeroed *and* excluded from the percentile) | 1347 | 38.46dB | 20.27dB |
+
+**v1** (`bq_densify_min_opacity=0.3`, matching `pruning_experiment.py`'s
+`min_opacity_for_bq` value, zeroing the BQ-variance score for low-opacity
+splats but still including them when computing the percentile threshold)
+**did confirm the mechanism is real**: train PSNR recovered from 38.86dB
+to 45.95dB, nearly matching baseline. But it did so by growing explosively
+-- hitting `max_splats=6000` by iteration 900 and staying capped -- because
+almost the *entire* initial population starts opacity-ineligible
+(`sigmoid(-1.0) ≈ 0.269`, just under the `0.3` floor, is this trainer's
+default initial opacity), so a percentile computed over a population
+that's mostly zeroed collapses toward 0, making nearly any eligible
+splat's variance clear the bar. Held-out PSNR got *worse* (19.81dB, below
+even the unfixed regression's 20.66dB) -- more splats overfit to the 10
+train views, not better generalization.
+
+**v2** fixed that specific artifact the principled way -- excluding
+low-opacity splats from the percentile computation too (`has_data`),
+exactly mirroring how the gradient path already excludes "never received a
+gradient" splats, rather than leaving them in and just zeroing their
+score. This gives a sane, non-degenerate threshold (0.04-0.09 across
+cycles, not 0). But it does **not** fix the regression: train PSNR
+(38.46dB) lands right back near the original unfixed number, on an even
+*smaller* population (1347 splats -- net shrinkage in the very first
+densify cycle, opacity-based pruning outpacing the now much more
+conservative densification).
+
+**Honest reading**: the opacity-floor hypothesis was directionally right
+-- v1 proves quality recovery is achievable by loosening the eligibility
+gate -- but the properly-scoped version of the same fix (v2) trades one
+failure mode (too many low-quality splats growing) for another (too few
+splats growing at all), landing back at essentially the original
+regression. This says the mismatch is more structural than a single
+missing floor: the percentile-threshold densification scheme itself was
+designed and calibrated around gradient-magnitude signals, and BQ variance
+doesn't sit well inside that same mechanism regardless of how its
+eligibility is scoped. The more promising untested direction, given this:
+combine BQ variance *additively* with the existing gradient signal (the
+same pattern that already worked for pruning -- opacity-floored BQ term
+added to, not swapping out, the existing criterion) rather than replacing
+the densification trigger outright.
+
 ## 28. Validating against gsplat's real reference trainer (ROADMAP.md item 4), and a real methodological pitfall caught along the way
 
 Every real-data result so far (§9-27) used this project's own from-scratch

@@ -404,6 +404,7 @@ def train(
     nll_grid_res: int = 12,
     nll_alpha_threshold: float = 0.5,
     nll_variance_floor: float = 1e-8,
+    bq_densify_min_opacity: float = 0.0,
 ):
     """`densify`, off by default for backward compatibility with existing
     callers/results: turns on gradient-based clone/split + opacity
@@ -594,6 +595,32 @@ def train(
                     # "never received a gradient yet" mask to apply.
                     avg_grad = compute_per_splat_bq_variance(params, bq_sigma, bq_window_radius, bq_max_neighbors, device)
                     has_data = torch.ones_like(avg_grad, dtype=torch.bool)
+                    if bq_densify_min_opacity > 0.0:
+                        # BQ variance is high in genuinely empty space too
+                        # (correct, but not useful for deciding where to
+                        # grow) -- the same problem pruning_experiment.py
+                        # found and fixed with an opacity floor
+                        # (min_opacity_for_bq). First attempt zeroed the
+                        # signal for low-opacity splats but still included
+                        # them in `has_data` -- with most of a freshly
+                        # initialized/split population below the floor,
+                        # that dragged the percentile itself down to ~0,
+                        # making almost any eligible splat's variance
+                        # exceed the threshold and triggering near-
+                        # uncontrolled growth (confirmed: hit max_splats by
+                        # iter 900, held-out PSNR fell despite train PSNR
+                        # recovering -- see gs_experiment/results/
+                        # FINDINGS.md). Excluding low-opacity splats from
+                        # `has_data` too (mirroring exactly how the
+                        # gradient path already excludes "never received a
+                        # gradient" splats from the percentile) fixes this:
+                        # the threshold now reflects only the eligible
+                        # population's real variance distribution, and
+                        # zeroing ineligible splats' own avg_grad still
+                        # keeps them from triggering regardless.
+                        has_data = torch.sigmoid(params["opacity_logits"]) > bq_densify_min_opacity
+                        avg_grad = avg_grad.clone()
+                        avg_grad[~has_data] = 0.0
                 elif densify_criterion == "gradient":
                     avg_grad = grad_accum / grad_denom.clamp(min=1)
                     has_data = grad_denom > 0
@@ -775,6 +802,7 @@ def main():
     parser.add_argument("--nll-weight", type=float, default=0.0, help="0 = off; see train()'s docstring")
     parser.add_argument("--nll-interval", type=int, default=100)
     parser.add_argument("--nll-grid-res", type=int, default=12)
+    parser.add_argument("--bq-densify-min-opacity", type=float, default=0.0)
     args = parser.parse_args()
 
     train(
@@ -801,6 +829,7 @@ def main():
         nll_weight=args.nll_weight,
         nll_interval=args.nll_interval,
         nll_grid_res=args.nll_grid_res,
+        bq_densify_min_opacity=args.bq_densify_min_opacity,
     )
 
 

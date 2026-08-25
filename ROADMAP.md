@@ -144,21 +144,37 @@ seed/hyperparameters, evaluated on both training views and a genuinely
 disjoint held-out ring. Result: **BQ-variance-driven densification is a
 real regression** — fewer splats *and* worse quality than gradient-based
 densification (train PSNR -7.27dB, held-out -0.49dB, not a favorable
-efficiency trade-off), most likely for the same reason an earlier,
-already-fixed problem in the pruning experiment (§15-16) existed: BQ
-variance is high in empty space too, and densification's variance query
-has no opacity floor to guard against that, unlike pruning's. The NLL
-term alone is close to a no-op (-0.15dB train, -0.22dB held-out),
-explainably so given how sparse/coarse and detached its first-installment
-signal is. Full account in `gs_experiment/results/FINDINGS.md` §27,
-including the concrete, not-yet-tested next step (an opacity floor on the
-densification variance query, mirroring `pruning_experiment.py`'s fix)
-before concluding the underlying idea doesn't work rather than just this
-first implementation of it.
+efficiency trade-off), hypothesized to be the same problem already found
+and fixed in the pruning experiment (§15-16): BQ variance is high in empty
+space too, and densification's variance query had no opacity floor to
+guard against that. The NLL term alone is close to a no-op (-0.15dB train,
+-0.22dB held-out), explainably so given how sparse/coarse and detached its
+first-installment signal is.
+
+**The opacity-floor hypothesis was tested directly, same session — a
+three-way result, not a clean fix.** Adding `bq_densify_min_opacity=0.3`
+(v1: zero the score for low-opacity splats, but still count them in the
+percentile threshold) recovered train PSNR almost to baseline (45.95dB),
+**confirming the mechanism is real** — but did so via explosive,
+uncontrolled growth (hit `max_splats` by iteration 900, since nearly the
+entire initial population starts below the 0.3 floor, collapsing the
+percentile toward 0), and held-out PSNR got *worse* (19.81dB). The
+properly-scoped fix (v2: also exclude low-opacity splats from the
+percentile computation, mirroring exactly how the gradient path already
+excludes "never received a gradient" splats) gives a sane, non-degenerate
+threshold — but lands train PSNR (38.46dB) right back near the original
+regression, on an even smaller population (1347 splats). **Reading**: the
+mismatch is more structural than a single missing floor — the
+percentile-threshold densification scheme was designed around
+gradient-magnitude signals, and BQ variance doesn't sit well inside that
+same mechanism regardless of eligibility scoping. Full three-way table and
+discussion in `gs_experiment/results/FINDINGS.md` §27's addendum.
 
 **Still needed:**
-- The opacity-floor fix above, tested directly, before drawing a final
-  conclusion about variance-driven densification.
+- The more promising untested direction the addendum identifies:
+  combine BQ variance *additively* with the existing gradient signal
+  (matching the pattern that already worked for pruning) rather than
+  replacing the densification trigger outright.
 - A weight sweep and/or a finer/more frequent NLL grid, to check whether
   the near-no-op result is a real ceiling or just this installment's
   sparsity (the honest hypothesis in FINDINGS.md §27, not yet tested).
