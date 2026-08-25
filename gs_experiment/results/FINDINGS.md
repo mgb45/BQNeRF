@@ -1059,6 +1059,95 @@ correct next check before drawing any quality conclusion, but was out of
 scope for what this installment set out to answer (does the sparsity
 finding survive a real reference trainer — yes).
 
+## 29. Calibration, not just correlation (ROADMAP.md item 5): a real, nuanced gap
+
+Every real-data result so far is a correlation or a ratio (sparsity vs.
+variance, wide-zone vs. narrow-zone). None of it checks whether a claimed
+"2x higher variance" region actually has ~2x the squared error, which is
+what "calibrated" means and what any downstream use of the number (a
+sparsification policy, an active-view budget, an NLL training loss, a
+paper claim about confidence) actually needs. This is a different,
+stricter question than the sparsity correlation already established, and
+this section's honest answer is: **not really, in absolute terms; modestly
+yes in ranking terms; substantially weaker than the sparsity-correlation
+numbers might suggest.**
+
+**Protocol (`calibration_experiment.py`).** Leave-one-out cross-validation
+on real splat colors: for many real splats, remove that splat from its own
+local BQ neighborhood (`LocalUncertaintyEngine` gained an `exclude_idx`
+parameter for exactly this — a ball query centered on a real splat's own
+position always finds that splat at distance 0, so without excluding it
+the "prediction" would trivially see its own held-out answer), predict its
+color from its real neighbors alone, and compare the BQ posterior
+mean/variance against the splat's own real, never-seen-by-the-prediction
+color. Three metrics, on three checkpoints (lego "wide", the thin-rod
+from-scratch-trainer checkpoint, the thin-rod gsplat-reference-strategy
+checkpoint from §28 — the same three used for the cross-trainer check,
+reused here for a second, independent purpose):
+
+| checkpoint | Pearson r(var, sq.err) | AUSE (BQ / random, lower better) | held-out NLL (BQ / constant-var, lower better) |
+|---|---|---|---|
+| lego wide | +0.147 (p=0.011) | 0.308 / 0.405 | 6022.70 / 4040.22 |
+| thin-rod, from-scratch trainer | **-0.202** (p=4.4e-4, wrong sign) | 0.176 / 0.180 | 9.77 / 8.65 |
+| thin-rod, reference-strategy trainer | +0.134 (p=0.021) | 0.048 / 0.071 | 4.78 / 4.56 |
+
+**Three separate, genuinely different readings, not one verdict:**
+
+1. **Direct correlation is weak everywhere, and wrong-signed on one
+   checkpoint.** All three `|r|` are under 0.21 — far weaker than the
+   sparsity-vs-variance correlations (`r=-0.74` to `-0.96` across §24, §26,
+   §28) that this project's headline claim rests on. The from-scratch
+   thin-rod checkpoint's correlation is even negative (higher variance,
+   *lower* error) — a real miscalibration signal on that specific
+   checkpoint, not a typo or a sign-convention artifact (re-checked
+   directly).
+2. **AUSE (ranking-based) is more encouraging: BQ ordering beats random on
+   two of three checkpoints by a real margin**, and is roughly tied with
+   random on the third (from-scratch thin-rod, consistent with that
+   checkpoint's weak/wrong-signed correlation). This matters because
+   ranking, not absolute value, is what a sparsification or pruning policy
+   actually consumes — `pruning_experiment.py`'s already-positive result
+   (§15-16) is a ranking-based use, consistent with AUSE being the more
+   favorable of these three metrics.
+3. **Held-out Gaussian NLL is worse than a flat, constant-variance
+   baseline on all three checkpoints, in every case.** This is the
+   strictest test and the one where the finding is most clearly negative:
+   the *absolute scale* of leave-one-out BQ variance is not a trustworthy
+   per-point confidence value as measured here — using the SAME variance
+   for every point would give a better-calibrated NLL than using BQ's own
+   per-point number. lego's gap is especially large (6023 vs. 4040),
+   likely because a few points with very small predicted variance and even
+   modest real error blow up the `squared_error / variance` term
+   disproportionately -- a classic failure mode for NLL-style scoring
+   under an uncalibrated small-variance tail, not evidence the *ranking* is
+   equally bad (AUSE for lego was the best of the three checkpoints).
+
+**Why this doesn't contradict the sparsity-correlation claim (§20-26, §28)
+-- it sharpens what that claim actually is.** "BQ variance tracks local
+splat sparsity" and "BQ variance is a calibrated estimate of a splat's own
+leave-one-out prediction error" are different claims. A sparse-but-locally-
+consistent region (few neighbors, but the ones present agree closely in
+color, e.g. a smooth low-frequency surface patch) can have high variance
+by construction (correctly reflecting thin quadrature coverage) while
+still being *predicted accurately* by those few neighbors -- sparsity and
+leave-one-out error are related but not identical, and this section is the
+first place in this project's real-data results where they're checked
+against each other directly rather than conflated. The honest, sharpened
+claim going forward: **the sparsity-correlation result is real and robust
+(now checked across two trainers, two scene families, and one dataset,
+consistently strong); the stronger claim that BQ variance is a directly
+calibrated, absolute per-point error bound is not yet supported by this
+data**, and should not be asserted in a paper without further work --
+either a recalibration step (a monotonic rescaling fit against held-out
+error, standard practice for miscalibrated uncertainty estimates) or the
+per-splat-covariance-as-bandwidth extension from ROADMAP.md item 2, not
+yet tried, which could plausibly tighten the absolute scale by using each
+splat's own learned anisotropic covariance instead of one shared scalar
+bandwidth.
+
+Full sparsification-curve plots for all three checkpoints in
+`gs_experiment/results/calibration_sparsification_*.png`.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

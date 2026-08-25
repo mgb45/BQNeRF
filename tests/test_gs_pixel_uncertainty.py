@@ -73,6 +73,38 @@ def test_precomputed_vv_matches_recomputed_vv():
     assert abs(cached - direct) < 1e-9
 
 
+def test_exclude_idx_removes_self_from_a_ball_query_centered_on_it():
+    """Querying at a real splat's own position always finds that splat at
+    distance 0 -- exclude_idx must filter it out, the basis for a
+    leave-one-out calibration check (gs_experiment/calibration_experiment.py)
+    not trivially seeing its own held-out answer."""
+    engine, _ = build_engine()
+    self_idx = 7
+    q = engine.positions[self_idx]
+
+    idx_with_self = engine.local_neighbors(q, radius=1.5)
+    idx_without_self = engine.local_neighbors(q, radius=1.5, exclude_idx=self_idx)
+
+    assert self_idx in idx_with_self
+    assert self_idx not in idx_without_self
+    assert len(idx_without_self) == len(idx_with_self) - 1
+
+
+def test_spatial_only_variance_exclude_idx_changes_the_result():
+    """A real behavioral check, not just an index-membership check: leaving
+    a point's own (position, value) out of the local BQ solve should
+    generally change both the posterior mean and variance relative to
+    including it -- if it didn't, exclude_idx wouldn't be doing anything."""
+    engine, _ = build_engine()
+    self_idx = 7
+    q = engine.positions[self_idx]
+
+    with_self = engine.spatial_only_variance(q, radius=1.5)
+    without_self = engine.spatial_only_variance(q, radius=1.5, exclude_idx=self_idx)
+
+    assert with_self.variance != without_self.variance
+
+
 def test_directional_variance_higher_for_query_outside_narrow_zone_cone():
     """The gs_experiment-level analogue of
     scripts/validate_directional_combined.py's core claim, using real 3D

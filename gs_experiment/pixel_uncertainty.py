@@ -101,14 +101,24 @@ class LocalUncertaintyEngine:
             self._vv_cache[key] = float(self.pos_kernel.vv(bounds))
         return self._vv_cache[key]
 
-    def local_neighbors(self, query_point: np.ndarray, radius: float) -> np.ndarray:
+    def local_neighbors(self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None) -> np.ndarray:
         idx = np.array(self.tree.query_ball_point(query_point, radius), dtype=int)
+        if exclude_idx is not None:
+            # for a leave-one-out calibration check (query at a real
+            # splat's own position, exclude_idx=that splat's own index):
+            # a ball query centered exactly on a splat always finds that
+            # splat itself at distance 0, so without this the "prediction"
+            # would trivially see its own held-out answer -- filtered
+            # before the max_neighbors subsample below, not after, so
+            # excluding self never reduces the *budget* of real neighbors
+            # a capped query gets.
+            idx = idx[idx != exclude_idx]
         if self.max_neighbors is not None and len(idx) > self.max_neighbors:
             idx = self._rng.choice(idx, size=self.max_neighbors, replace=False)
         return idx
 
-    def spatial_only_variance(self, query_point: np.ndarray, radius: float) -> BQResult:
-        idx = self.local_neighbors(query_point, radius)
+    def spatial_only_variance(self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None) -> BQResult:
+        idx = self.local_neighbors(query_point, radius, exclude_idx=exclude_idx)
         bounds = box_bounds(query_point, radius, self.scene_bounds)
         vv = self._cached_vv(bounds)
         local_positions = self.positions[idx]

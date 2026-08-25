@@ -222,16 +222,47 @@ sparsity, wide-zone vs. narrow-zone ratio). None of it answers "is this
 variance *calibrated*" — i.e., does a claimed 2x higher variance actually
 correspond to 2x the squared error, on average, on genuinely held-out data?
 Needed before any uncertainty number is used to justify a downstream
-decision in a paper:
+decision in a paper.
 
-- **Sparsification curves**: remove the highest-uncertainty points first
-  and confirm error drops fastest of any ordering.
-- **AUSE** (Area Under the Sparsification Error curve) against the oracle
-  (error-ranked) ordering, the standard metric this project hasn't
-  computed yet.
+**First installment done — a real, nuanced gap, not a clean pass.**
+`calibration_experiment.py` runs leave-one-out cross-validation on real
+splat colors (`LocalUncertaintyEngine` gained an `exclude_idx` parameter:
+a ball query centered on a real splat always finds itself at distance 0,
+so predicting its own held-out color needs it explicitly excluded from its
+own neighborhood), across three checkpoints (lego wide, and the two
+thin-rod checkpoints from item 4's cross-trainer check). Three metrics,
+three different readings: **direct Pearson correlation between variance
+and squared error is weak everywhere (`|r|<0.21`) and wrong-signed on one
+checkpoint** — far weaker than the `r=-0.74` to `-0.96` sparsity
+correlations the headline claim rests on; **AUSE (sparsification-curve
+ranking) is more encouraging, meaningfully beating random ordering on two
+of three checkpoints**, consistent with `pruning_experiment.py`'s
+already-positive ranking-based result; **held-out Gaussian NLL is worse
+than a flat constant-variance baseline on all three checkpoints** — the
+clearest negative result, meaning leave-one-out BQ variance's *absolute
+scale* isn't yet a trustworthy per-point confidence value. Full numbers
+and discussion, including why this doesn't contradict the sparsity-
+correlation claim so much as sharpen exactly what that claim does and
+doesn't establish (sparsity and leave-one-out prediction error are related
+but not identical — this is the first place they were checked against
+each other directly), in `gs_experiment/results/FINDINGS.md` §29.
+
+**Still needed:**
+- **Sparsification curves**: done (§29), but only leave-one-out on splat
+  colors, not yet on genuinely held-out *test views* (the more standard
+  NeRF/GS calibration protocol, closer to what a reviewer expects).
+- **AUSE**: computed (§29); repeat on more checkpoints/scenes before
+  treating "meaningfully beats random on 2 of 3" as a stable result rather
+  than a 3-checkpoint sample.
 - **NLL on held-out test views**, using the fitted (not hardcoded) variance
-  from item 2 — this is also the natural evaluation metric if item 3's
-  likelihood-trained model ships.
+  from item 2, and — given §29's negative NLL result — a recalibration
+  step (a monotonic rescaling fit against held-out error, standard
+  practice for a miscalibrated-but-informative uncertainty estimate) tried
+  explicitly, not assumed unnecessary.
+- Test whether per-splat-covariance-as-bandwidth (item 2, not yet tried)
+  closes the absolute-scale calibration gap §29 found, since it replaces
+  one shared scalar bandwidth with each splat's own learned anisotropic
+  covariance — a concrete, motivated next step, not a vague hope.
 
 ### 6. Systematic ablations, extended to match the plan's new pieces
 
