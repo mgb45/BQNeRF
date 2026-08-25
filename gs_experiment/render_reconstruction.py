@@ -103,6 +103,10 @@ def main():
     parser.add_argument("scene_dir")
     parser.add_argument("--view-indices", type=int, nargs="+", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--background-color", type=float, nargs=3, default=[0.05, 0.05, 0.05],
+        help="must match the background the checkpoint was trained against (e.g. 1 1 1 for NeRF-Synthetic's white)",
+    )
     args = parser.parse_args()
 
     _, frames = load_transforms(os.path.join(args.scene_dir, "transforms.json"))
@@ -110,7 +114,7 @@ def main():
     view_indices = args.view_indices or sorted(set([0, n_views // 4, n_views // 2, n_views - 1]))
     view_indices = [i for i in view_indices if 0 <= i < n_views]
 
-    results, checkpoint = render_views(args.scene_dir, view_indices)
+    results, checkpoint = render_views(args.scene_dir, view_indices, background_color=tuple(args.background_color))
 
     psnrs = []
     for i, gt, recon in results:

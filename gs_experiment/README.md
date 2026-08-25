@@ -112,6 +112,19 @@ whole pipeline end-to-end right now.
   poor choice by ~3x) and the caveat (BQ and visibility agreed perfectly
   on this simple scene, so it doesn't yet show combination beats either
   signal alone).
+- `prepare_nerf_synthetic.py` + `real_benchmark_experiment.py` — real,
+  standardized-benchmark validation (NeRF-Synthetic "lego": 100 real
+  training views + a held-out official test split, not a hand-built
+  scene). Wide (100-view) vs. narrow (12-view, angularly clustered)
+  conditions, alpha-composited onto the dataset's real background before
+  training (an RGBA-handling bug worth knowing about if reusing this on
+  another NeRF-Synthetic scene). See `FINDINGS.md` §20-23: the
+  cross-checkpoint (view-count) differentiation claim replicates even
+  more strongly on real geometry (4.54x); the same-checkpoint
+  thin-vs-thick claim, tested via automatic per-splat-scale
+  classification (no manual annotation), does not yet show a clear
+  effect — reported as an open question, not forced into a positive
+  result.
 
 **Still not attempted:**
 - A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`

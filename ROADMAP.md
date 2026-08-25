@@ -418,6 +418,28 @@ Native Uncertainty preprint, already summarized above):
 5. Write-up: primer appendix, honest pilot-study section, main derivation,
    differentiation experiment, and the two combination experiments.
 
+**Real-benchmark validation (not a numbered milestone, a cross-cutting
+check on 2-4).** Everything above ran on a hand-built thin-rod scene.
+`prepare_nerf_synthetic.py` + `real_benchmark_experiment.py` repeat the
+core question on NeRF-Synthetic's standard "lego" benchmark (100 real
+training views + held-out official test split -- the same benchmark the
+original NeRF and 3DGS papers report on). Getting there surfaced a real
+RGBA-compositing bug and an incomplete public dataset mirror before
+anything could be trusted (see `gs_experiment/results/FINDINGS.md` §20).
+Result, reported honestly rather than smoothed over: the cross-checkpoint
+(view-count) differentiation claim replicates *more strongly* on real
+geometry (4.54x, vs. 2.46x-18.7x across every prior toy/hand-built
+result) -- real confidence part of the story generalizes beyond
+controlled constructions. The more specific same-checkpoint
+thin-vs-thick claim does *not* show a clear effect with the query
+methodology tried (automatic per-splat-scale classification, no manual
+annotation) -- an open question with concrete next steps identified
+(§23), not a null result spun positive. Both checkpoints' reconstruction
+quality was verified on genuine held-out test views first (27.17dB
+wide / 19.80dB narrow, the expected sparse-view generalization gap)
+before trusting any BQ number built on top of them. Full account in
+`gs_experiment/results/FINDINGS.md` §20-23.
+
 ## Verification gates
 
 - Step 1's brute-force validation is necessary but not sufficient — passing

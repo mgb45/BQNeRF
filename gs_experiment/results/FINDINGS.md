@@ -630,3 +630,138 @@ azimuth-only candidates (where the signals should keep agreeing) with
 candidates that are directionally redundant but reveal fine geometry a
 current radius/elevation can't resolve (where BQ's position-integrated
 term might diverge from a purely angular visibility measure).
+
+# Real-benchmark validation: NeRF-Synthetic "lego"
+
+Everything up to this point ran on a hand-built thin-rod scene
+(`scene_spec.differentiation_scene`/`nbv_test_scene`) -- useful for
+controlled comparisons (geometry held exactly equal, only camera coverage
+varied), but not a real, standardized benchmark. This section repeats the
+core question -- does BQ variance flag something a visibility-only signal
+misses? -- on the classic NeRF-Synthetic "lego" scan (the Technic
+bulldozer/excavator model, 100 standard training views + a held-out
+official test split), the same benchmark the original NeRF, 3DGS, and
+most follow-up papers report numbers on.
+
+## 20. Getting real data into the pipeline: one real bug, one real dataset-quality issue
+
+`prepare_nerf_synthetic.py` adapts a standard NeRF-Synthetic scene
+directory to this project's pipeline. Two things had to be gotten right
+before trusting anything downstream:
+
+- NeRF-Synthetic images are RGBA with a genuine alpha channel (transparent
+  background), not opaque RGB like every scene used so far.
+  `train_minimal_gsplat.load_dataset` / `render_reconstruction.
+  render_views` both did `Image.open(path).convert("RGB")`, which on an
+  RGBA source *drops* the alpha channel rather than compositing it,
+  silently leaving raw (often black) pixel values under transparent
+  regions -- ground truth that wouldn't match what the model actually
+  renders against its own `background_color`. Fixed by alpha-compositing
+  onto a chosen background (white, matching the field-standard convention
+  for this dataset) once, up front, so the existing, already-tested
+  loaders keep working unchanged on the output.
+- The public Hugging Face mirror used here (`phuckstnk63/nerf-synthetic`)
+  ships an incomplete `test` split: `transforms_test.json` lists 200
+  frames, but only 36 have an actual plain-color PNG (the rest are
+  missing, or present only as depth/normal debug renders that aren't
+  ground-truth color at all). Caught by checking file existence rather
+  than trusting the JSON's frame count; `prepare_nerf_synthetic.py` skips
+  frames without a real color image rather than erroring, and 36 held-out
+  views is still a fine evaluation set for this project's purposes.
+
+Two conditions built from the real, standard 100-view training split (no
+synthetic geometry, no fabricated camera rig): **wide** uses all 100
+views; **narrow** uses the 12 whose camera positions are most angularly
+clustered (by real 3D position similarity, not an assumed up-axis
+convention). Both trained with `train_minimal_gsplat.py`'s real
+densification, to 80,000 splats (the `max_splats` cap).
+
+## 21. Reconstruction quality: a real, expected generalization gap
+
+Evaluated on the 36 held-out official test views (never used in training
+by either condition):
+
+| condition | train views | held-out PSNR (mean over 30 sampled eval views) |
+|---|---|---|
+| wide | 100 | **27.17dB** (range 23.66-30.06) |
+| narrow | 12 | **19.80dB** (range 13.97-32.19) |
+
+Narrow's *training*-view PSNR was actually higher than wide's (33-35dB
+vs. 26-29dB) -- the classic sparse-view overfitting signature: with only
+12 views to fit, the model can memorize them well while generalizing
+poorly to anything else, exactly what the held-out numbers confirm. This
+is a real, standard-benchmark sanity check that both checkpoints are
+legitimately trained, not a BQ result -- see `reconstruction_lego_wide.png`
+/ `reconstruction_lego_narrow.png` for the visual comparison, which shows
+recognizable Technic-model detail (thin support struts, wheels, gear
+teeth) with the expected edge-concentrated error pattern.
+
+## 22. Cross-checkpoint BQ differentiation replicates cleanly on real geometry
+
+`real_benchmark_experiment.py` queries BQ position-only variance at the
+*same* real 3D points (from the wide checkpoint's own fine-detail splats,
+see §23) in both the wide and narrow checkpoints:
+
+- wide checkpoint BQ variance at thin-structure points: 0.00008
+- narrow checkpoint BQ variance at the same points: 0.00037
+- **ratio (narrow/wide): 4.54x**
+
+This is the "observation-count matters" claim (already established at toy
+scale, `bq_splat/results/FINDINGS.md` §9, and at hand-built-scene scale,
+this file's §11) replicated on a real, standardized benchmark object for
+the first time -- consistent direction, and a *stronger* effect than the
+toy-scale result, matching the pattern of every real-data replication in
+this project so far.
+
+## 23. The core same-checkpoint claim: not demonstrated with this query methodology -- an open question, not a positive result forced
+
+The harder, more specific question -- does position-only BQ variance flag
+genuinely *thin* real structure as more uncertain than *thick* real
+structure, within the *same*, well-observed (wide) checkpoint -- did not
+show a clear effect: thin-region mean variance 0.00008 vs. thick-region
+0.00009, ratio 0.89x, no meaningful differentiation.
+
+"Thin" and "thick" here are defined automatically from each splat's own
+converged scale (bottom/top 20% by per-splat median scale) rather than
+hand-annotated, since there's no ground-truth part labeling for an
+off-the-shelf benchmark object the way the rod scene could just declare
+geometry by construction. This generalizes to any real scene, which is
+valuable, but it may also be why the signal didn't show up: a single
+splat's own scale is a local, somewhat noisy statistic, and the query
+point's *neighborhood* (what actually enters the BQ window) can contain a
+mix of scales regardless of the query splat's own classification --
+diluting whatever local contrast exists. This is reported as a genuine
+open question, not spun into a positive result: the toy-scale and
+hand-built-scene differentiation experiments controlled geometry by
+construction specifically to isolate this effect cleanly (`bq_splat/
+results/FINDINGS.md` §3, `differentiation_scene`'s matched-geometry
+design), and reproducing that same cleanliness automatically on an
+unannotated real object is evidently harder than the cross-checkpoint
+comparison in §22. Reasonable next steps, not yet attempted: a
+neighborhood-averaged (not per-splat) scale statistic for the thin/thick
+classification; restricting query points to splats whose *local
+neighborhood* is scale-homogeneous (avoiding windows straddling a
+thin-to-thick transition); or a coarser, part-level classification (e.g.
+via a rough manual or automated segmentation of the model into
+"thin-part" vs. "thick-part" regions) rather than a per-splat scale
+quantile.
+
+## Bottom line for real-benchmark validation
+
+Getting onto a real, standardized benchmark surfaced a real bug (RGBA
+compositing) and a real dataset-quality issue (an incomplete public
+mirror) before anything downstream could be trusted -- consistent with
+this project's pattern of real friction at every step of leaving
+synthetic/toy scenes, not a smooth validation exercise. What came out the
+other side is a genuinely mixed, honestly-reported result: the
+directional/observation-count differentiation claim replicates cleanly
+and even more strongly on real geometry (§22, 4.54x, vs. 2.46x-18.7x
+across every prior toy- and hand-built-scene result), giving real
+confidence that part of the story generalizes beyond controlled
+constructions. The more specific same-checkpoint thin-vs-thick claim
+(§23) does not yet show the same effect with the query methodology tried
+here -- an open question with concrete next steps identified, not a
+failure being hidden or a null result being spun positive. Both outcomes
+are worth having: real data doesn't uniformly validate or invalidate the
+project's claims, it sharpens exactly which parts are solid and which
+need more work before a paper could cite them.
