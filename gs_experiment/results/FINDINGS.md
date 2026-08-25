@@ -824,6 +824,69 @@ reduction regardless of whether it actually left a gap would be a much
 less useful signal than one that fires specifically when a real gap
 exists.
 
+## 26. Fitting the kernel bandwidth to a real checkpoint (ROADMAP.md item 2)
+
+Every result above (§20-25) used a hardcoded `sigma=0.05`, picked once and
+never checked against the data — the same gap `bq_splat/hyperparams.py`
+found and fixed at toy scale (`bq_splat/results/FINDINGS.md` §5, §7), never
+closed at real GS scale. `bq_splat/hyperparams.py` gained an ND version of
+its marginal-likelihood machinery (`log_marginal_likelihood_nd`,
+`fit_kernel_param_pooled_nd`, working directly with `ProductKernel` over a
+real 3D position domain rather than the 1D ray-depth reshape convention)
+and `scripts/fit_hyperparameters_real_checkpoint.py` uses it against the
+real lego "wide" checkpoint (35,819 splats above opacity 0.1): 25 local
+windows (same ball-query convention as `LocalUncertaintyEngine`, capped at
+60 points/window) for fitting, 25 disjoint windows held out — the same
+fit/held-out split spirit as `validate_trainable_kernel_heldout.py`
+(§7), now against real splat data instead of a toy scene.
+
+**Fitted bandwidths differ from the hardcoded value, in different
+directions per kernel.** RBF: `0.0624` vs. the hardcoded `0.05` (a modest,
+~25% correction). Matern-3/2: `0.0234`, less than half the hardcoded
+value — a much bigger correction, and in the *opposite* direction from
+RBF's.
+
+**Fitting generalizes, decisively, to held-out windows it never saw.**
+Pooled log marginal likelihood on the held-out set: RBF fitted `-1946.00`
+vs. hardcoded `-2328.61`; Matern fitted `-1022.37` vs. hardcoded
+`-3425.76` — the fitted bandwidth isn't just better on the windows it was
+fit on (that would be unsurprising), it's substantially better on windows
+it never saw, for both kernels, with the gap especially large for Matern.
+This is real evidence the hardcoded value has been leaving marginal
+likelihood on the table this whole project, not just at toy scale.
+
+**But the fitted bandwidth does not materially change the headline
+sparsity-correlation finding.** Re-running the §24-style check (150 query
+points, same checkpoint) with the fitted RBF bandwidth instead of the
+hardcoded one: `r=-0.616` (fitted) vs. `r=-0.612` (hardcoded) — both
+strongly significant, both essentially the same effect size. (These don't
+exactly reproduce §24's `r=-0.74` because the query-point sample here comes
+from an RNG stream that had already been advanced by the window-sampling
+steps earlier in the same script, not a fresh seed — an internally
+consistent comparison between the two sigma values in the same run, not a
+literal replication of §24's exact number; worth a clean re-run with a
+matched seed before citing both figures together in a paper.)
+
+**Reading together:** the hardcoded bandwidth was leaving real marginal
+likelihood on the table (a genuine calibration gap, sizeable for Matern
+specifically), but the project's central, most-cited claim — BQ variance
+tracks local sparsity — turns out to be robust to that gap rather than an
+artifact of it. Good news for the robustness of the headline result;
+independent motivation for fitting anyway, since calibration (ROADMAP.md
+item 5 — AUSE, sparsification, held-out NLL) is a separate claim from
+correlation and this is direct evidence the hardcoded value was
+miscalibrated even where it wasn't obviously *wrong*.
+
+**What this doesn't yet do:** one checkpoint, one scene region split into
+fit/held-out windows rather than genuinely disjoint scenes; no per-splat
+covariance-as-bandwidth comparison (a separate, likely larger, ROADMAP item
+2 sub-piece); Matern's much larger correction and much larger held-out gain
+relative to RBF's raises a specific new question — is Matern's nominal
+`rho=0.05` further from *its* population-optimal value than RBF's
+`sigma=0.05` is from RBF's, structurally, or is this specific to lego's
+geometry — not yet answered, and worth checking against the thin-rod
+checkpoint too before treating it as a general kernel-family property.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

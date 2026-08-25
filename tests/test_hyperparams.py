@@ -1,7 +1,13 @@
 import numpy as np
 
-from bq_splat.hyperparams import fit_kernel_param, fit_kernel_param_pooled, log_marginal_likelihood
-from bq_splat.kernels import MaternKernel, RBFKernel
+from bq_splat.hyperparams import (
+    fit_kernel_param,
+    fit_kernel_param_pooled,
+    fit_kernel_param_pooled_nd,
+    log_marginal_likelihood,
+    log_marginal_likelihood_nd,
+)
+from bq_splat.kernels import MaternKernel, ProductKernel, RBFKernel
 
 
 def test_lml_prefers_true_generating_bandwidth_over_far_off_ones():
@@ -63,3 +69,46 @@ def test_fit_kernel_param_works_for_matern_too():
     fit = fit_kernel_param(nodes, values, lambda r: MaternKernel(rho=r), bounds=(1e-2, 3.0))
     assert fit.param > 0
     assert np.isfinite(fit.log_marginal_likelihood)
+
+
+def _product_rbf(sigma, d=3):
+    return ProductKernel([RBFKernel(sigma=sigma)] * d)
+
+
+def test_lml_nd_matches_1d_lml_for_a_single_axis_product_kernel():
+    """A ProductKernel with exactly one 1D RBF factor computes the exact
+    same Gram matrix as RBFKernel directly (ProductKernel.k reduces to its
+    single factor) -- a direct correctness check that
+    log_marginal_likelihood_nd isn't a different formula, just a different
+    input convention (RBFKernel isn't normalized to k(x,x)=1, so this must
+    be checked via a genuine D=1 product kernel, not by collapsing extra
+    axes to a shared constant, which would rescale the Gram matrix by that
+    constant's self-similarity and change the LML for a reason that has
+    nothing to do with correctness)."""
+    rng = np.random.default_rng(4)
+    true_sigma = 0.4
+    x = np.sort(rng.uniform(0, 10, size=20))
+    kxx_1d = RBFKernel(sigma=true_sigma).k(x.reshape(-1, 1), x.reshape(1, -1))
+    kxx_1d = kxx_1d + 1e-6 * np.eye(len(x))
+    values = rng.multivariate_normal(np.zeros(len(x)), kxx_1d)
+
+    lml_1d = log_marginal_likelihood(x, values, RBFKernel(sigma=true_sigma))
+
+    nodes_1d_as_nd = x.reshape(-1, 1)
+    lml_nd = log_marginal_likelihood_nd(nodes_1d_as_nd, values, ProductKernel([RBFKernel(sigma=true_sigma)]))
+
+    assert np.isclose(lml_1d, lml_nd, atol=1e-9)
+
+
+def test_fit_kernel_param_pooled_nd_recovers_shared_bandwidth_across_3d_windows():
+    rng = np.random.default_rng(5)
+    true_sigma = 0.3
+    datasets = []
+    for _ in range(6):
+        nodes = rng.uniform(0, 2, size=(20, 3))
+        kxx = _product_rbf(true_sigma).k(nodes, nodes) + 1e-6 * np.eye(len(nodes))
+        values = rng.multivariate_normal(np.zeros(len(nodes)), kxx)
+        datasets.append((nodes, values))
+
+    fit = fit_kernel_param_pooled_nd(datasets, lambda s: _product_rbf(s), bounds=(0.03, 2.0))
+    assert 0.1 < fit.param < 0.8

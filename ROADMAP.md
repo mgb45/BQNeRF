@@ -83,11 +83,30 @@ toy scale, with a genuine finding: it helps for Matérn, not for RBF (the
 population-optimal RBF bandwidth turned out to match the original hardcoded
 value almost exactly — see `bq_splat/FINDINGS.md` §7). Every `gs_experiment/`
 result so far still hardcodes `sigma` per scene. This needs to move to real
-GS scale as a first-class part of the pipeline, not an appendix footnote:
+GS scale as a first-class part of the pipeline, not an appendix footnote.
 
-- Marginal-likelihood fitting of the position and directional bandwidths
-  jointly, at real checkpoint scale (10^5-10^6 splats), not just the toy
-  scenes it was validated on.
+**First installment done.** `bq_splat/hyperparams.py` gained
+`log_marginal_likelihood_nd`/`fit_kernel_param_pooled_nd`, working directly
+with `ProductKernel` over a real 3D position domain, and
+`scripts/fit_hyperparameters_real_checkpoint.py` fits a shared bandwidth
+against real local windows from the lego "wide" checkpoint, with a
+held-out split in the spirit of `validate_trainable_kernel_heldout.py`.
+Result: fitted bandwidths differ from the hardcoded `0.05` in *opposite*
+directions per kernel (RBF `0.0624`, Matern-3/2 `0.0234`), and generalize
+decisively to held-out windows (held-out log marginal likelihood far
+better at the fitted value than at the hardcoded one for both kernels,
+especially Matern) — real evidence the hardcoded value was leaving
+marginal likelihood on the table. But the fitted bandwidth did *not*
+materially move the headline sparsity-correlation finding (`r=-0.616`
+fitted vs. `-0.612` hardcoded) — good news for that claim's robustness,
+and independent motivation for fitting anyway since calibration (item 5)
+is a different claim from correlation. Full account, including an open
+question about whether Matern's much larger correction is scene-specific,
+in `gs_experiment/results/FINDINGS.md` §26.
+
+**Still needed:**
+- Joint fitting of the position *and* directional bandwidths together
+  (kappa), not just the position term done so far.
 - **Per-splat covariance as the kernel bandwidth**, rather than one shared
   scalar — flagged as a deliberate, real extension since the very first
   version of this plan and never attempted. This is likely to matter more
@@ -95,10 +114,13 @@ GS scale as a first-class part of the pipeline, not an appendix footnote:
   covariance that a shared-bandwidth kernel throws away. Run as an explicit
   ablation against shared-bandwidth (see the ablation matrix below), not
   assumed to help.
-- A held-out generalization check in the same style as
-  `validate_trainable_kernel_heldout.py` (fit on one scene split, evaluate
-  on a disjoint one) repeated at real scale, since the toy-scale RBF result
-  was specifically an overfitting story that a held-out test caught.
+- Repeat the fit/held-out check on the thin-rod checkpoint and other
+  scenes, to test whether Matern's much larger correction on lego is a
+  general kernel-family property or specific to that scene's geometry
+  (flagged as open in §26).
+- A cleaner rerun with matched RNG seeds between the fitting script and
+  `sparsity_correlation_experiment.py`, so the correlation comparison is a
+  literal replication, not just an internally-consistent one (§26 caveat).
 
 ### 3. Training under the likelihood, not just post-hoc readout
 

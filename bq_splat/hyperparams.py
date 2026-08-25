@@ -23,7 +23,7 @@ from typing import Callable
 import numpy as np
 from scipy import optimize
 
-from bq_splat.kernels import Kernel
+from bq_splat.kernels import Kernel, ProductKernel
 
 
 def log_marginal_likelihood(nodes, values, kernel: Kernel, rel_jitter: float = 1e-4) -> float:
@@ -134,4 +134,71 @@ def fit_kernel_param_pooled(
     `pooled_log_marginal_likelihood` across many (nodes, values) datasets
     under one shared bandwidth."""
     objective = lambda p: pooled_log_marginal_likelihood(datasets, kernel_factory(p))
+    return _grid_search_then_refine(objective, bounds, n_grid)
+
+
+def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter: float = 1e-4) -> float:
+    """Same objective as `log_marginal_likelihood`, generalized to a
+    `ProductKernel` over a D-dimensional domain (real splat positions, not
+    a 1D ray-depth domain) -- what ROADMAP.md item 2 asks for: this module
+    fit a bandwidth per *toy* scene, never against real splat data.
+
+    Kept as a separate function rather than making `log_marginal_likelihood`
+    branch on kernel type, mirroring how `bayesian_quadrature_nd` was kept
+    separate from `bayesian_quadrature` (bq_splat/quadrature.py) so the
+    already-tested 1D path stays untouched.
+
+    `nodes`: (N, D), used directly with `kernel.k(nodes, nodes)` -- unlike
+    the 1D functions above, no `.reshape(-1, 1)` convention, since
+    `ProductKernel.k` already expects (N, D) inputs.
+    """
+    nodes = np.atleast_2d(np.asarray(nodes, dtype=float))
+    values = np.asarray(values, dtype=float).reshape(-1)
+    n = nodes.shape[0]
+    if n == 0:
+        return 0.0
+
+    kxx = kernel.k(nodes, nodes)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + jitter * np.eye(n)
+
+    try:
+        L = np.linalg.cholesky(kxx)
+    except np.linalg.LinAlgError:
+        return -np.inf
+
+    alpha = np.linalg.solve(L.T, np.linalg.solve(L, values))
+    quad_term = -0.5 * float(values @ alpha)
+    logdet_term = -np.sum(np.log(np.diag(L)))
+    const_term = -0.5 * n * np.log(2 * np.pi)
+    return quad_term + logdet_term + const_term
+
+
+def pooled_log_marginal_likelihood_nd(datasets, kernel: ProductKernel) -> float:
+    """ND analogue of `pooled_log_marginal_likelihood`: sum of
+    `log_marginal_likelihood_nd` across many (positions, colors) local
+    windows sampled from one (or several) real checkpoints, under one
+    shared bandwidth -- the practical fitting objective at GS scale, since
+    a single window rarely has enough points on its own to pin down a
+    bandwidth precisely."""
+    total = 0.0
+    for nodes, values in datasets:
+        lml = log_marginal_likelihood_nd(nodes, values, kernel)
+        if not np.isfinite(lml):
+            return -np.inf
+        total += lml
+    return total
+
+
+def fit_kernel_param_pooled_nd(
+    datasets,
+    kernel_factory: Callable[[float], ProductKernel],
+    bounds=(1e-3, 5.0),
+    n_grid: int = 25,
+) -> FitResult:
+    """ND analogue of `fit_kernel_param_pooled`: fit one shared bandwidth
+    across many local (positions, colors) windows via a `ProductKernel`.
+    `kernel_factory` maps a scalar bandwidth to e.g.
+    `ProductKernel([RBFKernel(sig)] * 3)`."""
+    objective = lambda p: pooled_log_marginal_likelihood_nd(datasets, kernel_factory(p))
     return _grid_search_then_refine(objective, bounds, n_grid)
