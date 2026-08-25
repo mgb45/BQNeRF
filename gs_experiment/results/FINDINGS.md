@@ -974,6 +974,91 @@ the framing implicitly hoped for. This is exactly the kind of finding this
 project's process is supposed to surface rather than avoid running the
 experiment that might produce it.
 
+## 28. Validating against gsplat's real reference trainer (ROADMAP.md item 4), and a real methodological pitfall caught along the way
+
+Every real-data result so far (§9-27) used this project's own from-scratch
+trainer (`train_minimal_gsplat.py`), including its own from-scratch
+densification (`densify_and_prune`) — a standing, explicitly-acknowledged
+reviewer concern (ROADMAP.md item 4): is the central "BQ variance tracks
+local sparsity" finding a real property of Bayesian-quadrature-on-splats,
+or an artifact of this project's simplified training loop?
+
+**Mechanism.** `train_with_reference_strategy` (`train_minimal_gsplat.py`)
+trains using `gsplat.strategy.DefaultStrategy` — gsplat's own official
+implementation of the standard 3DGS duplicate/split/prune/opacity-reset
+algorithm — instead of this project's `densify_and_prune`, keeping loss,
+initialization, and every other hyperparameter identical to `train` so any
+downstream difference can be attributed to the densification mechanism
+specifically. Deliberately not a full reproduction of gsplat's official
+example script (which also uses SSIM loss and a heavier example-only
+dependency set — fused-ssim, viser, nerfview — this module's docstring
+already explains why those were avoided from the start). One real
+integration gotcha, caught by a crash rather than silently wrong output:
+`gsplat.rasterization` defaults to `packed=True`, but
+`strategy.step_post_backward` defaults to `packed=False` and indexes its
+internal state tensors differently depending on which was actually used —
+confirmed by reading `gsplat/strategy/default.py`'s source, not assumed,
+after the mismatched default threw `IndexError: tuple index out of range`.
+
+**A real methodological pitfall, caught before it could produce a false
+negative.** The first cross-trainer check reused this scene family's
+existing `sigma=0.9`/`window_radius=1.6` (`nbv_experiment.py`,
+`differentiation_experiment.py`) for a `sparsity_correlation_experiment.py`
+-style check — and got `r=+0.219` (weak, barely significant, *wrong sign*
+relative to every prior sparsity-correlation result). Before concluding
+the effect doesn't hold on this scene family, the actual node spacing was
+checked directly: median nearest-neighbor distance between splats here is
+`~0.023`, while `window_radius=1.6` (picked for *zone-level* directional
+experiments on this same scene, radius-1.2-1.5 clusters — not for a local
+density measurement) is ~70x that spacing — large enough that nearly every
+query point's "local window" swallows most of the scene, saturating the
+sparse/dense contrast into noise rather than measuring anything local.
+Re-run with `sigma=0.05`/`window_radius=0.15` (scaled to the checkpoint's
+actual splat spacing, the way lego's `0.05`/`0.08` was scaled to *its*
+spacing) on the exact same checkpoint: **`r=-0.956`, p=1.3e-80** — strong,
+correctly signed, stronger than lego's `r=-0.74`. The lesson, worth
+stating plainly for anyone reusing this codebase's kernel parameters
+across experiments: **`sigma`/`window_radius` must be scaled to the
+phenomenon and checkpoint being measured, not carried over from a
+different experiment on the same scene** — direct, concrete motivation for
+finishing ROADMAP.md item 2's per-checkpoint bandwidth fitting rather than
+continuing to hand-pick these per script.
+
+**The actual cross-trainer comparison, with correctly-scaled parameters.**
+`train_with_reference_strategy` trained on the identical scene/seed/
+hyperparameters as item 3's `baseline` variant (`nbv_out/baseline`, 3000
+iterations), reaching 18,529 splats above opacity 0.1 (vs. the from-scratch
+trainer's 2,043 — gsplat's real reference strategy grows far more
+aggressively at this budget, expected since its default thresholds are
+tuned for the ~30k-iteration budgets gsplat's own examples typically use,
+not this project's 3000-iteration convention). Sparsity-correlation check
+(`sigma=0.05`, `window_radius=0.15`, both checkpoints):
+
+| checkpoint | n_splats | Pearson r | sparse/dense ratio |
+|---|---|---|---|
+| from-scratch trainer (`densify_and_prune`) | 2,043 | -0.956 (p=1.3e-80) | 1.61x |
+| gsplat reference strategy (`DefaultStrategy`) | 18,529 | -0.915 (p=2.7e-60) | 2.05x |
+
+**Same sign, comparable strength, on a checkpoint from a completely
+independent, official implementation this project didn't write.** This is
+direct evidence the central claim isn't an artifact of this project's
+simplified densification — the strongest form of external validation
+attempted so far, since gsplat's `DefaultStrategy` is code this project
+has no influence over.
+
+**Quality caveat, reported rather than glossed over**: at this *matched*
+3000-iteration budget, the reference-strategy checkpoint's PSNR is lower
+than the from-scratch trainer's despite having ~9x more splats (train
+42.93dB / held-out 20.31dB vs. the from-scratch baseline's 46.13dB /
+21.14dB from §27's table) — plausibly because `DefaultStrategy`'s
+refine/reset cadence (`reset_every=3000` by default) is calibrated for a
+much longer training run than this comparison used, not evidence the
+reference algorithm is worse in general. Not investigated further here;
+a matched *convergence* comparison (not matched iteration count) is the
+correct next check before drawing any quality conclusion, but was out of
+scope for what this installment set out to answer (does the sparsity
+finding survive a real reference trainer — yes).
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

@@ -626,6 +626,130 @@ def train(
     print(f"wrote {positions.shape[0]} splats to {out_path}")
 
 
+def train_with_reference_strategy(
+    scene_dir: str,
+    out_path: str,
+    n_splats: int = 1500,
+    bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)),
+    sh_degree: int = 1,
+    n_iters: int = 3000,
+    seed: int = 0,
+    log_every: int = 1000,
+    device: str = "cuda",
+    background_color=(0.05, 0.05, 0.05),
+    init_scale: Optional[float] = None,
+    opacity_reg_weight: float = 0.003,
+    strategy_kwargs: Optional[dict] = None,
+):
+    """ROADMAP.md item 4: validate this project's BQ findings against
+    gsplat's own official reference densification strategy
+    (`gsplat.strategy.DefaultStrategy` -- the standard duplicate/split/
+    prune/opacity-reset algorithm from the original 3DGS paper, exposed by
+    gsplat as a reusable strategy object, not this project's from-scratch
+    reimplementation in `densify_and_prune`), on the same scene/loss/init
+    `train` uses everywhere else in this project.
+
+    Deliberately *not* a full reproduction of gsplat's official example
+    script (`examples/simple_trainer.py`), which also uses SSIM loss and a
+    heavier example-only dependency set (fused-ssim, viser, nerfview -- see
+    this module's top docstring for why those were avoided from the
+    start): this function keeps the loss, initialization, and optimizer
+    schedule identical to `train`, swapping *only* the densification
+    mechanism for gsplat's real one. That's a deliberate scope choice, not
+    an oversight -- it isolates "is this project's from-scratch
+    densification the reason for its BQ findings" from every other way a
+    full reference reproduction could differ, at the cost of not being a
+    complete SSIM-loss/full-pipeline reference reproduction.
+
+    `params` uses gsplat's own naming convention (`"means"`, `"scales"`,
+    `"quats"`, `"opacities"`, plus `"sh"` as a project-specific extra key --
+    `DefaultStrategy`'s split/duplicate/prune/reset ops handle any key
+    generically once `check_sanity` confirms the four required keys are
+    present), and one optimizer per parameter (`Dict[str, Optimizer]`), not
+    `train`'s single multi-group Adam -- both are exactly what
+    `gsplat.strategy.DefaultStrategy` expects, confirmed against its own
+    source (`gsplat/strategy/default.py`, `ops.py`) rather than assumed.
+    """
+    import gsplat
+    from gsplat.strategy import DefaultStrategy
+
+    rng = np.random.default_rng(seed)
+    torch.manual_seed(seed)
+
+    images, viewmats, Ks, width, height = load_dataset(scene_dir, device)
+    n_views = images.shape[0]
+
+    raw = init_splats(n_splats, bounds, sh_degree, device, rng, init_scale=init_scale)
+    key_map = {"means": "positions", "scales": "log_scales", "quats": "quats", "opacities": "opacity_logits", "sh": "sh"}
+    params = torch.nn.ParameterDict({dst: raw[src] for dst, src in key_map.items()})
+    optimizers = {
+        dst: torch.optim.Adam([{"params": [params[dst]], "lr": LR_BY_NAME[src], "name": dst}])
+        for dst, src in key_map.items()
+    }
+
+    strategy = DefaultStrategy(**(strategy_kwargs or {}))
+    strategy.check_sanity(params, optimizers)
+
+    c2ws = np.linalg.inv(viewmats.cpu().numpy())
+    centers = c2ws[:, :3, 3]
+    scene_scale = float(np.median(np.linalg.norm(centers - centers.mean(axis=0), axis=1))) or 1.0
+    state = strategy.initialize_state(scene_scale=scene_scale)
+
+    background = torch.tensor(background_color, dtype=torch.float32, device=device)
+
+    for it in range(n_iters):
+        view_idx = int(rng.integers(0, n_views))
+        gt = images[view_idx : view_idx + 1].reshape(height, width, 3)
+
+        sh_for_gsplat = params["sh"].transpose(1, 2)
+        rendered, _, info = gsplat.rasterization(
+            params["means"], params["quats"], torch.exp(params["scales"]), torch.sigmoid(params["opacities"]),
+            sh_for_gsplat, viewmats[view_idx : view_idx + 1], Ks[view_idx : view_idx + 1],
+            width=width, height=height, sh_degree=sh_degree, backgrounds=background,
+        )
+        pred = rendered[0]
+
+        strategy.step_pre_backward(params, optimizers, state, it, info)
+
+        loss = (
+            torch.nn.functional.l1_loss(pred, gt)
+            + torch.nn.functional.mse_loss(pred, gt)
+            + opacity_reg_weight * torch.sigmoid(params["opacities"]).mean()
+        )
+        for opt in optimizers.values():
+            opt.zero_grad()
+        loss.backward()
+        for opt in optimizers.values():
+            opt.step()
+
+        # gsplat.rasterization defaults to packed=True; step_post_backward
+        # defaults to packed=False and reads info's tensors in a shape
+        # specific to whichever mode actually produced them (confirmed via
+        # gsplat/strategy/default.py's source, not assumed) -- passing the
+        # wrong one throws inside _update_state rather than silently
+        # misbehaving, which is how this was caught.
+        strategy.step_post_backward(params, optimizers, state, it, info, packed=True)
+
+        if it % log_every == 0 or it == n_iters - 1:
+            with torch.no_grad():
+                psnr = -10.0 * torch.log10(torch.nn.functional.mse_loss(pred, gt).clamp_min(1e-10))
+            print(
+                f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}  psnr(train view) {psnr.item():.2f}dB  "
+                f"n_splats {params['means'].shape[0]}"
+            )
+
+    with torch.no_grad():
+        positions = params["means"].detach().cpu().numpy()
+        scales = torch.exp(params["scales"]).detach().cpu().numpy()
+        rotations = params["quats"].detach().cpu().numpy()
+        opacities = torch.sigmoid(params["opacities"]).detach().cpu().numpy()
+        sh_coeffs = params["sh"].detach().cpu().numpy()
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    write_3dgs_ply(out_path, positions, scales, rotations, opacities, sh_coeffs, sh_degree)
+    print(f"wrote {positions.shape[0]} splats to {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scene_dir", help="directory with transforms.json + images/ (gs_experiment.blender_render output)")

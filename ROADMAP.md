@@ -189,14 +189,31 @@ compare against a cited number. Needed:
   cite their published numbers on these exact scenes and report this
   project's numbers on the same scenes/splits, so the comparison is
   apples-to-apples even without re-running their code.
-- **Validate against a real reference 3DGS/gsplat trainer**, not only the
-  from-scratch minimal trainer written for this project
-  (`train_minimal_gsplat.py`). The minimal trainer was necessary to get
-  something working end-to-end fast, but a reviewer will reasonably ask
-  whether these results are an artifact of a non-standard, simplified
-  training loop. Re-run the core differentiation and combination
-  experiments against checkpoints from gsplat's own example trainer (or
-  the original Inria 3DGS repo) as a cross-check.
+- **Validate against a real reference 3DGS/gsplat trainer** — **first
+  installment done.** `train_with_reference_strategy`
+  (`train_minimal_gsplat.py`) trains using `gsplat.strategy.DefaultStrategy`
+  (gsplat's own official duplicate/split/prune/opacity-reset
+  implementation) in place of this project's `densify_and_prune`, holding
+  everything else identical. Re-running the sparsity-correlation check on
+  a checkpoint from this real, external, this-project-didn't-write
+  implementation gives `r=-0.915` (p=2.7e-60), matching sign and strength
+  with the from-scratch trainer's `r=-0.956` on the same scene — direct
+  evidence the central claim isn't an artifact of the simplified training
+  loop. Caught a real integration bug along the way (a `packed=True`/
+  `False` default mismatch between `gsplat.rasterization` and
+  `strategy.step_post_backward`) and a real methodological pitfall in this
+  project's own process (reusing a `sigma`/`window_radius` pair tuned for
+  a *different*, zone-level experiment on the same scene produced a
+  wrong-signed `r=+0.219` until rescaled to the checkpoint's actual splat
+  spacing) — both documented in `gs_experiment/results/FINDINGS.md` §28,
+  including a quality caveat (the reference checkpoint's PSNR trails the
+  from-scratch one at this *matched-iteration-count* comparison, plausibly
+  because `DefaultStrategy`'s defaults are tuned for far longer training
+  budgets than this project's 3000-iteration convention — not yet
+  investigated further, flagged rather than glossed over). Not yet done:
+  re-running the *other* core experiments (differentiation, pruning, NBV)
+  against a reference-strategy checkpoint, and repeating this specific
+  check on lego rather than only the thin-rod scene family.
 
 ### 5. Calibration, not just correlation
 
