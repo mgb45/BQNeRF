@@ -1327,6 +1327,92 @@ this data — the honest claim is "kernel choice trades off which specific
 property is best-served," which is itself a real, reportable finding
 about this project's central mechanism, not a hedge to bury.
 
+## 32. All 8 standard NeRF-Synthetic scenes (ROADMAP.md items 4 and 7): the headline claim replicates everywhere, calibration doesn't, and one new methodological wrinkle
+
+Every real-data result before this section ran on lego alone — the "full
+NeRF-Synthetic, all 8 scenes" gap ROADMAP.md item 4 named explicitly, and
+the multi-scene statistics item 7 asks for. This closes it: chair, drums,
+ficus, hotdog, materials, mic, and ship, the remaining 7 standard scenes,
+downloaded, trained, and evaluated with the identical sparsity-correlation
+and leave-one-out calibration protocol (`multi_scene_experiment.py`) used
+on lego throughout items 4-6, at `sigma=0.05`, `window_radius=0.08` (lego's
+own established convention, not the thin-rod family's).
+
+**Two real, practical frictions before any numbers, both worth recording
+plainly for anyone reproducing this**: the mirror lego's data came from
+(`phuckstnk63/nerf-synthetic`, §20) turns out to contain *only* lego —
+not a partial mirror of all 8 scenes, an accidental single-scene one. The
+complete 8-scene mirror used here (`pablovela5620/nerf-synthetic-mirror`,
+verified file-by-file: 100 train / 100 val / 200 real color test images
+per scene, all 8) is a different repo. And: launching all 7 downloads in
+parallel against the public HF endpoint immediately hit its anonymous
+rate limit (429, "1000 api requests per 5 minute period") — repeatedly,
+even on retry, until downloads were serialized one at a time. A real
+practical constraint for anyone trying to reproduce this at similar scale
+without a paid HF account, not a one-off flake.
+
+**Scope choice, stated up front**: unlike lego's original ~80,000-splat-
+cap run, these 7 scenes trained at a deliberately lighter budget
+(`n_splats=2000`, `max_splats=15000`, `n_iters=2500`) for feasible
+wall-clock across 7 scenes in one sitting. Reconstruction quality was not
+the point — both checks measure the relationship between local density
+and BQ variance/error, not how good the render looks — but this means
+these 7 checkpoints have far fewer splats (2,378-3,869) than lego's
+35,819, which turns out to matter (see below).
+
+| scene | n_splats | median local count | sparsity r | calib r | NLL(bq) | NLL(const) |
+|---|---|---|---|---|---|---|
+| lego | 35,819 | 120.0 | -0.736 | -0.032 | 8,023.56 | 3,697.50 |
+| chair | 2,621 | 1.0 | -0.959 | 0.092 | 469.41 | 418.72 |
+| drums | 2,669 | 1.0 | -0.938 | 0.146 | 393.97 | 359.87 |
+| ficus | 2,953 | 1.0 | -0.950 | 0.007 | 687.92 | 636.15 |
+| hotdog | 2,961 | 1.0 | -0.970 | 0.102 | 521.89 | 451.99 |
+| materials | 3,869 | 1.0 | -0.916 | 0.109 | 398.00 | 360.43 |
+| mic | 2,378 | 1.0 | -0.935 | 0.079 | 442.06 | 402.75 |
+| ship | 3,101 | 1.0 | -0.960 | 0.280 | 290.34 | 268.56 |
+
+(all `sparsity_r` values `p<1e-25`; lego re-evaluated fresh with this
+section's exact script/RNG rather than quoting §24's or §26's numbers,
+which used different RNG states — the point of this table is a genuinely
+matched comparison, not a reproduction of an earlier figure.)
+
+**The sparsity-correlation claim replicates strongly on every single one
+of the 8 standard NeRF-Synthetic scenes** — `r` between -0.74 and -0.97,
+every one significant beyond any reasonable doubt. This is the strongest
+multi-scene evidence for this project's central claim gathered so far:
+not one scene, not a hand-picked pair, the complete standard benchmark.
+
+**Calibration does not replicate as a positive result — consistent with
+§29's finding, now on 7 more scenes.** `calib_r` is weak everywhere
+(0.007 to 0.28, one value even slightly negative on lego at this specific
+evaluation) and **held-out NLL is worse than a flat constant-variance
+baseline on all 8 scenes without exception**. This is not a new negative
+finding so much as the same one from §29 holding up under much broader
+testing — worth stating precisely: §29 checked 3 checkpoints and found
+calibration weak/inconsistent; this checks 8 and finds the same pattern
+every time, which makes it a considerably more solid basis for the
+"sparsity correlation is real and robust, absolute calibration is not
+yet established" claim than 3 checkpoints could.
+
+**A new methodological wrinkle, not previously visible at lego's scale**:
+every one of the 7 lighter-budget checkpoints has a *median local count
+of exactly 1.0* at `window_radius=0.08` — meaning the typical query
+point's window contains at most one other splat, a far coarser
+discretization than lego's median of 120. The strong correlations on
+these 7 scenes are real (not a bug — spot-checked the underlying counts
+directly) but are being driven by a much coarser "isolated vs.
+not-isolated" contrast than lego's smoother density gradient, not
+necessarily the same thing being measured. This doesn't undermine the
+replication — if anything, a strong, consistently-signed correlation
+surviving under much coarser binning is a real point in the claim's
+favor — but it means these 7 numbers and lego's aren't measuring
+identically fine-grained density variation, and a like-for-like
+replication (matching lego's splat count/density more closely, at the
+cost of the wall-clock this section's lighter budget was chosen to save)
+is the natural, explicitly flagged follow-up before citing "8/8 scenes,
+`r<-0.7` everywhere" as a headline paper number without this caveat
+attached.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

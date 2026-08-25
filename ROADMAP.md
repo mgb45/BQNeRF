@@ -196,9 +196,30 @@ discussion in `gs_experiment/results/FINDINGS.md` §27's addendum.
 Nothing so far runs on a benchmark or protocol a reviewer can directly
 compare against a cited number. Needed:
 
-- **Full NeRF-Synthetic** (all 8 scenes — lego is the only one attempted),
-  standard train/val/test split, standard resolution and view counts, not
-  a single scene picked for convenience.
+- **Full NeRF-Synthetic (all 8 scenes) — done for the sparsity/calibration
+  checks.** `multi_scene_experiment.py` downloaded, trained (a lighter
+  budget than lego's original 80k-splat run, stated as a scope choice,
+  not hidden), and evaluated the remaining 7 scenes (chair, drums, ficus,
+  hotdog, materials, mic, ship) with the identical protocol used on lego.
+  **The sparsity-correlation claim replicates on all 8 standard scenes**
+  (`r` between -0.74 and -0.97, every one significant) — the strongest
+  multi-scene evidence for the central claim so far. Calibration does
+  *not* replicate as a positive result on any of the 8 (held-out NLL
+  worse than a flat baseline every time), consistent with and now much
+  more solidly grounding item 5's §29 finding. One new methodological
+  wrinkle surfaced at this lighter budget: all 7 new checkpoints have a
+  median local count of exactly 1 neighbor at lego's `window_radius`,
+  much coarser than lego's own density — flagged as a real caveat on the
+  "8/8 scenes" headline, with a like-for-like replication (matching
+  splat density, not just scene identity) named as the natural follow-up.
+  Also surfaced a real, previously-unknown data-source problem: lego's
+  original mirror (`phuckstnk63/nerf-synthetic`, §20) turns out to
+  contain *only* lego, not a partial 8-scene mirror as assumed — a
+  different, verified-complete mirror was used for all 8. Full account,
+  including a documented HF anonymous-rate-limit friction from an initial
+  parallel-download attempt, in `gs_experiment/results/FINDINGS.md` §32.
+  Standard train/val/test split and resolution/view counts used
+  throughout (no synthetic geometry, no fabricated camera rigs).
 - **Mip-NeRF360** and **Tanks & Temples** — the scenes PUP 3D-GS and GAVIS
   actually report numbers on. Reproducing (or closely approximating) their
   splat-count-vs-quality and NBV-quality-vs-view-budget curves on the same
@@ -335,6 +356,18 @@ paper needs distributions, not point estimates: repeat the core
 differentiation and combination experiments across the full multi-scene
 benchmark set from item 4, with enough seeds to report a confidence
 interval or a Wilcoxon/paired test against baselines, not a single ratio.
+
+**The sparsity-correlation claim now has this.** Item 4's 8-scene
+NeRF-Synthetic run (`gs_experiment/results/FINDINGS.md` §32) gives 8
+independent `r` values (-0.74 to -0.97, one per scene, no seed variation
+yet) — enough to report a real range/distribution for this specific claim
+rather than one number, though still one seed per scene, and the 7 new
+scenes' lighter training budget means they're not a like-for-like density
+match to lego (flagged in §32). **The differentiation and combination
+experiments (milestones 2-4) have not been repeated multi-scene** — still
+one hand-built thin-rod scene for the core go/no-go claim, still no
+multi-seed statistics beyond the two seeds already done for that scene.
+That remains the main gap this item asks for.
 
 ### 8. Realistic, multi-round next-best-view prediction
 
