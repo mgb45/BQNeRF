@@ -47,6 +47,7 @@ import torch
 from PIL import Image
 
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
+from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
 from gs_experiment.ply_io import write_3dgs_ply
 from gs_experiment.spherical_harmonics import N_COEFFS_FOR_DEGREE
 
@@ -124,6 +125,132 @@ LR_BY_NAME = {"positions": 2e-3, "log_scales": 5e-3, "quats": 1e-3, "opacity_log
 
 def make_optimizer(params: dict) -> torch.optim.Optimizer:
     return torch.optim.Adam([{"params": [params[name]], "lr": lr, "name": name} for name, lr in LR_BY_NAME.items()])
+
+
+def _splat_positions_and_colors(params: dict):
+    """Detached numpy snapshot of current splat state, in the (positions,
+    scalar-color) form LocalUncertaintyEngine needs -- shared by both
+    ROADMAP.md item 3 mechanisms below (the NLL loss term and
+    variance-driven densification), since both need to build a fresh
+    engine from whatever the splat population looks like *right now*
+    (positions and count both change at every densify cycle)."""
+    positions_np = params["positions"].detach().cpu().numpy()
+    colors_np = params["sh"].detach().cpu().numpy()[:, :, 0].mean(axis=1)
+    return positions_np, colors_np
+
+
+def _build_uncertainty_engine(params: dict, sigma: float, max_neighbors: int) -> LocalUncertaintyEngine:
+    positions_np, colors_np = _splat_positions_and_colors(params)
+    bounds = tuple((positions_np[:, d].min() - 0.3, positions_np[:, d].max() + 0.3) for d in range(3))
+    pos_kernel = make_default_3d_position_kernel(sigma=sigma)
+    return LocalUncertaintyEngine(
+        positions=positions_np, values=colors_np, pos_kernel=pos_kernel, scene_bounds=bounds, max_neighbors=max_neighbors,
+    )
+
+
+def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: float, max_neighbors: int, device: str) -> torch.Tensor:
+    """BQ position-only variance at every current splat's own position --
+    the closed-form, "uncertainty-driven" analogue of the standard 3DGS
+    view-space-gradient densification signal (`avg_grad` in `train`):
+    where the gradient signal asks "does the optimizer keep wanting to
+    move this splat," this asks "is this splat sitting in a
+    poorly-covered region of the scene," directly from the same BQ
+    machinery this project's uncertainty claims are built on, not a proxy
+    for it. Pure numpy/scipy (LocalUncertaintyEngine), so this detaches
+    from the training graph entirely -- used only to pick *which* splats
+    to split/clone, not backpropagated through.
+    """
+    positions_np, _ = _splat_positions_and_colors(params)
+    engine = _build_uncertainty_engine(params, sigma, max_neighbors)
+    variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in positions_np])
+    return torch.tensor(variances, dtype=torch.float32, device=device)
+
+
+def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -> np.ndarray:
+    """Same construction as gs_experiment/render_sweep_gif.py's function of
+    the same name (not imported from there to avoid a matplotlib/PIL
+    import chain inside the training hot path): depth (H, W) in OpenCV
+    camera space -> (H, W, 3) world-space points, the real ray-surface hit
+    for every pixel of a low-res depth pass."""
+    h, w = depth.shape
+    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    us, vs = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
+    x_cam = (us - cx) / fx * depth
+    y_cam = (vs - cy) / fy * depth
+    cam_points = np.stack([x_cam, y_cam, depth, np.ones_like(depth)], axis=-1)
+    world_points = cam_points @ c2w_cv.T
+    return world_points[..., :3]
+
+
+def compute_nll_loss_term(
+    params: dict,
+    pred: torch.Tensor,
+    gt: torch.Tensor,
+    viewmat_np: np.ndarray,
+    K_full_np: np.ndarray,
+    width: int,
+    height: int,
+    sh_degree: int,
+    device: str,
+    grid_res: int,
+    sigma: float,
+    window_radius: float,
+    max_neighbors: int,
+    alpha_threshold: float,
+    variance_floor: float,
+) -> Optional[torch.Tensor]:
+    """Gaussian-NLL loss at a sparse grid of real ray-surface points,
+    weighted by closed-form BQ position-only variance -- ROADMAP.md item
+    3's "training under the likelihood," scoped honestly (see the
+    docstring on `train`'s `nll_weight` argument for exactly what this
+    does and does not do).
+
+    Returns None if the current view has no valid (alpha > threshold)
+    points on the query grid (e.g. very early in training, before any
+    splat has opacity/coverage at this view) -- callers should skip adding
+    the term for that iteration rather than treat this as an error.
+    """
+    import gsplat
+
+    with torch.no_grad():
+        quats = params["quats"]
+        scales = torch.exp(params["log_scales"])
+        opacities = torch.sigmoid(params["opacity_logits"])
+        sh_for_gsplat = params["sh"].transpose(1, 2)
+
+        K_grid_np = K_full_np.copy()
+        K_grid_np[0, 0] *= grid_res / width
+        K_grid_np[0, 2] *= grid_res / width
+        K_grid_np[1, 1] *= grid_res / height
+        K_grid_np[1, 2] *= grid_res / height
+        K_grid = torch.tensor(K_grid_np, dtype=torch.float32, device=device)
+        viewmat_t = torch.tensor(viewmat_np, dtype=torch.float32, device=device)
+
+        rendered_lo, alpha_lo, _ = gsplat.rasterization(
+            params["positions"], quats, scales, opacities, sh_for_gsplat,
+            viewmat_t[None], K_grid[None], width=grid_res, height=grid_res, sh_degree=sh_degree, render_mode="ED",
+        )
+        depth_map = rendered_lo[0, ..., 0].cpu().numpy()
+        alpha_map = alpha_lo[0, ..., 0].cpu().numpy()
+        valid = alpha_map > alpha_threshold
+        if not valid.any():
+            return None
+
+        c2w_cv = np.linalg.inv(viewmat_np)
+        world_points = unproject_depth_grid(depth_map, K_grid_np, c2w_cv)
+
+        engine = _build_uncertainty_engine(params, sigma, max_neighbors)
+        ys, xs = np.where(valid)
+        variances = np.array([engine.spatial_only_variance(world_points[y, x], window_radius).variance for y, x in zip(ys, xs)])
+
+        rows = np.clip(((ys.astype(np.float64) + 0.5) * height / grid_res).astype(int), 0, height - 1)
+        cols = np.clip(((xs.astype(np.float64) + 0.5) * width / grid_res).astype(int), 0, width - 1)
+
+    variance_t = torch.tensor(variances, dtype=torch.float32, device=device).clamp_min(variance_floor)
+    pred_at_pts = pred[rows, cols]
+    gt_at_pts = gt[rows, cols]
+    sq_err = ((pred_at_pts - gt_at_pts) ** 2).mean(dim=-1)
+    return 0.5 * (sq_err / variance_t + torch.log(variance_t)).mean()
 
 
 def densify_and_prune(
@@ -268,6 +395,15 @@ def train(
     min_opacity: float = 0.005,
     split_scale_threshold: Optional[float] = None,
     max_splats: int = 30000,
+    densify_criterion: str = "gradient",
+    bq_sigma: float = 0.9,
+    bq_window_radius: float = 1.6,
+    bq_max_neighbors: int = 150,
+    nll_weight: float = 0.0,
+    nll_interval: int = 100,
+    nll_grid_res: int = 12,
+    nll_alpha_threshold: float = 0.5,
+    nll_variance_floor: float = 1e-8,
 ):
     """`densify`, off by default for backward compatibility with existing
     callers/results: turns on gradient-based clone/split + opacity
@@ -287,6 +423,48 @@ def train(
     scale is a reasonable proxy for "already covering more than one
     feature's worth of space, so cloning it wouldn't help; splitting
     would."
+
+    ROADMAP.md item 3 ("training under the likelihood"), first
+    installment, two independent knobs:
+
+    - `densify_criterion`: `"gradient"` (default, unchanged behavior) or
+      `"bq_variance"` -- swaps the densification trigger from gsplat's
+      view-space positional gradient to real closed-form BQ position-only
+      variance (`compute_per_splat_bq_variance`), queried at every
+      current splat's own position via `LocalUncertaintyEngine`, every
+      `densify_interval` iterations (same cadence, not every iteration --
+      a KD-tree + one BQ solve per splat isn't free). Same percentile-
+      threshold split/clone/prune logic either way; only what counts as
+      "this splat needs more coverage" changes.
+    - `nll_weight` (0.0 = off by default): adds an uncertainty-weighted
+      Gaussian-NLL auxiliary loss term every `nll_interval` iterations,
+      `0.5 * ((pred-gt)^2 / var + log(var))` averaged over a sparse
+      `nll_grid_res` x `nll_grid_res` grid of REAL ray-surface points
+      (gsplat's own expected-depth output, unprojected -- same
+      construction as `render_sweep_gif.py`, not an approximation of
+      pixel positions), `var` the real closed-form BQ position-only
+      variance at each of those points. Honest scope note: `var` is
+      computed via `LocalUncertaintyEngine` (pure numpy/scipy) from a
+      detached snapshot of the current splat state and is *not* itself
+      differentiated through -- gradients flow through `pred` in the
+      `(pred-gt)^2/var` term as usual (so the practical effect is a
+      real-uncertainty-weighted reweighting of the photometric loss,
+      down-weighting already-well-resolved points relative to
+      under-resolved ones), but the `log(var)` calibration term
+      contributes zero gradient to the splat parameters since `var` is
+      fixed for that step. Differentiating through the BQ posterior
+      itself (a KD-tree ball query + linear solve) is a real further
+      step, not done here -- see ROADMAP.md item 3 and
+      gs_experiment/results/FINDINGS.md for the account of what this
+      first installment does and does not establish.
+    - `bq_sigma`/`bq_window_radius`/`bq_max_neighbors`: shared by both
+      mechanisms above, not independently tunable per-mechanism in this
+      first installment -- defaults match the thin-rod/cylinder scene
+      family's established convention (`nbv_experiment.py`,
+      `differentiation_experiment.py`), not the lego-scale
+      `sigma=0.05`/`window_radius=0.08` used elsewhere in
+      `gs_experiment/` -- pick values matching the actual scene's spatial
+      scale, not these defaults blindly, for a different scene family.
     """
     import gsplat  # deferred: only needed here, keeps ply_io/loader torch-free
 
@@ -377,6 +555,16 @@ def train(
             + opacity_reg_weight * opacities.mean()
         )
 
+        nll_term = None
+        if nll_weight > 0 and it % nll_interval == 0 and it > 0:
+            nll_term = compute_nll_loss_term(
+                params, pred, gt, viewmats[view_idx].cpu().numpy(), Ks[view_idx].cpu().numpy(), width, height,
+                sh_degree, device, nll_grid_res, bq_sigma, bq_window_radius, bq_max_neighbors,
+                nll_alpha_threshold, nll_variance_floor,
+            )
+            if nll_term is not None:
+                loss = loss + nll_weight * nll_term
+
         optimizer.zero_grad()
         loss.backward()
 
@@ -393,12 +581,24 @@ def train(
             with torch.no_grad():
                 psnr = -10.0 * torch.log10(torch.nn.functional.mse_loss(pred, gt).clamp_min(1e-10))
             n_now = params["positions"].shape[0]
-            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}  psnr(train view) {psnr.item():.2f}dB  n_splats {n_now}")
+            nll_str = f"  nll {nll_term.item():.4f}" if nll_term is not None else ""
+            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}{nll_str}  psnr(train view) {psnr.item():.2f}dB  n_splats {n_now}")
 
         if densify and densify_start <= it < densify_end and (it - densify_start) % densify_interval == 0 and it > 0:
             with torch.no_grad():
-                avg_grad = grad_accum / grad_denom.clamp(min=1)
-                has_data = grad_denom > 0
+                if densify_criterion == "bq_variance":
+                    # closed-form BQ position-only variance at each
+                    # splat's own position, in place of the view-space
+                    # gradient signal -- every splat has a well-defined
+                    # variance, so (unlike the gradient path) there's no
+                    # "never received a gradient yet" mask to apply.
+                    avg_grad = compute_per_splat_bq_variance(params, bq_sigma, bq_window_radius, bq_max_neighbors, device)
+                    has_data = torch.ones_like(avg_grad, dtype=torch.bool)
+                elif densify_criterion == "gradient":
+                    avg_grad = grad_accum / grad_denom.clamp(min=1)
+                    has_data = grad_denom > 0
+                else:
+                    raise ValueError(f"unknown densify_criterion: {densify_criterion!r}")
                 grad_threshold = (
                     torch.quantile(avg_grad[has_data], densify_grad_percentile / 100.0).item()
                     if has_data.any()
@@ -445,6 +645,12 @@ def main():
     parser.add_argument("--min-opacity", type=float, default=0.005)
     parser.add_argument("--split-scale-threshold", type=float, default=None)
     parser.add_argument("--max-splats", type=int, default=30000)
+    parser.add_argument("--densify-criterion", choices=["gradient", "bq_variance"], default="gradient")
+    parser.add_argument("--bq-sigma", type=float, default=0.9)
+    parser.add_argument("--bq-window-radius", type=float, default=1.6)
+    parser.add_argument("--nll-weight", type=float, default=0.0, help="0 = off; see train()'s docstring")
+    parser.add_argument("--nll-interval", type=int, default=100)
+    parser.add_argument("--nll-grid-res", type=int, default=12)
     args = parser.parse_args()
 
     train(
@@ -465,6 +671,12 @@ def main():
         min_opacity=args.min_opacity,
         split_scale_threshold=args.split_scale_threshold,
         max_splats=args.max_splats,
+        densify_criterion=args.densify_criterion,
+        bq_sigma=args.bq_sigma,
+        bq_window_radius=args.bq_window_radius,
+        nll_weight=args.nll_weight,
+        nll_interval=args.nll_interval,
+        nll_grid_res=args.nll_grid_res,
     )
 
 

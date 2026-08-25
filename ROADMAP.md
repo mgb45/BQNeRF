@@ -128,26 +128,49 @@ Every experiment so far computes BQ variance *after* training, from a
 checkpoint trained by ordinary photometric loss. The original NeRF-BQ
 prototype in this repo *did* train with a Gaussian-NLL loss
 (`models/nerf.py`) — that idea needs to come back at GS scale, and go
-further:
+further.
 
-- Gaussian-NLL (or a proper scoring rule) as an actual training loss for
-  the GS trainer, replacing or augmenting plain photometric loss, so the
-  model is optimized to have calibrated variance, not just to produce a
-  number that happens to correlate with sparsity after the fact.
-- **Uncertainty-driven densification**: use BQ posterior variance itself —
-  not gsplat's view-space positional gradient — as the clone/split trigger.
-  The current trainer's densification (`train_minimal_gsplat.py`) is a
-  reimplementation of the standard 3DGS gradient heuristic; a variance-
-  driven criterion is a genuinely different algorithm and the more
-  interesting one to report, since it closes the loop between the paper's
-  central signal and the training process that should respond to it,
-  rather than treating BQ variance as purely diagnostic.
-- Compare final reconstruction quality and splat-count efficiency: does
-  training under the likelihood, with variance-driven densification, beat
-  standard photometric-loss + gradient-densification at matched splat
-  budgets? This is a stronger, more central claim than the current
-  post-hoc pruning experiment, which only ever removes splats from an
-  already-finished checkpoint.
+**First installment done — a negative result, reported honestly, not
+softened.** `train_minimal_gsplat.py` gained both mechanisms:
+`densify_criterion="bq_variance"` (swaps the densification trigger from
+gsplat's view-space gradient to real closed-form BQ position-only variance,
+queried at every splat's own position) and `nll_weight` (an
+uncertainty-weighted Gaussian-NLL auxiliary loss term at a sparse grid of
+real ray-surface points, `var` from a detached BQ-variance snapshot, not
+itself differentiated through — an honest first approximation, not a fully
+closed loop). `nll_training_experiment.py` compared 4 variants
+(gradient/BQ-variance densify × NLL on/off) on a real scene, matched
+seed/hyperparameters, evaluated on both training views and a genuinely
+disjoint held-out ring. Result: **BQ-variance-driven densification is a
+real regression** — fewer splats *and* worse quality than gradient-based
+densification (train PSNR -7.27dB, held-out -0.49dB, not a favorable
+efficiency trade-off), most likely for the same reason an earlier,
+already-fixed problem in the pruning experiment (§15-16) existed: BQ
+variance is high in empty space too, and densification's variance query
+has no opacity floor to guard against that, unlike pruning's. The NLL
+term alone is close to a no-op (-0.15dB train, -0.22dB held-out),
+explainably so given how sparse/coarse and detached its first-installment
+signal is. Full account in `gs_experiment/results/FINDINGS.md` §27,
+including the concrete, not-yet-tested next step (an opacity floor on the
+densification variance query, mirroring `pruning_experiment.py`'s fix)
+before concluding the underlying idea doesn't work rather than just this
+first implementation of it.
+
+**Still needed:**
+- The opacity-floor fix above, tested directly, before drawing a final
+  conclusion about variance-driven densification.
+- A weight sweep and/or a finer/more frequent NLL grid, to check whether
+  the near-no-op result is a real ceiling or just this installment's
+  sparsity (the honest hypothesis in FINDINGS.md §27, not yet tested).
+- Differentiating through the BQ posterior itself, rather than treating
+  its variance as a periodically-refreshed, detached reweighting — the
+  fully closed version of "training under the likelihood," a real further
+  step beyond what this installment attempted.
+- Gaussian-NLL (or a proper scoring rule) as the *primary* training loss
+  rather than an auxiliary term, once the auxiliary version is shown to
+  help at all.
+- Repeating the comparison on more than one scene/seed before treating
+  either result (the regression or the no-op) as general.
 
 ### 4. Experiments on the same settings baselines actually use
 

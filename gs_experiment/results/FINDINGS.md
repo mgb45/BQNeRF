@@ -887,6 +887,93 @@ relative to RBF's raises a specific new question — is Matern's nominal
 geometry — not yet answered, and worth checking against the thin-rod
 checkpoint too before treating it as a general kernel-family property.
 
+## 27. Training under the likelihood (ROADMAP.md item 3): a negative result, reported honestly
+
+Every result above computes BQ variance *after* training, read off a
+checkpoint trained by ordinary photometric loss and gradient-triggered
+densification. ROADMAP.md item 3 asked whether closing that loop —
+training with an uncertainty-weighted Gaussian-NLL term, and/or swapping
+densification's trigger from view-space gradient to real closed-form BQ
+variance — actually helps, rather than assuming a more "principled"
+mechanism must be better.
+
+**Mechanism (`train_minimal_gsplat.py`).** `densify_criterion="bq_variance"`
+swaps the densification trigger from `meta["means2d"].grad` to
+`compute_per_splat_bq_variance`: at each densify cycle, build a
+`LocalUncertaintyEngine` from the current (detached) splat positions/colors
+and query BQ position-only variance at every splat's own position, same
+percentile-threshold split/clone/prune logic either way. `nll_weight > 0`
+adds `0.5 * ((pred-gt)^2/var + log(var))`, averaged over a sparse
+`nll_grid_res`-by-`nll_grid_res` grid of real ray-surface points (gsplat's
+own expected-depth output, unprojected -- the same construction as
+`render_sweep_gif.py`), every `nll_interval` iterations. Honest scope note
+written directly into the trainer's docstring: `var` comes from a detached
+numpy snapshot (`LocalUncertaintyEngine` isn't a torch object) and is not
+itself differentiated through, so the term's practical effect is an
+uncertainty-*weighted* photometric reweighting via the `(pred-gt)^2/var`
+term, not a fully closed training loop through the BQ posterior itself.
+
+**Experiment (`nll_training_experiment.py`).** Four variants, identical
+scene/seed/every other hyperparameter (matching `nbv_experiment.py`'s
+established training call for this scene family exactly), trained on the
+real 10-view `nbv_out/baseline` arc, evaluated on both training views and
+the genuinely disjoint `nbv_out/baseline_eval` held-out ring, 3000
+iterations each:
+
+| variant | final n_splats | train PSNR | held-out PSNR |
+|---|---|---|---|
+| baseline (gradient densify, no NLL) | 5462 | 46.13dB | 21.14dB |
+| bq_densify (BQ-variance densify, no NLL) | 3303 | 38.86dB | 20.66dB |
+| nll_loss (gradient densify + NLL) | 5485 | 45.98dB | 20.92dB |
+| bq_densify+nll | 3248 | 38.19dB | 20.52dB |
+
+**Neither mechanism helped. BQ-variance-driven densification is a real
+regression, not a neutral or favorable trade-off**: `bq_densify` ends up
+with *both* fewer splats (3303 vs. 5462) *and* substantially worse quality
+(-7.27dB train, -0.49dB held-out) than gradient-based densification --
+not "fewer splats for slightly worse quality" (a defensible efficiency
+trade), a straightforward loss on both axes. Its splat count even
+*shrank* in the final densify cycle (3469 -> 3303, pruning outpacing
+densification) where every other variant grew monotonically. The NLL loss
+term, in isolation (`nll_loss` vs. `baseline`), is close to a no-op,
+marginally negative (-0.15dB train, -0.22dB held-out).
+
+**A concrete, honest hypothesis for the BQ-densify regression, not yet
+tested**: this project already found and fixed the identical-shaped
+problem once before, in the pruning experiment (§15-16) -- BQ variance is
+high in genuinely empty space too (correct, but not useful as a signal),
+and an *unweighted* combination there spent budget protecting
+near-transparent junk until an opacity floor fixed it. Densification's
+`compute_per_splat_bq_variance` has no such floor: it queries variance at
+every splat regardless of opacity, so a splat sitting in a sparse but
+low-opacity, physically-irrelevant region can outscore a splat near real,
+under-resolved geometry. The natural next step is the same fix that
+worked for pruning -- floor the BQ-variance densification signal by
+opacity, the way `pruning_experiment.py`'s `min_opacity_for_bq` already
+does -- not yet implemented or tested here, reported as the specific next
+step rather than a vague "needs more work."
+
+**Why the NLL term looks like a near-no-op is also explainable rather than
+mysterious**: it's computed on a coarse 12x12 grid every 50 iterations
+(174,000 real per-pixel-resolution photometric updates happen between
+consecutive NLL evaluations at this scene's resolution), and `var` is
+detached -- by the trainer's own explicit design (see its docstring), this
+first installment reweights an already-small fraction of the training
+signal rather than closing a full differentiable loop through the BQ
+posterior. A near-zero effect at `nll_weight=0.02` and this sparsity is
+the expected outcome of that scope, not evidence the underlying idea is
+wrong -- a weight sweep and/or a much finer/more frequent grid (with the
+added compute cost that implies) are the natural next checks before
+concluding the mechanism itself doesn't help.
+
+**Recorded as a real negative result, not softened**: "training under the
+likelihood" was ROADMAP.md's own framing for what a strong paper needs,
+and the first honest test of the most direct version of it (swap the
+densification trigger, add the NLL term) did not deliver the improvement
+the framing implicitly hoped for. This is exactly the kind of finding this
+project's process is supposed to surface rather than avoid running the
+experiment that might produce it.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA
