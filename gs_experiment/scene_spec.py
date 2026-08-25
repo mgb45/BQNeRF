@@ -12,7 +12,7 @@ from typing import List, Tuple
 
 import numpy as np
 
-from gs_experiment.camera import CameraPose, translate_cameras, turntable_arc, turntable_ring
+from gs_experiment.camera import CameraPose, translate_cameras, turntable_arc, turntable_camera, turntable_ring
 
 
 @dataclass
@@ -72,6 +72,21 @@ def quick_validation_scene(n_views: int = 24, radius: float = 6.0) -> RenderScen
     return RenderSceneSpec(objects=objects, cameras=cameras)
 
 
+def thin_rod_cluster(rng: np.random.Generator, center, n_rods: int, spread: float) -> List[ObjectSpec]:
+    """A cluster of thin cylinders ("rods") scattered around `center` --
+    the fine/thin geometry both differentiation_scene and
+    nbv_test_scene use, factored out so both build it identically rather
+    than maintaining two copies."""
+    objs = []
+    for _ in range(n_rods):
+        offset = rng.uniform(-spread, spread, size=3)
+        offset[2] = rng.uniform(-0.3, 0.3)
+        loc = np.array(center) + offset
+        color = rng.uniform(0.3, 0.9, size=3)
+        objs.append(ObjectSpec("cylinder", tuple(loc), (0.04, 0.04, 0.5), tuple(color)))
+    return objs
+
+
 def differentiation_scene(
     n_ring_views: int = 40,
     n_arc_views: int = 10,
@@ -120,20 +135,10 @@ def differentiation_scene(
     """
     rng = np.random.default_rng(0)
 
-    def thin_rod_cluster(center, n_rods, spread):
-        objs = []
-        for _ in range(n_rods):
-            offset = rng.uniform(-spread, spread, size=3)
-            offset[2] = rng.uniform(-0.3, 0.3)
-            loc = np.array(center) + offset
-            color = rng.uniform(0.3, 0.9, size=3)
-            objs.append(ObjectSpec("cylinder", tuple(loc), (0.04, 0.04, 0.5), tuple(color)))
-        return objs
-
     wide_center = np.array([0.0, 0.0, 0.0])
     narrow_center = np.array([separation, 0.0, 0.0])
-    objects = thin_rod_cluster(wide_center, n_rods=14, spread=0.8) + thin_rod_cluster(
-        narrow_center, n_rods=14, spread=0.8
+    objects = thin_rod_cluster(rng, wide_center, n_rods=14, spread=0.8) + thin_rod_cluster(
+        rng, narrow_center, n_rods=14, spread=0.8
     )
 
     ring_cameras = turntable_ring(radius=ring_radius, n_views=n_ring_views, phi_deg=35.0)
@@ -144,3 +149,70 @@ def differentiation_scene(
 
     cameras = ring_cameras + arc_cameras
     return RenderSceneSpec(objects=objects, cameras=cameras, resolution=400, fov_deg=fov_deg)
+
+
+def nbv_test_scene(
+    n_train_views: int = 10,
+    n_candidate_views: int = 16,
+    n_eval_views: int = 16,
+    radius: float = 6.5,
+    eval_radius: float = 7.5,
+    train_theta_center_deg: float = 200.0,
+    train_half_width_deg: float = 12.0,
+    fov_deg: float = 40.0,
+):
+    """ROADMAP.md milestone 4 (active-view / NBV combination experiment)
+    test scene: a single thin-rod cluster at the origin (same geometry as
+    differentiation_scene's zones, via thin_rod_cluster -- deliberately
+    the same construction, since this scene *is* differentiation_scene's
+    narrow zone, standalone, extended with a next-view candidate pool
+    and a held-out evaluation set). Three camera roles, distinguished by
+    index range in the returned info dict rather than by anything in
+    RenderSceneSpec itself (this renderer doesn't need to know the roles,
+    only nbv_experiment.py does):
+
+    - `train_idx`: a narrow arc of `n_train_views` cameras (identical
+      construction to differentiation_scene's narrow zone) -- the
+      "already observed, under-covered" starting point an NBV policy
+      would begin from.
+    - `candidate_idx`: a full turntable ring of up to `n_candidate_views`
+      poses, at the *training* radius, excluding angles within
+      `train_half_width_deg + 5` of the train arc's own center -- the
+      discrete next-view pose set a policy scores and picks from.
+    - `eval_idx`: a dense ring at a different radius, never a training
+      candidate, used only to measure reconstruction quality after
+      adding a chosen next-view -- kept disjoint from `candidate_idx` so
+      "which view got picked" and "how do we measure whether it helped"
+      never share a camera.
+    """
+    rng = np.random.default_rng(1)
+    center = np.array([0.0, 0.0, 0.0])
+    objects = thin_rod_cluster(rng, center, n_rods=14, spread=0.8)
+
+    train_cameras = turntable_arc(
+        radius=radius, n_views=n_train_views, theta_center_deg=train_theta_center_deg,
+        half_width_deg=train_half_width_deg, phi_deg=35.0,
+    )
+
+    def angular_dist(a, b):
+        return abs((a - b + 180) % 360 - 180)
+
+    margin = train_half_width_deg + 5.0
+    candidate_thetas = [
+        t for t in np.linspace(0, 360, n_candidate_views, endpoint=False)
+        if angular_dist(t, train_theta_center_deg) > margin
+    ]
+    candidate_cameras = [turntable_camera(radius, 35.0, t) for t in candidate_thetas]
+
+    eval_cameras = turntable_ring(radius=eval_radius, n_views=n_eval_views, phi_deg=35.0)
+
+    cameras = train_cameras + candidate_cameras + eval_cameras
+    info = dict(
+        train_idx=np.arange(0, len(train_cameras)),
+        candidate_idx=np.arange(len(train_cameras), len(train_cameras) + len(candidate_cameras)),
+        eval_idx=np.arange(len(train_cameras) + len(candidate_cameras), len(cameras)),
+        candidate_thetas=np.array(candidate_thetas),
+        train_theta_center_deg=train_theta_center_deg,
+    )
+    spec = RenderSceneSpec(objects=objects, cameras=cameras, resolution=400, fov_deg=fov_deg)
+    return spec, info

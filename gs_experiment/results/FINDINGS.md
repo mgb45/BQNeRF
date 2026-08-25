@@ -561,3 +561,72 @@ floor set relative to the checkpoint's own opacity distribution rather
 than an absolute constant) is a reasonable follow-up before citing the
 exact number; (c) PSNR is averaged over 8 held-out views spanning both
 zones, not a full held-out test set.
+
+# Milestone 4 findings: active-view / NBV combination experiment
+
+ROADMAP.md milestone 4: "Use BQ variance alongside a visibility proxy for
+candidate-view scoring; check whether the combined signal selects views
+that improve reconstruction in under-resolved regions faster than either
+signal alone." `nbv_experiment.py` + `scene_spec.nbv_test_scene` build a
+self-contained testbed: one thin-rod cluster (the same construction as
+`differentiation_scene`'s zones, via the now-factored-out
+`thin_rod_cluster`) observed from a narrow 10-view training arc, with a
+discrete pool of 15 candidate next-view poses (a turntable ring at the
+training radius, excluding angles already covered by the arc) and a
+disjoint, never-a-candidate 16-view held-out evaluation ring.
+
+## 17. Scoring is genuinely free — no retraining needed to rank candidates
+
+Every candidate is scored two ways using only the *baseline* checkpoint
+(trained on the 10-view arc alone), no retraining per candidate: BQ
+position+direction variance at the cluster center, queried at the
+candidate's own viewing direction (high variance = under-covered
+direction), and a visibility-proxy score (how much adding the candidate's
+direction would reduce the mean resultant length of the already-observed
+direction set — bigger reduction = more angular-diversity gain, using
+`visibility_baseline.resultant_length`, a genuinely different mechanism
+from BQ). Both are closed-form given the baseline checkpoint's real splat
+positions and observed directions — exercising, for the first time on
+real data, the "essentially free to compute" property ROADMAP.md's
+engineering plan cites as BQ's advantage for this kind of candidate
+evaluation loop.
+
+## 18. The combined signal picks a genuinely better next-view than a poor one
+
+| candidate | θ (deg) | combined score | held-out PSNR after adding | delta vs. baseline |
+|---|---|---|---|---|
+| baseline (arc alone) | — | — | 21.02dB | — |
+| best (top combined) | 22.5 | 2.000 | 22.91dB | **+1.89dB** |
+| worst (bottom combined) | 180.0 | 0.000 | 21.68dB | +0.65dB |
+
+The training arc is centered at θ=200° (±12°); the best-scored candidate
+(22.5°) is close to angularly opposite it, the worst-scored (180.0°) is
+the candidate nearest the arc's own coverage among those available. Both
+additions help some (adding any 11th view to a 10-view arc should), but
+the guided pick helps **nearly 3x more** than the poor one — a real,
+positive answer to "does candidate scoring pick views that actually
+improve reconstruction," not just a plausible-sounding ranking that was
+never checked against retrained, held-out-evaluated ground truth.
+
+## 19. Caveat: this scene doesn't yet distinguish "combined" from "either signal alone"
+
+BQ and visibility candidate rankings had a **Pearson correlation of
+1.000** on this scene — every candidate ranked identically by both
+signals. That means §18 demonstrates "guided selection beats a poor
+choice," but *not yet* the more specific "combination beats either
+signal alone" claim the milestone actually asks for — with only one
+geometric cluster and candidates that vary purely in azimuth at a fixed
+radius/elevation, both signals reduce to essentially the same thing
+("how angularly far is this direction from the training arc"), so there
+was no case for a combination to add value over. This isn't a negative
+result — it's the same shape as milestone 2's own trajectory: the first,
+simplest scene establishes the pipeline and a real, checked positive
+result, and a follow-up scene specifically designed so the signals *can*
+diverge (analogous to how the differentiation experiment needed real
+thin-rod geometry, not just camera-count differences, to separate
+position-only variance from visibility) is the natural next step before
+claiming the full milestone-4 story. A candidate along those lines: mix
+azimuth-only candidates (where the signals should keep agreeing) with
+candidates that are directionally redundant but reveal fine geometry a
+current radius/elevation can't resolve (where BQ's position-integrated
+term might diverge from a purely angular visibility measure).

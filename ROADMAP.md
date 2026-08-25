@@ -395,7 +395,26 @@ Native Uncertainty preprint, already summarized above):
    the caveats on how narrowly this has been validated (one scene, one
    checkpoint, a two-point floor sweep) in
    `gs_experiment/results/FINDINGS.md` §15-16.
-4. NBV combination experiment.
+4. NBV combination experiment. **First pass done.** `nbv_experiment.py` +
+   `scene_spec.nbv_test_scene` score a discrete pool of candidate
+   next-views two ways -- BQ position+direction variance and a visibility
+   resultant-length proxy, both computed for free (no retraining) from a
+   baseline checkpoint trained on a narrow 10-view arc -- then actually
+   retrain with the top-combined-scored candidate added vs. a
+   deliberately poor (most redundant) one, and evaluate both plus the
+   baseline on a disjoint held-out ring. The guided pick improved
+   held-out PSNR nearly 3x more than the poor choice (+1.89dB vs.
+   +0.65dB over the 21.02dB baseline) -- real evidence NBV scoring picks
+   views that actually help, checked against retrained ground truth
+   rather than just a plausible ranking. Caveat: BQ and visibility ranked
+   every candidate identically here (correlation 1.000, since this simple
+   single-cluster, azimuth-only candidate pool doesn't give the two
+   signals room to disagree), so this demonstrates "guided beats poor,"
+   not yet the more specific "combination beats either signal alone" the
+   milestone asks for -- a scene designed so the signals can diverge
+   (mixing azimuth-only candidates with ones that are directionally
+   redundant but reveal unresolved fine geometry) is the natural next
+   step. Full account in `gs_experiment/results/FINDINGS.md` §17-19.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,
    differentiation experiment, and the two combination experiments.
 

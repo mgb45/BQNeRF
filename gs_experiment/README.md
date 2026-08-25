@@ -102,6 +102,16 @@ whole pipeline end-to-end right now.
   `FINDINGS.md` §15-16 for the result (a real win at tight budgets, a
   regression at loose ones fixed by flooring the BQ term at a minimum
   opacity).
+- `nbv_experiment.py` (+ `scene_spec.nbv_test_scene`) — ROADMAP.md
+  milestone 4 (active-view/NBV combination): scores a discrete pool of
+  candidate next-views by BQ position+direction variance and a
+  visibility resultant-length proxy (both free, no retraining, from a
+  baseline checkpoint), then actually retrains with the best- vs.
+  worst-scored candidate added and evaluates both on a disjoint held-out
+  ring. See `FINDINGS.md` §17-19 for the result (guided selection beat a
+  poor choice by ~3x) and the caveat (BQ and visibility agreed perfectly
+  on this simple scene, so it doesn't yet show combination beats either
+  signal alone).
 
 **Still not attempted:**
 - A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`
