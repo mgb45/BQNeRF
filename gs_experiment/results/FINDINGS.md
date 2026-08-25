@@ -292,6 +292,8 @@ the direction visibility ranks them:
 | seed=1 (independent retrain) | 0.44x | 0.837 | 0.369 |
 | RBF, final checkpoint | 0.33x | 0.777 | 0.254 |
 | Matérn-3/2, final checkpoint | 0.46x | 21.22 | 9.79 |
+| RBF, deduplicated positions (§13) | 0.37x | 0.794 | 0.295 |
+| Matérn-3/2, deduplicated positions (§13) | 0.55x | 21.39 | 11.68 |
 
 Every configuration agrees: **wide-zone position-only variance is higher
 than narrow-zone position-only variance** (ratio consistently well below
@@ -349,6 +351,48 @@ residual quadrature/discretization error (a redundant cluster of nodes is,
 in a real sense, inefficiently tiling the domain), but not identical to
 the naive reading of the claim either.
 
+## 13. A second numerical concern, checked and also found not to be the driver: camera-count leaking into "position-only" via row duplication
+
+`splat_observations` expands one row per (splat, camera) observation --
+correct input for the directional kernel, but a real conceptual problem
+for position-only variance if reused unchanged: "position-only, blind to
+direction" should mean the signal doesn't depend on how many cameras saw
+a splat, yet feeding camera-duplicated rows into `spatial_only_variance`
+means it implicitly does. This turned out to matter a lot in absolute
+terms: wide-zone splats were attributed to a mean of **30.1 cameras
+each** (median 31, out of 40 possible) vs. the narrow zone's **1.5**
+(median 1, out of 10) -- a ~20x difference in row-duplication factor
+between the two zones being compared.
+
+Two things were checked before concluding this invalidated §11's result.
+First, whether `LocalUncertaintyEngine`'s `max_neighbors=400` random
+subsampling (capping a query's candidate pool before the BQ solve) ends
+up representing far fewer *distinct* splats in the heavily-duplicated
+wide zone than the lightly-duplicated narrow zone, which would bias the
+comparison directly: it does not, in practice -- 389/400 and 384/400
+sampled rows were distinct positions in the wide and narrow zones
+respectively (expected under random sampling without replacement when
+the candidate pool, thousands of distinct splats each duplicated many
+times, is much larger than the 400-sample: collisions stay rare by a
+birthday-paradox argument, confirmed here rather than assumed). Second,
+and more directly: recomputing position-only variance from scratch on
+strictly deduplicated splat positions (`scene.positions`/`scene.colors`,
+one row per splat, no camera expansion at all, bypassing
+`splat_observations` entirely for this signal) reproduced the same
+result closely -- wide=0.794, narrow=0.295, ratio 0.37x, squarely inside
+the 0.32x-0.46x range from every other configuration in §11's table, and
+the RBF/Matérn agreement (correlation 0.995) held too.
+
+Both `differentiation_experiment.py` and `kernel_comparison.py` (and
+`render_uncertainty_views.py`) were changed to use two separate
+`LocalUncertaintyEngine` instances regardless -- one built on deduplicated
+positions for `spatial_only_variance`, one on `splat_observations`'
+camera-expanded rows for `directional_variance` -- since the deduplicated
+version is the conceptually correct one even though it didn't change
+§11's conclusion here. Worth remembering if this pipeline is ever run on
+a scene with a more extreme camera-count imbalance than 40-vs-10, where
+the effect (currently confirmed negligible) might not stay negligible.
+
 ## Bottom line for the go/no-go gate
 
 The real-checkpoint pipeline (loader, trainer with real densification,
@@ -359,9 +403,15 @@ in `bq_splat/results/FINDINGS.md` §9). Kernel choice doesn't change any
 conclusion, only absolute scale (§8, §11). And the actual gate — does
 position-only BQ variance catch a failure mode visibility-based methods
 miss — is now **demonstrated**, replicated across two independent training
-seeds and two kernel families: position-only variance ranks the wide and
-narrow zones in the *opposite* order from the visibility proxy. The
-mechanism driving it (§12) is a well-supported leading hypothesis, not yet
+seeds, two kernel families, and two different position arrays (camera-
+expanded and strictly deduplicated, §13): position-only variance ranks the
+wide and narrow zones in the *opposite* order from the visibility proxy in
+every configuration tried. Two distinct numerical/methodological concerns
+that could each plausibly have explained the result away as an artifact
+(clone-position adjacency, §10; camera-count leaking into a signal meant
+to be blind to it, §13) were checked directly rather than assumed benign,
+and neither was the driver. The mechanism actually driving it (§12) is a
+well-supported leading hypothesis, not yet
 a fully isolated causal test — the natural next step before treating this
 as paper-ready is a controlled experiment that varies view count while
 holding splat clustering/redundancy fixed (or vice versa), the same

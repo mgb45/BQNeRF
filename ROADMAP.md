@@ -357,8 +357,12 @@ Native Uncertainty preprint, already summarized above):
    variance ranks the wide (40-view) zone as *more* uncertain than the
    narrow (10-view) zone (ratio ~0.33x-0.46x), the opposite ranking from
    the visibility proxy (which correctly calls the wide zone
-   better-observed) -- replicated across two independent training seeds
-   and both kernel families (RBF and Matérn-3/2, correlation 0.995). The
+   better-observed) -- replicated across two independent training seeds,
+   both kernel families (RBF and Matérn-3/2, correlation 0.995), and two
+   numerical/methodological concerns that were checked directly rather
+   than assumed benign (clone-position adjacency; camera-count leaking
+   into a signal meant to be blind to it via `splat_observations`' row
+   duplication -- neither was the driver). The
    leading mechanistic hypothesis (not yet fully isolated): the
    well-observed zone's stronger, more consistent gradient triggers more
    densification, and this trainer's clone/split placement makes that

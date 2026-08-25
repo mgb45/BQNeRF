@@ -85,7 +85,14 @@ def render_uncertainty_views(
     )
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
     dir_kernel = DirectionalKernel(kappa=kappa)
-    engine = LocalUncertaintyEngine(
+    # deduplicated positions for position-only queries, camera-expanded
+    # rows for directional -- see differentiation_experiment.run's
+    # comment for why these need to differ (splat_observations'
+    # per-camera row expansion is correct input for the directional
+    # kernel but silently leaks observation-count into "position-only,
+    # blind to direction" if reused there unchanged).
+    spatial_engine = LocalUncertaintyEngine(positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds)
+    directional_engine = LocalUncertaintyEngine(
         positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
         directions=directions, dir_kernel=dir_kernel,
     )
@@ -119,9 +126,9 @@ def render_uncertainty_views(
         query_positions = splat_positions[near_idx]
         query_dirs = directions_from_positions_to_camera(query_positions, cam_pose)
 
-        pos_var = np.array([engine.spatial_only_variance(p, window_radius).variance for p in query_positions])
+        pos_var = np.array([spatial_engine.spatial_only_variance(p, window_radius).variance for p in query_positions])
         dir_var = np.array(
-            [engine.directional_variance(p, d, window_radius).variance for p, d in zip(query_positions, query_dirs)]
+            [directional_engine.directional_variance(p, d, window_radius).variance for p, d in zip(query_positions, query_dirs)]
         )
         pixels, in_front = project_to_pixels(query_positions, viewmat, K)
         in_view = in_front & (pixels[:, 0] >= 0) & (pixels[:, 0] < width) & (pixels[:, 1] >= 0) & (pixels[:, 1] < height)

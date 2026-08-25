@@ -28,7 +28,6 @@ import numpy as np
 
 from gs_experiment.differentiation_experiment import _build_real_scene
 from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_matern_kernel, make_default_3d_position_kernel
-from gs_experiment.splat_scene import splat_observations
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,7 +35,14 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 def compare(checkpoint_dir, separation=18.0, attribution_angular_tol=0.01, grid_res=35, window_radius=1.6, bandwidth=0.9):
     scene, geom = _build_real_scene(checkpoint_dir, separation=separation, attribution_angular_tol=attribution_angular_tol)
-    positions, directions, values = splat_observations(scene)
+    # deduplicated (one row per splat), not splat_observations' camera-
+    # expanded rows: position-only variance shouldn't depend on how many
+    # cameras observed a splat -- see differentiation_experiment.run's
+    # comment for the full reasoning and gs_experiment/results/
+    # FINDINGS.md for the empirical check that this doesn't change the
+    # differentiation conclusion, just makes the "position-only" framing
+    # actually true.
+    positions, values = scene.positions, scene.colors
 
     bounds = geom["bounds"]
     wide_zone_center = geom["wide_zone_center"]

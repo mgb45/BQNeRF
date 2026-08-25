@@ -183,7 +183,24 @@ def run(
 
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
     dir_kernel = DirectionalKernel(kappa=kappa)
-    engine = LocalUncertaintyEngine(
+    # Two engines, deliberately: splat_observations expands one row per
+    # (splat, camera) pair, which is correct input for the directional
+    # kernel (each camera really is a distinct direction observation) but
+    # wrong for position-only variance -- "position-only, blind to
+    # direction" should mean variance doesn't depend on how many cameras
+    # saw a splat, and feeding camera-duplicated rows into spatial_only_
+    # variance quietly breaks that (a splat seen by 30 cameras contributes
+    # 30x the row-weight of one seen by 1, camera-count information
+    # leaking into a signal that's supposed to be blind to it). Checked
+    # empirically (gs_experiment/results/FINDINGS.md) whether this
+    # actually changed the differentiation result -- it didn't
+    # (deduplicated and duplicated versions agree closely) -- but the
+    # deduplicated version is the conceptually correct one regardless, so
+    # it's what position-only queries use here.
+    spatial_engine = LocalUncertaintyEngine(
+        positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds,
+    )
+    directional_engine = LocalUncertaintyEngine(
         positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
         directions=directions, dir_kernel=dir_kernel,
     )
@@ -199,10 +216,10 @@ def run(
     for i, qx in enumerate(xs):
         for j, qy in enumerate(ys):
             q = np.array([qx, qy, slice_z])
-            spatial_grid[j, i] = engine.spatial_only_variance(q, window_radius).variance
-            directional_grid[j, i] = engine.directional_variance(q, query_direction, window_radius).variance
+            spatial_grid[j, i] = spatial_engine.spatial_only_variance(q, window_radius).variance
+            directional_grid[j, i] = directional_engine.directional_variance(q, query_direction, window_radius).variance
 
-            idx = engine.local_neighbors(q, window_radius)
+            idx = directional_engine.local_neighbors(q, window_radius)
             visibility_grid[j, i] = visibility_uncertainty_proxy(directions[idx])
 
     xx, yy = np.meshgrid(xs, ys)
