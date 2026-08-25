@@ -64,16 +64,27 @@ whole pipeline end-to-end right now.
   below); doesn't yet use `make_occluder_scene`/SH colors, since that
   script's zone-based mock predates them — a reasonable next follow-up.
 
-**Stubbed, needs GPU/real data:**
-- `splat_scene.load_from_gsplat_checkpoint` raises `NotImplementedError`
-  with the intended real implementation documented in its docstring: read
-  a 3DGS `.ply` checkpoint (needs the optional `plyfile`/`torch`/`gsplat`
-  dependencies in `requirements-gsplat.txt`, not installed in this
-  environment), extract positions/scales/rotations/opacities/SH colors,
-  and load training camera poses from `transforms.json` or COLMAP output.
-  `spherical_harmonics.py` and `visibility_attribution.py` are exactly the
-  two pieces that loader will need to populate `SplatScene.sh_coeffs` and
-  `observed_camera_idx` from a real checkpoint.
+**Real, GPU-validated (see `gs_experiment/results/FINDINGS.md` for the full account):**
+- `splat_scene.load_from_gsplat_checkpoint` is implemented: reads a
+  standard 3DGS `.ply` (`ply_io.py`, schema matched against the reference
+  implementation's property order) plus `transforms.json`
+  (`nerf_transforms.py`), and derives `observed_camera_idx` via real
+  frustum + occlusion attribution. `blender_render.py` (a Blender
+  headless script, needs `bpy`) and `train_minimal_gsplat.py` (a minimal
+  from-scratch gsplat trainer, needs `requirements-gsplat.txt`) produce
+  the synthetic multi-view data and trained checkpoints this loader reads
+  — together the first fully real (not mocked) path through this
+  package, run on a 3090. `render_reconstruction.py` renders ground-truth
+  vs. reconstruction comparisons for visually sanity-checking a trained
+  checkpoint — worth running before trusting any uncertainty numbers off
+  of it (`FINDINGS.md` §6 is a concrete case where skipping this step
+  would have meant trusting a degenerate, blank reconstruction that still
+  reported a deceptively reasonable PSNR).
+- `kernel_comparison.py` runs the RBF-vs-Matérn question
+  (`bq_splat/results/FINDINGS.md` §5-7, previously toy-scale only)
+  against a real checkpoint.
+
+**Still not attempted:**
 - Everything currently operates on 3D world-space query points, not 2D
   image-plane pixels. Mapping world-space uncertainty to a specific
   camera's per-pixel image is a reprojection step that a live gsplat
@@ -123,24 +134,44 @@ experiment's exact-offset construction would be a small, worthwhile
 follow-up if this script's numbers themselves are ever going to be quoted
 rather than just used to confirm the code runs.
 
-## Once GPU access is available
+## GPU access obtained — status and what's left
 
-1. `pip install -r requirements-gsplat.txt` (torch, gsplat, plyfile).
-2. Implement `load_from_gsplat_checkpoint` per its docstring, against an
-   actual trained scene and its `transforms.json`/COLMAP cameras — using
-   `spherical_harmonics.eval_sh` for color and
-   `visibility_attribution.attribute_observations` for `observed_camera_idx`,
-   both already built and tested against synthetic cases.
-3. Swap `make_mock_scene(...)` for `load_from_gsplat_checkpoint(...)` in
-   `differentiation_experiment.py` — nothing else in the pipeline should
-   need to change, since `SplatScene`/`splat_observations` are the
-   interface boundary.
-4. Construct a real differentiation scene: a region well-observed from a
-   wide spread of training views but containing fine/thin structure
-   (spatial under-resolution), and a region observed from a narrow range
-   of viewpoints (directional under-resolution) — the real-data analogue
-   of this scaffold's two mock zones.
+Steps 1-4 of this section's original plan (install deps, implement the
+loader, swap it into `differentiation_experiment.py`, construct a real
+differentiation scene) are done — see `gs_experiment/results/FINDINGS.md`
+for the complete account, including four real bugs found getting from
+"the pipeline runs" to "the numbers are trustworthy": an occlusion-
+attribution default far too aggressive for dense real geometry
+(`--angular-tol`), a query-direction construction that broke when both
+camera rigs share an elevation, an uncapped local-neighbor count that
+briefly pegged the whole machine's CPU (`LocalUncertaintyEngine.
+max_neighbors`), and a scale-initialization bug that produced a blank
+reconstruction behind a deceptively reasonable PSNR (`train_minimal_
+gsplat`'s `init_scale`).
+
+Run it:
+```
+.venv-gsplat/bin/python -m gs_experiment.train_minimal_gsplat <scene_dir> <out.ply> --init-scale 0.1 --n-iters 8000
+.venv-gsplat/bin/python gs_experiment/render_reconstruction.py <scene_dir>   # sanity-check before trusting anything below
+.venv-gsplat/bin/python gs_experiment/differentiation_experiment.py --checkpoint <scene_dir> --angular-tol 0.01
+.venv-gsplat/bin/python gs_experiment/kernel_comparison.py <scene_dir> --angular-tol 0.01
+```
+
+**What's not resolved:** the core go/no-go claim (position-only BQ
+variance flagging a well-observed-but-poorly-resolved region) isn't
+demonstrated yet — position-only variance comes back statistically equal
+between the wide and narrow zones regardless of kernel, because
+`train_minimal_gsplat` has no densification, so splat density near a
+region doesn't depend on view coverage the way a real 3DGS trainer's
+would. See `FINDINGS.md` §7 for the full reasoning and the two options
+for actually closing this (real densification, or a scene where a
+deliberately-undersized splat budget forces a resolution gap on its own).
+
+Still open, unrelated to the above:
 5. Add the real visibility-field/Hessian-sensitivity comparison ROADMAP.md
-   calls for (reproducing or citing PUP/GAVIS numbers) once there's a real
-   scene to compute them on — `visibility_baseline.py`'s proxy is
-   intentionally simple and not meant to stand in for that comparison.
+   calls for (reproducing or citing PUP/GAVIS numbers) — `visibility_
+   baseline.py`'s proxy is intentionally simple and not meant to stand in
+   for that comparison.
+6. Real captured data (photographs + COLMAP or similar SfM pose
+   estimation) rather than synthetic Blender renders with known ground-
+   truth poses — not started.

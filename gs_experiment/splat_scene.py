@@ -25,6 +25,7 @@ change caused which result. Left as documented future work.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -202,25 +203,65 @@ def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_tar
     )
 
 
-def load_from_gsplat_checkpoint(path: str) -> SplatScene:
-    """Real loader, not yet callable without the optional gsplat/plyfile
-    dependencies (see requirements-gsplat.txt) and, more fundamentally,
-    without a trained checkpoint to point it at. Documented here so the
-    interface exists and the rest of this package can be written and
-    tested against it now, via make_mock_scene, without waiting for GPU
-    access.
+def load_from_gsplat_checkpoint(
+    scene_dir: str,
+    ply_filename: str = "splats.ply",
+    fov_deg: Optional[float] = None,
+    attribution_angular_tol: float = 0.05,
+    attribution_depth_margin: float = 0.05,
+) -> SplatScene:
+    """Real loader: reads `<scene_dir>/<ply_filename>` (a standard 3DGS
+    .ply checkpoint, see gs_experiment.ply_io) for
+    positions/scales/rotations/opacities/SH colors, and
+    `<scene_dir>/transforms.json` (see gs_experiment.nerf_transforms, the
+    same NeRF-synthetic-style schema gs_experiment.blender_render writes)
+    for training camera poses -- the two files
+    gs_experiment.train_minimal_gsplat's trainer produces together.
 
-    Expected real implementation: read a 3DGS .ply checkpoint (plyfile),
-    extract positions/scales/rotations/opacities/spherical-harmonic colors
-    per the standard 3DGS point-cloud schema, and load the corresponding
-    training cameras from the scene's transforms.json (or COLMAP
-    sparse-reconstruction output). observed_camera_idx would come from
-    which training views the reconstruction pipeline actually used for
-    each splat, or be approximated by frustum + occlusion checks.
+    `fov_deg` defaults to the shared `camera_angle_x` recorded in
+    transforms.json (converted to degrees); pass it explicitly only if a
+    different value is wanted for the visibility-attribution frustum test
+    itself (e.g. a deliberately looser/tighter cone than what the cameras
+    were actually rendered with).
+
+    observed_camera_idx is not stored anywhere in a real checkpoint (the
+    training pipeline doesn't record which views constrained which
+    splat), so it's approximated the same way gs_experiment.splat_scene.
+    make_occluder_scene demonstrates real geometric attribution works:
+    frustum + soft-z-buffer occlusion
+    (gs_experiment.visibility_attribution.attribute_observations), not an
+    assignment rule.
     """
-    raise NotImplementedError(
-        "Real gsplat checkpoint loading needs the optional torch/gsplat/plyfile "
-        "dependencies (requirements-gsplat.txt) and a trained scene -- not available "
-        "in this environment. Use make_mock_scene() for now; this function's docstring "
-        "records the intended real implementation."
+    from gs_experiment.nerf_transforms import camera_pose_from_c2w, load_transforms
+    from gs_experiment.ply_io import read_3dgs_ply
+
+    ply_path = os.path.join(scene_dir, ply_filename)
+    transforms_path = os.path.join(scene_dir, "transforms.json")
+
+    checkpoint = read_3dgs_ply(ply_path)
+    camera_angle_x, frames = load_transforms(transforms_path)
+    cameras = [camera_pose_from_c2w(c2w) for _, c2w in frames]
+
+    if fov_deg is None:
+        fov_deg = np.degrees(camera_angle_x)
+
+    positions = checkpoint["positions"]
+    per_camera = attribute_observations(
+        positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
+    )
+    observed_camera_idx = invert_to_observed_camera_idx(per_camera, positions.shape[0])
+
+    sh_coeffs = checkpoint["sh_coeffs"]
+    colors = sh_coeffs[:, :, 0].mean(axis=1)  # unused fallback, sh_coeffs takes priority (see splat_observations)
+
+    return SplatScene(
+        positions=positions,
+        colors=colors,
+        opacities=checkpoint["opacities"],
+        scales=checkpoint["scales"],
+        rotations=checkpoint["rotations"],
+        observed_camera_idx=observed_camera_idx,
+        cameras=cameras,
+        sh_coeffs=sh_coeffs,
+        sh_degree=checkpoint["sh_degree"],
     )

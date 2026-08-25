@@ -22,7 +22,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 
-from bq_splat.kernels import DirectionalKernel, ProductKernel, RBFKernel
+from bq_splat.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
 from bq_splat.quadrature import BQResult, bayesian_quadrature_directional, bayesian_quadrature_nd
 
 
@@ -30,6 +30,20 @@ def make_default_3d_position_kernel(sigma: float) -> ProductKernel:
     """3D generalization of the 2D ProductKernel used throughout bq_splat --
     no new kernel code needed, ProductKernel already supports arbitrary D."""
     return ProductKernel([RBFKernel(sigma=sigma), RBFKernel(sigma=sigma), RBFKernel(sigma=sigma)])
+
+
+def make_default_3d_matern_kernel(rho: float) -> ProductKernel:
+    """Matern-3/2 analogue of make_default_3d_position_kernel, for the
+    RBF-vs-Matern kernel-choice comparison ROADMAP.md flags as unresolved
+    (bq_splat/results/FINDINGS.md sections 5-7 validated it only at toy
+    scale, never against a real trained GS checkpoint). `rho` plays the
+    same "bandwidth" role sigma does for RBF, not an identical physical
+    quantity -- passing the same numeric value to both is a like-for-like
+    comparison of "same nominal length scale, different smoothness
+    assumption," not a claim the two parameters are interchangeable in
+    general.
+    """
+    return ProductKernel([MaternKernel(rho=rho), MaternKernel(rho=rho), MaternKernel(rho=rho)])
 
 
 def box_bounds(center: np.ndarray, radius: float, scene_bounds) -> list:
@@ -54,12 +68,28 @@ class LocalUncertaintyEngine:
     scene_bounds: Tuple[Tuple[float, float], ...]
     directions: Optional[np.ndarray] = None
     dir_kernel: Optional[DirectionalKernel] = None
+    # Real gsplat checkpoints can pack thousands of (splat, camera)
+    # observation rows into one query's window (found the hard way: an
+    # angular_tol loosened enough for real occlusion attribution to work
+    # sensibly on a real densely-packed scene let >10k rows into a single
+    # window, and the BQ solve below is at least O(n^2)-O(n^3) in neighbor
+    # count -- one such query pegged ~18 CPU cores for half an hour before
+    # being killed). benchmark_local_bq_scaling.py
+    # (bq_splat/results/FINDINGS.md section 8) validated the solve cost as
+    # negligible up to "hundreds" of local neighbors, never thousands+, so
+    # capping there rather than letting window contents grow unbounded
+    # with real-data density is restoring the validated regime, not an ad
+    # hoc shortcut. None disables the cap (the toy/mock-scene regime this
+    # class was originally validated in stays exactly as before).
+    max_neighbors: Optional[int] = 400
+    seed: int = 0
 
     def __post_init__(self):
         self.positions = np.asarray(self.positions, dtype=float)
         self.values = np.asarray(self.values, dtype=float)
         self.tree = cKDTree(self.positions)
         self._vv_cache: Dict[tuple, float] = {}
+        self._rng = np.random.default_rng(self.seed)
 
     def _cached_vv(self, bounds) -> float:
         # Interior queries share one window size (2*radius per axis); edge
@@ -72,7 +102,10 @@ class LocalUncertaintyEngine:
         return self._vv_cache[key]
 
     def local_neighbors(self, query_point: np.ndarray, radius: float) -> np.ndarray:
-        return np.array(self.tree.query_ball_point(query_point, radius), dtype=int)
+        idx = np.array(self.tree.query_ball_point(query_point, radius), dtype=int)
+        if self.max_neighbors is not None and len(idx) > self.max_neighbors:
+            idx = self._rng.choice(idx, size=self.max_neighbors, replace=False)
+        return idx
 
     def spatial_only_variance(self, query_point: np.ndarray, radius: float) -> BQResult:
         idx = self.local_neighbors(query_point, radius)

@@ -1,11 +1,35 @@
-# Needed only for gs_experiment.splat_scene.load_from_gsplat_checkpoint and
-# actually rendering/training real Gaussian Splatting scenes -- not
-# installed in this environment (no GPU). Everything else in gs_experiment/
-# and bq_splat/ runs on requirements.txt alone.
+# Needed only for gs_experiment.splat_scene.load_from_gsplat_checkpoint,
+# gs_experiment.train_minimal_gsplat, and actually rendering/training real
+# Gaussian Splatting scenes. Everything else in gs_experiment/ and
+# bq_splat/ runs on requirements.txt alone.
 #
-# torch: CPU-only wheels install fine without a GPU, but gsplat's
-# rasterizer needs CUDA to be useful -- there is no point installing torch
-# here without also being able to compile/run gsplat's CUDA kernels.
+# Set up (validated on a 3090, driver 595.84, CUDA toolkit 12.3, Ubuntu
+# 24.04's default gcc 13):
+#
+#   python3 -m venv .venv-gsplat
+#   .venv-gsplat/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   .venv-gsplat/bin/pip install -r requirements-gsplat.txt
+#
+# gsplat's CUDA kernels are JIT-compiled by torch's cpp_extension on first
+# use (not prebuilt in the wheel), which needs nvcc on PATH plus a host
+# C++ compiler nvcc accepts. CUDA 12.3's nvcc rejects gcc/g++ newer than
+# 12 ("unsupported GNU version"), but Ubuntu 24.04 ships gcc 13 as
+# `gcc`/`g++` by default -- gcc-11 (already present system-wide here) is
+# not rejected. nvcc reads NVCC_APPEND_FLAGS automatically (a real,
+# CUDA-11+ nvcc feature, not project-specific plumbing), so no system
+# compiler alternatives need to change:
+#
+#   export PATH=/usr/local/cuda-12.3/bin:$PATH
+#   export CUDA_HOME=/usr/local/cuda-12.3
+#   export NVCC_APPEND_FLAGS="-ccbin /usr/bin/g++-11"
+#
+# needed before importing gsplat (or running gs_experiment.
+# train_minimal_gsplat / gs_experiment.differentiation_experiment
+# --checkpoint) for the first time in a given cache; the compiled
+# extension is cached under ~/.cache/torch_extensions afterward.
 torch
 gsplat
 plyfile
+packaging  # gsplat.cuda._backend imports this directly; not pulled in transitively by the above
+ninja      # torch's cpp_extension JIT build uses ninja if present
+pillow     # gs_experiment.train_minimal_gsplat loads training images via PIL

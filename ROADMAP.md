@@ -319,6 +319,37 @@ Native Uncertainty preprint, already summarized above):
    just that each works alone: a wall of splats correctly occludes a
    target cluster from front cameras while back cameras see it directly,
    using real geometric attribution rather than an assignment rule.
+
+   **GPU access obtained; real-checkpoint run complete, gate still open.**
+   `load_from_gsplat_checkpoint` is now real (reads a standard 3DGS `.ply`
+   plus `transforms.json`), backed by a new Blender-based synthetic-scene
+   renderer (`gs_experiment/blender_render.py`) and a minimal from-scratch
+   gsplat trainer (`gs_experiment/train_minimal_gsplat.py`) on a 3090. The
+   real differentiation scene (two identical thin-rod clusters, one shot
+   from a 40-view turntable ring, one from a 10-view arc) was trained and
+   run through the full pipeline; see `gs_experiment/results/FINDINGS.md`
+   for the complete account, including four real bugs found and fixed
+   along the way (an occlusion-attribution default two orders of
+   magnitude too aggressive for dense real geometry; a query-direction
+   construction that silently broke when both camera rigs share an
+   elevation; an uncapped local-neighbor count that pegged 18 CPU cores
+   for half an hour before being caught; and a scale-initialization bug
+   that produced a visually-blank reconstruction behind a deceptively
+   reasonable PSNR). With those fixed: position+direction BQ variance
+   shows an 18.7x wide/narrow ratio (visibility proxy agrees at 1.7x),
+   stronger than section 9's 2.46x toy-scale result. RBF vs. Matérn-3/2
+   on this same real checkpoint agree on spatial pattern (correlation
+   0.98) but differ ~150x in absolute scale — the first real-data run of
+   the kernel-choice question from `bq_splat/results/FINDINGS.md` §5-7.
+   But the core go/no-go claim — position-only variance flagging a
+   well-observed-but-poorly-resolved region — is *not yet* demonstrated:
+   ratio 0.98x-1.02x regardless of kernel, because this trainer has no
+   densification, so splat density near a region doesn't depend on view
+   coverage the way a real 3DGS trainer's would. Closing the gate for
+   real needs either real densification or a scene redesigned so pure
+   geometric fineness forces a resolution gap on its own — neither
+   attempted yet. Per the verification gates below, this is the thing to
+   resolve before investing in milestones 3-4.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

@@ -47,9 +47,60 @@ def test_splat_observations_produces_one_row_per_splat_camera_pair():
     np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1.0, atol=1e-9)
 
 
-def test_load_from_gsplat_checkpoint_is_a_documented_stub():
-    with pytest.raises(NotImplementedError):
-        load_from_gsplat_checkpoint("/nonexistent/checkpoint.ply")
+def test_load_from_gsplat_checkpoint_raises_on_missing_scene_dir(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_from_gsplat_checkpoint(str(tmp_path / "nonexistent"))
+
+
+def test_load_from_gsplat_checkpoint_round_trips_a_synthetic_checkpoint(tmp_path):
+    from gs_experiment.nerf_transforms import write_transforms_json
+    from gs_experiment.ply_io import write_3dgs_ply
+    from gs_experiment.spherical_harmonics import random_sh_coeffs
+
+    rng = np.random.default_rng(3)
+    n = 25
+    positions = rng.uniform(-0.5, 0.5, size=(n, 3))
+    scales = rng.uniform(0.01, 0.05, size=(n, 3))
+    rotations = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1))
+    opacities = rng.uniform(0.3, 0.9, size=n)
+    sh_coeffs = random_sh_coeffs(rng, n_splats=n, degree=1, scale=0.2)
+
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+    write_3dgs_ply(str(scene_dir / "splats.ply"), positions, scales, rotations, opacities, sh_coeffs, sh_degree=1)
+
+    cameras = turntable_ring(radius=6.0, n_views=8, phi_deg=30.0)
+
+    def _c2w(camera):
+        right = np.cross(camera.forward, camera.up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, camera.forward)
+        c2w = np.eye(4)
+        c2w[:3, 0] = right
+        c2w[:3, 1] = up
+        c2w[:3, 2] = -camera.forward
+        c2w[:3, 3] = camera.center
+        return c2w
+
+    frames = [{"file_path": f"images/r_{i:03d}", "transform_matrix": _c2w(c)} for i, c in enumerate(cameras)]
+    write_transforms_json(str(scene_dir / "transforms.json"), camera_angle_x=np.deg2rad(50.0), frames=frames)
+
+    scene = load_from_gsplat_checkpoint(str(scene_dir))
+
+    np.testing.assert_allclose(scene.positions, positions, atol=1e-5)
+    np.testing.assert_allclose(scene.opacities, opacities, atol=1e-4)
+    np.testing.assert_allclose(scene.scales, scales, atol=1e-4)
+    np.testing.assert_allclose(scene.sh_coeffs, sh_coeffs, atol=1e-4)
+    assert scene.sh_degree == 1
+    assert len(scene.cameras) == 8
+    assert len(scene.observed_camera_idx) == n
+    # every splat sits within a couple of units of the origin and every
+    # camera orbits it at radius 6 with a generous FOV, so real frustum
+    # attribution should find most splats observed by at least one camera
+    # (not necessarily all: with 25 splats packed into a 1-unit cube and
+    # only 8 viewpoints, some mutual occlusion is expected, not a bug)
+    n_observed = sum(len(idx) > 0 for idx in scene.observed_camera_idx)
+    assert n_observed >= n * 0.5
 
 
 def test_splat_observations_uses_sh_when_present_and_is_view_dependent():
