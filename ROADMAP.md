@@ -362,20 +362,22 @@ Native Uncertainty preprint, already summarized above):
    numerical/methodological concerns that were checked directly rather
    than assumed benign (clone-position adjacency; camera-count leaking
    into a signal meant to be blind to it via `splat_observations`' row
-   duplication -- neither was the driver). The
-   leading mechanistic hypothesis (not yet fully isolated): the
-   well-observed zone's stronger, more consistent gradient triggers more
-   densification, and this trainer's clone/split placement makes that
-   produce a more spatially *redundant* splat population, not just a
-   denser one -- position-only BQ variance is plausibly sensitive to that
-   redundancy specifically. Full account, including a numerical-
-   conditioning check this result was verified against before being
-   trusted, in `gs_experiment/results/FINDINGS.md` §9-12. The natural next
-   step before treating this as paper-ready is a controlled experiment
-   isolating view-count from splat clustering/redundancy, the same
-   one-variable-at-a-time discipline section 9's toy-scale directional
-   result used. With that caveat, the premise milestones 3-4 depend on
-   now has real, replicated support.
+   duplication -- neither was the driver). A fourth check went further:
+   the controlled isolation test the redundancy hypothesis called for
+   (matching splat count between zones, then matching spacing) was run
+   directly against the trained checkpoint, and **refuted the redundancy
+   hypothesis** -- neither manipulation moved the ratio. The effect has
+   now survived four independent "maybe this is an artifact" checks, which
+   is considerably stronger standing than one untested leading hypothesis,
+   but the *mechanism* is genuinely open again (a new candidate --
+   spatial anisotropy / off-rod-splat fraction differing between zones --
+   is proposed but not yet tested the way redundancy was). Full account,
+   including the numerical-conditioning checks this result was verified
+   against before being trusted, in `gs_experiment/results/FINDINGS.md`
+   §9-14. Practically: the effect itself is thoroughly checked and safe to
+   build on; understanding *why* needs another isolation test before
+   being claimed. The premise milestones 3-4 depend on (the effect exists
+   and replicates) has real, thoroughly-checked support on that basis.
 3. Densification/pruning combination experiment.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,

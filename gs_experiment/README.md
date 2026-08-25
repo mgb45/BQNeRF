@@ -172,23 +172,27 @@ claim below):
 .venv-gsplat/bin/python gs_experiment/kernel_comparison.py <scene_dir> --angular-tol 0.01
 ```
 
-**Core go/no-go claim: demonstrated.** With real densification (gradient-
-triggered clone/split + opacity pruning, calibrated against measured
-gradient magnitudes rather than a borrowed constant — see `FINDINGS.md`
-§9), position-only BQ variance ranks the wide (well-observed-by-
-visibility) zone as *more* uncertain than the narrow zone — the opposite
-ranking from the visibility proxy — replicated across two training seeds
-and both kernel families. See `FINDINGS.md` §9-12 for the full account,
-including a numerical-conditioning check this was verified against before
-being trusted, and the leading (not yet fully isolated) hypothesis for
-the mechanism: densification in a well-observed region produces a more
-spatially *redundant* splat population, and BQ variance is plausibly
-sensitive to that redundancy specifically, not just to splat count.
+**Core go/no-go claim: demonstrated, and thoroughly checked.** With real
+densification (gradient-triggered clone/split + opacity pruning,
+calibrated against measured gradient magnitudes rather than a borrowed
+constant — see `FINDINGS.md` §9), position-only BQ variance ranks the
+wide (well-observed-by-visibility) zone as *more* uncertain than the
+narrow zone — the opposite ranking from the visibility proxy — replicated
+across two training seeds, both kernel families, and four separate
+"maybe this is an artifact" checks (clone-position adjacency §10,
+camera-count leaking into the signal §13, splat-count matching §14,
+splat-spacing matching §14), none of which moved the result. The
+mechanism, though, is genuinely open: `validate_declustering_isolation.py`
+directly refuted the leading candidate (redundant clustering from
+densification) by matching count and spacing between zones and finding
+the effect unchanged either way — see `FINDINGS.md` §12 and §14 for both
+the original hypothesis and its refutation, and §14's replacement
+candidate (spatial anisotropy / off-rod-splat fraction), not yet tested.
 
 Still open:
-5. A controlled experiment isolating view-count from splat clustering/
-   redundancy (§12's suggested next step, before treating the result as
-   fully mechanistically settled).
+5. A controlled test of §14's anisotropy/off-rod-fraction hypothesis
+   (e.g. opacity-weighted or on-rod-vs-off-rod partitioned variants of
+   `validate_declustering_isolation.py`'s methodology).
 6. Add the real visibility-field/Hessian-sensitivity comparison ROADMAP.md
    calls for (reproducing or citing PUP/GAVIS numbers) — `visibility_
    baseline.py`'s proxy is intentionally simple and not meant to stand in

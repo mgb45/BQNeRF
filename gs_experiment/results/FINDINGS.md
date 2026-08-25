@@ -314,7 +314,7 @@ which is enough replication to treat this as a real, not seed-specific,
 effect — see `differentiation_experiment_real.png` and
 `kernel_comparison_real.png`.
 
-## 12. Leading hypothesis for the mechanism (not yet fully settled)
+## 12. Leading hypothesis for the mechanism (later tested and refuted — see §14)
 
 Raw splat count near each zone is similar (wide 7378, narrow 6020 — only
 1.2x apart), but *high-opacity* (>0.1) splat count differs sharply (5355
@@ -350,6 +350,12 @@ consistent with ROADMAP.md's original framing of BQ uncertainty as
 residual quadrature/discretization error (a redundant cluster of nodes is,
 in a real sense, inefficiently tiling the domain), but not identical to
 the naive reading of the claim either.
+
+**Update (§14): this hypothesis was tested directly and refuted.**
+Equalizing splat count and equalizing spacing between the zones each left
+the effect essentially unchanged — redundant clustering was a reasonable,
+testable hypothesis, and testing it (rather than treating it as settled)
+was the right call, but it wasn't the mechanism.
 
 ## 13. A second numerical concern, checked and also found not to be the driver: camera-count leaking into "position-only" via row duplication
 
@@ -393,6 +399,58 @@ version is the conceptually correct one even though it didn't change
 a scene with a more extreme camera-count imbalance than 40-vs-10, where
 the effect (currently confirmed negligible) might not stay negligible.
 
+## 14. The controlled isolation test §12 called for: redundancy refuted, effect survives, mechanism now genuinely open
+
+`validate_declustering_isolation.py` runs the actual controlled
+experiment §12 flagged as missing, post-hoc on the existing checkpoint
+(no retraining): three conditions, same two query points (zone centers),
+same kernel/window/neighbor-cap throughout, only the *wide* zone's splat
+population changes between them.
+
+| condition | n (wide) | wide variance | narrow variance | ratio (narrow/wide) |
+|---|---|---|---|---|
+| (1) original wide | 7378 | 0.693 | 0.260 | 0.375x |
+| (2) wide random-subsampled to narrow's count (6020) | 6020 | 0.670 | 0.294 | 0.439x |
+| (3) wide greedily declustered to match narrow's median spacing (0.0132) | 3861 | 0.706 | 0.251 | 0.356x |
+
+Condition (2) isolates raw count (spacing/redundancy pattern untouched);
+condition (3) isolates spacing (greedy minimum-distance rejection
+subsampling, Poisson-disk style, until the wide zone's own median
+nearest-neighbor distance matches the narrow zone's). **Neither moved the
+ratio meaningfully** — 0.36x-0.44x across all three, the same range as
+every configuration in §11's table. §12's redundant-clustering hypothesis
+predicted condition (3) specifically should move the ratio toward 1x; it
+didn't. The hypothesis is refuted, cleanly, by the test it called for
+existing.
+
+This is a good outcome for the result even though the explanation was
+wrong: the effect just survived a direct, well-motivated attempt to
+explain it away as a trainer artifact (redundant points from
+densification), on top of already surviving the clone-adjacency (§10) and
+camera-duplication (§13) checks. Three independent "maybe this is just an
+artifact" hypotheses tested, three refuted, the effect unchanged every
+time — stronger evidence it's measuring something real about the two
+zones than any of the confirmatory checks in §11 alone would give.
+
+A supplementary observation, offered as a new candidate hypothesis rather
+than a tested one: the two zones' local point clouds differ in *shape*
+now that spacing/count are ruled out — the wide zone's local
+neighborhood is measurably more anisotropic (covariance eigenvalue ratio
+2.10, elongated along z, plausibly the rods' own axis) than the narrow
+zone's (1.43, closer to isotropic), which is the opposite of the naive
+"narrow-baseline reconstruction smears points along the viewing axis"
+intuition. Both zones' bounding-box extents (~2.4-3.2 units) are larger
+than the true rod cluster's own footprint (spread parameter 0.8, rod
+length 0.5), meaning both windows contain some splats that aren't tightly
+bound to real geometry -- but not necessarily in equal proportion, and a
+higher fraction of loosely-bound, off-rod splats in one zone's window
+would move BQ variance without changing median spacing or count. This is
+speculative and untested -- flagged as the next thing to check (e.g.
+opacity-weighted or on-rod-vs-off-rod partitioned variants of the same
+declustering-isolation methodology used here), not a replacement
+explanation being asserted with the same confidence §12's was before
+testing it.
+
 ## Bottom line for the go/no-go gate
 
 The real-checkpoint pipeline (loader, trainer with real densification,
@@ -410,14 +468,23 @@ every configuration tried. Two distinct numerical/methodological concerns
 that could each plausibly have explained the result away as an artifact
 (clone-position adjacency, §10; camera-count leaking into a signal meant
 to be blind to it, §13) were checked directly rather than assumed benign,
-and neither was the driver. The mechanism actually driving it (§12) is a
-well-supported leading hypothesis, not yet
-a fully isolated causal test — the natural next step before treating this
-as paper-ready is a controlled experiment that varies view count while
-holding splat clustering/redundancy fixed (or vice versa), the same
-one-variable-at-a-time discipline that made the toy-scale directional
-result (`bq_splat/results/FINDINGS.md` §9) solid. With that caveat,
-proceeding to ROADMAP.md's milestones 3-4 (the densification/NBV
-combination experiments) is now reasonable — the premise they depend on
-has real, replicated (if not yet fully mechanistically isolated) support,
-rather than being unverified.
+and neither was the driver. §14 then ran the actual controlled isolation
+test §12 called for (matching splat count, then matching spacing, between
+the two zones) and **refuted §12's redundant-clustering hypothesis
+directly** — the effect didn't move. That makes four independent "maybe
+this is an artifact" checks the result has survived (clone-adjacency,
+camera-duplication, count-matching, spacing-matching), which is
+considerably stronger standing than "one well-supported hypothesis,
+untested" was. The cost is that the *mechanism* is now genuinely open
+rather than pending confirmation of a specific leading candidate — §14's
+anisotropy/off-rod-fraction observation is a new lead, not yet tested the
+way the redundancy hypothesis was. Practically: the effect itself is
+about as well-verified as post-hoc analysis on one scene can make it, and
+is safe to build on; the mechanism needs another isolation test (the
+opacity-weighted or on-rod-fraction variant §14 suggests) before anyone
+should claim to *understand why*, as opposed to *that*, position-only BQ
+variance diverges from visibility here. Proceeding to ROADMAP.md's
+milestones 3-4 (the densification/NBV combination experiments) is
+reasonable on that basis — the premise they depend on (the effect exists
+and replicates) has real, thoroughly-checked support, even with the
+mechanism still open.
