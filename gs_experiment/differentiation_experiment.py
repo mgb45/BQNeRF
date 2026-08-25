@@ -222,6 +222,19 @@ def run(
             idx = directional_engine.local_neighbors(q, window_radius)
             visibility_grid[j, i] = visibility_uncertainty_proxy(directions[idx])
 
+    # cached for reuse by other scripts (e.g. the milestone-3 pruning
+    # experiment) that want per-splat BQ variance without paying for a
+    # fresh set of BQ solves -- interpolating this already-computed grid
+    # is orders of magnitude cheaper than re-querying LocalUncertaintyEngine
+    # per splat, and precise enough for a splat-count-level comparison
+    # rather than a per-pixel one.
+    cache_path = RESULTS_DIR / (Path(out_name).stem + "_grid_cache.npz")
+    np.savez(
+        cache_path, xs=xs, ys=ys, slice_z=slice_z, spatial_grid=spatial_grid,
+        directional_grid=directional_grid, visibility_grid=visibility_grid,
+    )
+    print(f"Saved grid cache {cache_path}")
+
     xx, yy = np.meshgrid(xs, ys)
     in_wide = np.linalg.norm(np.stack([xx, yy], axis=-1) - wide_zone_center[:2], axis=-1) < zone_radius
     in_narrow = np.linalg.norm(np.stack([xx, yy], axis=-1) - narrow_zone_center[:2], axis=-1) < zone_radius

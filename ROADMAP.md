@@ -378,7 +378,23 @@ Native Uncertainty preprint, already summarized above):
    build on; understanding *why* needs another isolation test before
    being claimed. The premise milestones 3-4 depend on (the effect exists
    and replicates) has real, thoroughly-checked support on that basis.
-3. Densification/pruning combination experiment.
+3. Densification/pruning combination experiment. **First pass done.**
+   `pruning_experiment.py` prunes the trained differentiation-scene
+   checkpoint two ways -- opacity-only (the standard heuristic) vs.
+   opacity combined with BQ position-only variance -- and compares
+   reconstruction PSNR at matched, reduced splat counts. First attempt
+   (unweighted combination) was genuinely mixed: +2.45dB at an aggressive
+   4000-splat budget, but -12dB and -11dB at looser 6000/9000-splat
+   budgets, traced to BQ variance being high in genuinely empty space too
+   (correct, but not useful for pruning) and an unweighted combination
+   spending keep-budget protecting near-transparent junk there. Flooring
+   the BQ term at a minimum opacity (splats need >=0.3 opacity before BQ
+   variance can protect them from pruning) fixed this: +2.3dB at the tight
+   budget, a strict no-op (never worse) at looser ones where opacity-only
+   already retains everything with real content. Full account, including
+   the caveats on how narrowly this has been validated (one scene, one
+   checkpoint, a two-point floor sweep) in
+   `gs_experiment/results/FINDINGS.md` §15-16.
 4. NBV combination experiment.
 5. Write-up: primer appendix, honest pilot-study section, main derivation,
    differentiation experiment, and the two combination experiments.

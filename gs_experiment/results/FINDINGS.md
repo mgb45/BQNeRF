@@ -488,3 +488,76 @@ milestones 3-4 (the densification/NBV combination experiments) is
 reasonable on that basis — the premise they depend on (the effect exists
 and replicates) has real, thoroughly-checked support, even with the
 mechanism still open.
+
+# Milestone 3 findings: densification/pruning combination experiment
+
+ROADMAP.md milestone 3: "Use BQ variance alongside a visibility/
+gradient-based criterion; check whether the combination reaches equal
+quality at fewer splats... that the heuristic-only baseline misses." This
+tests that directly, post-hoc on the already-densified, already-trained
+differentiation-scene checkpoint (`pruning_experiment.py`, no retraining
+needed): prune to a target splat count two ways — opacity-only (the
+standard 3DGS heuristic) vs. opacity combined with BQ position-only
+variance (read from `differentiation_experiment.py`'s cached 2D
+uncertainty grid via interpolation, orders of magnitude cheaper than
+re-running fresh BQ solves for up to 15000 splats and precise enough at
+this splat-count-level granularity) — and compare reconstruction PSNR at
+matched, reduced splat counts.
+
+## 15. First attempt: a real win at tight budgets, a real regression at loose ones
+
+Unweighted combination (opacity rank + BQ-variance rank, no floor):
+
+| keep count (of 15000) | opacity-only PSNR | BQ-combined PSNR | delta |
+|---|---|---|---|
+| 4000 | 15.52dB | 17.98dB | **+2.45dB** |
+| 6000 | 33.66dB | 21.50dB | **-12.17dB** |
+| 9000 | 38.73dB | 28.01dB | **-10.72dB** |
+
+Not a simple "BQ helps" or "BQ hurts" result — genuinely mixed, and worth
+understanding why rather than picking the favorable number. At
+keep_count=6000/9000, the splats the BQ-combined criterion *saved* from
+pruning (that opacity-only would have kept out) had mean opacity 0.07 and
+0.02 respectively — barely-visible splats. The reason: BQ position-only
+variance is high in genuinely *empty* space too (little/no local data,
+correctly reflecting real uncertainty about that region, but not usefully
+for a pruning decision), so an unweighted combination spends keep-budget
+protecting near-transparent splats sitting in the gap between the two rod
+clusters, at the direct expense of dropping real, higher-opacity content
+elsewhere. At the tightest budget (4000), the BQ-saved splats had mean
+opacity 0.605 — genuinely substantial content that opacity-only's cutoff
+happened to just miss — which is why that condition won.
+
+## 16. Fix: floor the BQ term at a minimum opacity, calibrated empirically
+
+Restricting the BQ-variance boost to splats already above a minimum
+opacity (`min_opacity_for_bq`) keeps BQ voting among plausible
+reconstruction content rather than among obvious empty-space junk.
+Swept two floors:
+
+| floor | keep=4000 delta | keep=6000 delta | keep=9000 delta |
+|---|---|---|---|
+| none (§15) | +2.45dB | -12.17dB | -10.72dB |
+| 0.05 | +2.45dB | -10.89dB | 0.00dB (no-op) |
+| 0.3 | +2.32dB | 0.00dB (no-op) | 0.00dB (inferred no-op — a stricter floor can only shrink an already-empty affected set) |
+
+`min_opacity_for_bq=0.3` gives the cleanest behavior: a real win
+(+2.3dB) at the tightest budget, where the tradeoff BQ is making
+actually matters, and a strict no-op (never worse than the baseline) at
+looser budgets, where opacity-only alone already retains everything with
+non-trivial opacity and there's nothing left for BQ to usefully
+re-prioritize. This is the "combination not competition" story ROADMAP.md
+asks for in its cleanest form: BQ variance doesn't need to *always* help
+to be worth including — it needs to never meaningfully hurt, and to help
+specifically in the regime (tight splat budgets) where getting the
+allocation right matters most. Set as the script's default.
+
+Caveats worth being explicit about: (a) this is one scene, one checkpoint,
+one keep-count sweep, not a systematic study across budgets/scenes;
+(b) the floor value (0.3) was picked by trying two values and observing
+which behaved best, not derived from first principles or swept
+exhaustively — a more thorough calibration (e.g. a finer sweep, or a
+floor set relative to the checkpoint's own opacity distribution rather
+than an absolute constant) is a reasonable follow-up before citing the
+exact number; (c) PSNR is averaged over 8 held-out views spanning both
+zones, not a full held-out test set.

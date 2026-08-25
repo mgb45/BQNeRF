@@ -94,6 +94,14 @@ whole pipeline end-to-end right now.
   queries each splat at the direction it's *actually seen from by that
   camera* (not a single global "discriminating direction" picked for
   cross-zone comparison), which only makes sense per-view.
+- `pruning_experiment.py` — ROADMAP.md milestone 3 (densification/pruning
+  combination): prunes a checkpoint by opacity alone vs. opacity combined
+  with BQ position-only variance (read cheaply from
+  `differentiation_experiment.py`'s cached uncertainty grid), and compares
+  reconstruction PSNR at matched, reduced splat counts. See
+  `FINDINGS.md` §15-16 for the result (a real win at tight budgets, a
+  regression at loose ones fixed by flooring the BQ term at a minimum
+  opacity).
 
 **Still not attempted:**
 - A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`
