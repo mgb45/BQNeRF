@@ -114,10 +114,13 @@ in `gs_experiment/results/FINDINGS.md` §26.
   covariance that a shared-bandwidth kernel throws away. Run as an explicit
   ablation against shared-bandwidth (see the ablation matrix below), not
   assumed to help.
-- Repeat the fit/held-out check on the thin-rod checkpoint and other
-  scenes, to test whether Matern's much larger correction on lego is a
-  general kernel-family property or specific to that scene's geometry
-  (flagged as open in §26).
+- **Done.** Repeated the fit/held-out check on both thin-rod checkpoints
+  (`kernel_family_ablation.py`'s prerequisite fits): the answer is
+  scene-specific, not a general kernel-family property — lego needed
+  Matern's bigger correction, the thin-rod scenes needed RBF's instead
+  (opposite direction). Also surfaced a fresh overfitting case (Matern's
+  fitted bandwidth on the reference-strategy checkpoint generalized worse
+  than the hardcoded value) — see `gs_experiment/results/FINDINGS.md` §31.
 - A cleaner rerun with matched RNG seeds between the fitting script and
   `sparsity_correlation_experiment.py`, so the correlation comparison is a
   literal replication, not just an internally-consistent one (§26 caveat).
@@ -289,7 +292,19 @@ run consistently across every main experiment rather than once each:
 
 - Kernel family: RBF vs. Matérn-3/2 vs. a compactly-supported kernel
   matched to splat covariance (flagged as a candidate back in the original
-  pivot, never tried).
+  pivot, never tried). **RBF vs. Matérn done, with fitted (not arbitrary)
+  bandwidths, on all three real checkpoints.** `kernel_family_ablation.py`
+  finds a clean, consistent trade-off, not one kernel dominating: RBF wins
+  the sparsity-correlation claim and NLL calibration on every checkpoint
+  (Matérn's held-out NLL is catastrophically worse on lego — a small
+  fitted bandwidth blowing up the NLL's `error/variance` term); Matérn
+  wins the calibration *ranking* correlation on every checkpoint,
+  including flipping RBF's wrong-signed thin-rod result to a
+  smaller-magnitude wrong sign. No paper claim of one universally-superior
+  kernel is supported by this data — "kernel choice trades off which
+  property is best-served" is the honest finding, in
+  `gs_experiment/results/FINDINGS.md` §31. Compactly-supported kernel
+  still not tried.
 - Bandwidth: fixed/hardcoded vs. marginal-likelihood-fit vs. per-splat
   covariance (item 2).
 - Densification: gradient-triggered (current) vs. variance-triggered

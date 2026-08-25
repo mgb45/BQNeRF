@@ -1258,6 +1258,75 @@ splat count) — both established values used throughout this project
 strongly-negative, robust region of this curve, not near the transition.
 Full sweep table and plot in `gs_experiment/results/window_radius_ablation.png`.
 
+## 31. Kernel-family ablation with fitted bandwidths (ROADMAP.md item 6): RBF and Matern trade wins, neither dominates
+
+§22 checked RBF vs. Matern-3/2 on one real checkpoint and found they agree
+on spatial *pattern* (correlation 0.98) while differing ~150x in absolute
+*scale* — never whether the two kernels differ on the actual claims this
+project's other results are built on (sparsity correlation, calibration),
+and never with a properly *fitted* bandwidth for each rather than an
+arbitrary shared numeric value. This closes both gaps at once, and along
+the way closes an open question from item 2 (`gs_experiment/results/
+FINDINGS.md` §26): "is Matern's much larger correction on lego a general
+kernel-family property, or specific to that scene's geometry?" Freshly fit
+on both thin-rod checkpoints this session (`scripts/
+fit_hyperparameters_real_checkpoint.py --window-radius 0.15`): **the
+opposite pattern from lego** — on lego, Matern needed the bigger
+correction (`0.05 -> 0.0234`, more than half); on both thin-rod
+checkpoints, *RBF* needed the bigger correction (`0.05 -> 0.11-0.12`,
+more than double) while Matern stayed close to the hardcoded value. Answer:
+**scene-specific, not a general kernel-family property** — which kernel
+needs the larger correction depends on the scene, not a fixed rule.
+
+One more real nuance surfaced while fitting: on the reference-strategy
+thin-rod checkpoint, Matern's *fitted* bandwidth generalized *worse* to
+held-out windows than the *hardcoded* one (pooled held-out log marginal
+likelihood: fitted `-1032.01` vs. hardcoded `-560.36`) — a genuine
+overfitting signal, the same shape as the toy-scale RBF overfitting found
+in `bq_splat/results/FINDINGS.md` §7. `kernel_family_ablation.py` uses the
+hardcoded value for that one cell rather than trusting an overfit number,
+noted explicitly rather than silently picked.
+
+**With fitted bandwidths for both kernels on all three checkpoints, a
+clean, consistent, three-way trade-off emerges — neither kernel wins
+outright:**
+
+| checkpoint | metric | RBF | Matern-3/2 | winner |
+|---|---|---|---|---|
+| lego wide | sparsity r | -0.726 | -0.590 | RBF |
+| thin-rod, from-scratch | sparsity r | -0.985 | -0.920 | RBF |
+| thin-rod, reference-strategy | sparsity r | -0.950 | -0.814 | RBF |
+| lego wide | calibration r | 0.065 | 0.277 | Matern |
+| thin-rod, from-scratch | calibration r | **-0.281** (wrong sign) | -0.170 | Matern |
+| thin-rod, reference-strategy | calibration r | 0.067 | 0.165 | Matern |
+| lego wide | held-out NLL (lower better) | 28,490 | **1,394,541** | RBF, by far |
+| thin-rod, from-scratch | held-out NLL | 166 | 4,676 | RBF |
+| thin-rod, reference-strategy | held-out NLL | 514 | 3,164 | RBF |
+
+**RBF wins the sparsity-correlation claim and the NLL-calibration claim,
+consistently, on every checkpoint** (lego's NLL gap is dramatic — Matern's
+small fitted bandwidth produces some very small variances that blow up the
+`squared_error/variance` term whenever real error is nonzero there, a
+severe absolute-scale miscalibration specific to that small a bandwidth).
+**Matern wins the calibration *ranking* correlation, consistently, on
+every checkpoint** — including flipping RBF's wrong-signed
+`thinrod_fromscratch` result (`-0.281`) to a less-wrong (still negative,
+but smaller-magnitude) `-0.170`.
+
+**Reading, stated carefully rather than picking a winner to fit a
+narrative**: this project's two headline real-data claims are best served
+by *different* kernels. The sparsity-correlation claim (the one most of
+this project's results are built on) is more robust under RBF. The
+calibration *ranking* signal (§29's more favorable metric, and the one
+`pruning_experiment.py`'s success actually depends on) is more robust
+under Matern. Absolute-scale calibration (NLL) favors RBF strongly enough
+that Matern's small fitted bandwidths should not be used where a literal
+per-point confidence value is needed without further work. A paper
+claiming one universally-superior kernel family would not be supported by
+this data — the honest claim is "kernel choice trades off which specific
+property is best-served," which is itself a real, reportable finding
+about this project's central mechanism, not a hedge to bury.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA
