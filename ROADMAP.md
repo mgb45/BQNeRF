@@ -51,16 +51,30 @@ Ordered roughly by how load-bearing each gap is for a reviewer.
 
 ### 1. Formal statement and proof: BQ posterior mean = alpha compositing
 
-Currently asserted and checked numerically at small scale
-(`bq_splat/FINDINGS.md`), never written as a theorem. Needed before
-anything else in this document, since every downstream claim assumes the
-posterior mean and the rendered pixel are (nearly) the same quantity — if
-they diverge, that's either a bug or a genuinely interesting approximation
-gap, and either way it needs to be characterized precisely, not just spot
-checked. Deliverable: a derivation showing exactly which limit or
-assumption (kernel family, weight normalization) makes the BQ posterior
-mean equal standard alpha-compositing, and what the residual looks like
-when that assumption is relaxed.
+**First installment done.** `bq_splat/PROOF_alpha_compositing_equivalence.md`
+proves this in two parts: (A) under the standard piecewise-constant
+density/color model every NeRF/3DGS renderer already assumes, alpha
+compositing is the *exact* value of the continuous rendering integral, not
+an approximation of it (a known result, re-derived precisely in this
+project's notation); (B) the classical Bayes-Hermite/kernel-quadrature
+worst-case-error theorem (O'Hagan 1991), connected directly to this
+project's own `v`/`vv`/`K` code, gives
+`|true_integral - BQ_mean| <= ||g||_H * sqrt(BQ_variance)` — a *provable*
+bound, not a heuristic correlation, verified numerically (never violated
+across 40 random test functions per kernel, driven to a ~0.999 tightness
+ratio for a test function built to approximate the theorem's own error
+representer). The same theorem, applied to different linear functionals on
+one product-kernel RKHS, is shown to be what produces both quadrature and
+directional/epistemic uncertainty — the rigorous form of the unification
+claim. One hypothesis this raised and directly tested was refuted rather
+than massaged: RBF was *not* worse-behaved than Matern near a genuine
+color-jump discontinuity as hypothesized (opposite result, likely a
+lengthscale-matching artifact, left open). See
+`bq_splat/results/FINDINGS.md` §10 for the full account, including what
+this does and does not yet establish — notably, the formal connection
+between these theorems (stated for the ray-depth domain) and what
+`gs_experiment`'s actual production `LocalUncertaintyEngine` computes (a
+3D spatial-window formulation) is flagged as still open, not assumed.
 
 ### 2. Kernel hyperparameters as fitted, first-class quantities — not hardcoded
 

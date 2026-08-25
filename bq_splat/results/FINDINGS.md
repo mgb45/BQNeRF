@@ -409,6 +409,68 @@ closed-form BQ machinery *can* represent this failure mode mathematically,
 which is a different and smaller claim than "this is a better or cheaper
 way to compute it at GS scale," which hasn't been tested.
 
+## 10. Formal proof: does BQ actually recover alpha compositing, provably?
+
+Every prior section checked this empirically (accuracy vs. Riemann,
+calibration vs. true error) but never stated or proved it. ROADMAP.md item
+1 asked for a formal statement. Full derivation in
+`bq_splat/PROOF_alpha_compositing_equivalence.md`; summary here.
+
+**Two theorems, combined.** Theorem A: under the piecewise-constant
+density/color model every NeRF/3DGS renderer already assumes, the
+continuous rendering integral `C = integral T(t) sigma(t) c(t) dt` has a
+closed form that is *exactly* the discrete alpha-compositing sum
+`sum_i alpha_i T_i c_i` — not an approximation of it, a direct
+consequence of integrating a piecewise-exponential transmittance decay
+bin by bin (a known result, Max 1995; re-derived here in this project's
+notation because everything downstream needs to know precisely what "the
+right answer" is). Verified to floating-point precision (`2.2e-16` max
+error over 20 random scenes).
+
+Theorem B is the classical Bayes-Hermite quadrature result (O'Hagan 1991),
+not new to this project, but connected here directly to this codebase's
+`v`/`vv`/`K` quantities: BQ's implied weights `K^{-1}v` are the unique
+worst-case-error-minimizing linear estimator of the integral over the
+kernel's RKHS unit ball, and the minimized worst-case error is exactly
+`bayesian_quadrature`'s reported `variance`. Consequence: for any
+integrand `g` in the kernel's RKHS,
+`|true_integral - BQ_mean| <= ||g||_H * sqrt(BQ_variance)` — the posterior
+variance is a *provable* bound on BQ's own error, not a quantity that
+merely correlates with it. Checked two ways in
+`scripts/validate_alpha_compositing_equivalence.py`: never violated across
+40 random test functions per kernel, and — the check that actually matters,
+since "never violated" alone doesn't rule out a vacuously loose bound —
+the error/bound ratio was driven to `~0.999` for a test function
+constructed to approximate the theorem's own error representer, confirming
+the bound is achievable, not just valid.
+
+Combining both: BQ's mean equals the alpha-compositing value up to an
+error its own reported variance provably bounds. This also gives the
+rigorous version of the "unification" claim: quadrature uncertainty and
+directional/epistemic uncertainty (§9) turn out to be the *same*
+worst-case-error theorem applied to different linear functionals — pure
+integration, pure pointwise evaluation, or the joint functional an actual
+rendered pixel represents — on one product-kernel RKHS posterior, not two
+separate mechanisms.
+
+**One hypothesis this genuinely refuted, reported honestly rather than
+massaged.** The natural follow-up question — does RBF's infinite
+smoothness make it provably worse-behaved than Matern near a real
+discontinuity (a color jump between adjacent splats), which would explain
+§5-7's RBF-vs-Matern differences — was checked directly on a single-jump
+step scene at matched nominal bandwidth (`sigma=rho=0.6`), node counts
+10/20/40/80. **The result is the opposite of the hypothesis**: RBF had
+lower error *and* lower variance than Matern at every node count (e.g.
+`n=40`: RBF error 0.0041, Matern error 0.0411). Neither kernel's classical
+RKHS actually contains a literal jump discontinuity (Matern-3/2's Sobolev
+RKHS requires continuity too, by Sobolev embedding, contrary to an initial
+assumption it wouldn't), so the theoretical bound is vacuous for both near
+a true jump — and `sigma=rho=0.6` likely isn't a matched *effective*
+correlation length between the two kernel families, which is the more
+likely explanation than a real smoothness effect. Left open, flagged for
+a proper lengthscale-matched follow-up rather than forced into either
+narrative.
+
 ## Bottom line for the go/no-go gate
 
 Milestone 1 (derivation + small-scale validation) is a qualified pass:
