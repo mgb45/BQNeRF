@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 gs_experiment/local_runs/
+gs_experiment/results/sweep_frames/
