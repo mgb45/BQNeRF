@@ -83,13 +83,25 @@ whole pipeline end-to-end right now.
 - `kernel_comparison.py` runs the RBF-vs-Matérn question
   (`bq_splat/results/FINDINGS.md` §5-7, previously toy-scale only)
   against a real checkpoint.
+- `render_uncertainty_views.py` projects BQ variance, queried at real
+  splat positions, into an actual camera's pixel coordinates alongside
+  its RGB reconstruction — a splat-level approximation of the still-
+  deferred full per-pixel reprojection below, not the same thing (each
+  point is one splat's own variance at its own 3D position, not an
+  alpha-composited per-pixel value), but a real image-plane view rather
+  than the abstract top-down world-space slice
+  `differentiation_experiment.py` uses. Its position+direction panel
+  queries each splat at the direction it's *actually seen from by that
+  camera* (not a single global "discriminating direction" picked for
+  cross-zone comparison), which only makes sense per-view.
 
 **Still not attempted:**
-- Everything currently operates on 3D world-space query points, not 2D
-  image-plane pixels. Mapping world-space uncertainty to a specific
-  camera's per-pixel image is a reprojection step that a live gsplat
-  renderer's own projection/ray logic should provide directly — deferred
-  rather than reimplemented here.
+- A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`
+  projects per-splat variance into image space (see above), but mapping
+  world-space uncertainty to a genuine alpha-composited per-pixel value is
+  a different, deferred step that a live gsplat renderer's own
+  projection/ray logic should provide directly, rather than it being
+  reimplemented here.
 - `visibility_attribution.py`'s occlusion test is a bearing-based soft
   z-buffer, not what the actual training/rendering pipeline used to decide
   which views constrained which splat. Good enough to unblock building the
