@@ -1,200 +1,354 @@
-# Roadmap: from tiny-NeRF prototype to a paper
+# Roadmap: Bayesian quadrature as a unified uncertainty signal for Gaussian Splatting
 
-## Where this project stands
+## The thesis
 
-This repo started as a principled take on uncertainty quantification for
-NeRF rendering: instead of an ad hoc confidence heuristic, treat the
-per-ray volume-rendering integral as a **Bayesian quadrature (BQ)** problem.
-The weighted-color signal along a ray is modeled as a zero-mean GP with an
-RBF kernel (`models/nerf.py`); the posterior mean of the ray integral gives
-the rendered color and the posterior *variance* gives a closed-form,
-per-pixel uncertainty, used directly in a Gaussian-NLL training loss. A
-Matérn kernel variant was derived in `tutorial/Intro to Bayesian
-quadrature.ipynb` but never wired into the live model, so the original goal
-of comparing multiple kernels stalled at one.
+Volume rendering in Gaussian Splatting is a weighted sum over kernel nodes —
+which is exactly a **Bayesian quadrature (BQ)** estimate of an integral. That
+recognition is not just a reframing: putting a GP prior over the scene, with
+a kernel built from the same primitives already used to represent it
+(splat position, covariance, and viewing direction), gives a **closed-form
+posterior** whose mean recovers the rendered value and whose **variance is a
+principled, first-class uncertainty**, derived rather than engineered.
 
-The one experiment in the repo (`inspect_model.ipynb`, `figs/Ns_*.png`) —
-PSNR vs. sample count, BQ vs. standard quadrature, on a single held-out
-test image — shows BQ matching or losing to standard quadrature at every
-sample count. And by the time the repo went dormant (Feb 2023), 3D Gaussian
-Splatting had made pure ray-marching NeRF pipelines largely uncompetitive on
-the metric (novel-view PSNR) this prototype was implicitly being judged on.
+The kernel doesn't have to be a single object. Structured as a **product
+kernel** — a spatial component integrated over the region a splat occupies,
+times a directional (von Mises-Fisher) component evaluated pointwise at a
+query viewing direction — a *single* GP posterior yields two uncertainty
+signals that the existing literature treats as unrelated problems solved by
+unrelated machinery:
 
-## First pivot attempt, and what a literature check found
+- **Marginalizing over position** (integrating out direction) gives
+  **quadrature/discretization uncertainty**: how poorly the *finite,
+  currently-placed set of splats* resolves the integral at a point,
+  independent of how many views saw it. This flags thin structure,
+  high-frequency detail, and sparse local splat coverage — regions that can
+  be well-observed and still numerically under-resolved.
+- **Evaluating at a query direction** (holding position fixed) gives
+  **directional/epistemic uncertainty**: how much the observed viewing
+  directions at that point actually constrain the current query direction.
+  This is a Bayesian, closed-form analogue of what dedicated visibility
+  fields (GAVIS) and sensitivity-pruning methods (PUP) compute by other
+  means — same category of signal, different mechanism.
 
-The first version of this plan proposed porting the BQ derivation onto
-Gaussian Splatting and using it for two downstream tasks — uncertainty-
-guided densification/pruning, and active-view/next-best-view (NBV)
-selection — targeting IEEE RA-L. A literature search turned up recent, strong
-published work occupying almost exactly that ground:
+**The claim worth defending in a paper is not "BQ finds a failure mode
+others miss."** It's stronger and cleaner than that: **one coherent
+probabilistic object, fit with the same effort already spent representing
+the scene, subsumes signals that the field currently treats as requiring
+separate machinery** — a Hessian/Fisher sensitivity computation for one, an
+anisotropic visibility field with its own renderer for the other. If that
+holds up under the plan below, it's a unification result, not a niche
+add-on.
 
-- **PUP 3D-GS** (CVPR 2025) already does uncertainty-guided GS pruning, via
-  Hessian/Fisher sensitivity — prunes 90% of splats while improving quality.
-- **GAVIS** (CVPR 2026) already does uncertainty-driven active mapping/NBV
-  for GS, via an anisotropic visibility field (spherical harmonics) through
-  a Bayesian-network volume renderer — real-time at 200 FPS, claiming 500×
-  faster visibility-field construction than the prior SOTA (NVF).
-- **"Rendering-Aware Bayesian 3D Gaussian Splatting with Native Uncertainty
-  and Adaptive Complexity Control"** (arXiv, July 2026) combines native
-  uncertainty, complexity control, and active view selection under
-  sparse-view budgets in one paper — via Normal-Inverse-Wishart /
-  Dirichlet-process posteriors over Gaussian geometry, not kernel
-  quadrature, but covering almost the same combined scope.
+This has toy-scale (`bq_splat/`) and small real-scale (`gs_experiment/`)
+support already — summarized under **Status so far**, below — but this
+document does not let that work set the ceiling on the plan. What follows is
+the research program needed to make the unification claim rigorously,
+against real baselines, at a scale a reviewer will take seriously.
 
-Competing with these on their own metrics (pruning ratio, FPS, NBV quality)
-as a first attempt would be a weak position. But the same search surfaced
-the actual opening: every method found — Hessian/Fisher sensitivity,
-visibility fields, NIW/Dirichlet-process posteriors, variational weight
-posteriors, Laplace approximation, dropout, training-free multi-view
-consistency — targets **epistemic** uncertainty (missing views, occlusion,
-model sensitivity). None of them frame rendering uncertainty as
-**quadrature/discretization error**: the residual error from approximating
-a continuous integral with a finite set of weighted kernels. One search
-summary put it plainly — discretization is "treated as an inherent
-approximation rather than a distinct, quantifiable source of uncertainty"
-in this literature. The RBF-vs-Matérn kernel-choice question this repo
-stalled on also has no hits anywhere in the rendering-uncertainty
-literature.
+## What's still missing, and why each piece matters for the paper
 
-## The revised pivot
+Ordered roughly by how load-bearing each gap is for a reviewer.
 
-Quadrature uncertainty and epistemic/visibility uncertainty are different
-failure modes. Quadrature uncertainty flags regions that are
-**well-observed but numerically under-resolved** — thin structures,
-high-frequency detail, sparse local splat coverage — which visibility-based
-and Hessian-based methods structurally cannot see, since those regions
-*were* seen from enough views. The contribution is this distinction plus
-the mechanism (closed-form via kernel choice, essentially free to compute),
-not besting PUP or GAVIS at their own game. Positioned this way, BQ
-uncertainty is complementary to, and combinable with, the current SOTA —
-a more defensible reviewer story than a head-on comparison, and still a
-credible target for a robotics venue (RA-L) given the map-building framing.
+### 1. Formal statement and proof: BQ posterior mean = alpha compositing
 
-**Revised thesis:** BQ-derived uncertainty, computed directly from the same
-kernel structure used to represent a Gaussian-splat scene, is a cheap
-signal for a failure mode existing GS uncertainty methods miss —
-under-resolved-but-visible geometry — and combining it with an existing
-visibility/epistemic signal gives better densification or view-selection
-decisions than either alone.
+Currently asserted and checked numerically at small scale
+(`bq_splat/FINDINGS.md`), never written as a theorem. Needed before
+anything else in this document, since every downstream claim assumes the
+posterior mean and the rendered pixel are (nearly) the same quantity — if
+they diverge, that's either a bug or a genuinely interesting approximation
+gap, and either way it needs to be characterized precisely, not just spot
+checked. Deliverable: a derivation showing exactly which limit or
+assumption (kernel family, weight normalization) makes the BQ posterior
+mean equal standard alpha-compositing, and what the residual looks like
+when that assumption is relaxed.
 
-## What carries forward vs. what doesn't
+### 2. Kernel hyperparameters as fitted, first-class quantities — not hardcoded
 
-**Keep and adapt:**
-- The closed-form kernel-mean-embedding derivation (`rbf_vf`, `rbf_vff` /
-  `rbf_vvf_part` in `models/nerf.py`) — generalizes from "GP over samples
-  along a ray" to "GP over a mixture of anisotropic Gaussian kernels
-  (splats) contributing to a pixel." This is the technical core of the
-  paper.
-- The tutorial notebook, as the basis for a "Bayesian quadrature primer"
-  appendix.
-- The Matérn kernel derivation — finish it and compare against RBF (and
-  consider a third, e.g. a compactly-supported kernel matching splat
-  covariance more directly). This kernel-choice study is the piece with
-  the cleanest, least-contested novelty claim, independent of how the
-  downstream-combination story lands.
-- The Gaussian-NLL training idea, as a possible secondary (training-time)
-  use of the uncertainty.
-- The negative NeRF-PSNR result — report it explicitly as the pilot study
-  that motivated pivoting away from pointwise-PSNR evaluation toward
-  downstream-task evaluation, not as something to hide.
+`bq_splat/hyperparams.py` already fits bandwidth via marginal likelihood at
+toy scale, with a genuine finding: it helps for Matérn, not for RBF (the
+population-optimal RBF bandwidth turned out to match the original hardcoded
+value almost exactly — see `bq_splat/FINDINGS.md` §7). Every `gs_experiment/`
+result so far still hardcodes `sigma` per scene. This needs to move to real
+GS scale as a first-class part of the pipeline, not an appendix footnote:
 
-**Discard:**
-- `train.py`'s single-scene training loop and the Std-vs-BQ PSNR comparison
-  as a headline result — pilot/appendix material only.
-- Further investment in the from-scratch NeRF MLP itself — the new work is
-  GS-based.
-- Framing either downstream track as a head-to-head win over PUP 3D-GS or
-  GAVIS — reframed as combination, below.
+- Marginal-likelihood fitting of the position and directional bandwidths
+  jointly, at real checkpoint scale (10^5-10^6 splats), not just the toy
+  scenes it was validated on.
+- **Per-splat covariance as the kernel bandwidth**, rather than one shared
+  scalar — flagged as a deliberate, real extension since the very first
+  version of this plan and never attempted. This is likely to matter more
+  than global fitting, since splats already carry anisotropic, learned
+  covariance that a shared-bandwidth kernel throws away. Run as an explicit
+  ablation against shared-bandwidth (see the ablation matrix below), not
+  assumed to help.
+- A held-out generalization check in the same style as
+  `validate_trainable_kernel_heldout.py` (fit on one scene split, evaluate
+  on a disjoint one) repeated at real scale, since the toy-scale RBF result
+  was specifically an overfitting story that a held-out test caught.
 
-## Technical core: BQ for Gaussian Splatting
+### 3. Training under the likelihood, not just post-hoc readout
+
+Every experiment so far computes BQ variance *after* training, from a
+checkpoint trained by ordinary photometric loss. The original NeRF-BQ
+prototype in this repo *did* train with a Gaussian-NLL loss
+(`models/nerf.py`) — that idea needs to come back at GS scale, and go
+further:
+
+- Gaussian-NLL (or a proper scoring rule) as an actual training loss for
+  the GS trainer, replacing or augmenting plain photometric loss, so the
+  model is optimized to have calibrated variance, not just to produce a
+  number that happens to correlate with sparsity after the fact.
+- **Uncertainty-driven densification**: use BQ posterior variance itself —
+  not gsplat's view-space positional gradient — as the clone/split trigger.
+  The current trainer's densification (`train_minimal_gsplat.py`) is a
+  reimplementation of the standard 3DGS gradient heuristic; a variance-
+  driven criterion is a genuinely different algorithm and the more
+  interesting one to report, since it closes the loop between the paper's
+  central signal and the training process that should respond to it,
+  rather than treating BQ variance as purely diagnostic.
+- Compare final reconstruction quality and splat-count efficiency: does
+  training under the likelihood, with variance-driven densification, beat
+  standard photometric-loss + gradient-densification at matched splat
+  budgets? This is a stronger, more central claim than the current
+  post-hoc pruning experiment, which only ever removes splats from an
+  already-finished checkpoint.
+
+### 4. Experiments on the same settings baselines actually use
+
+Nothing so far runs on a benchmark or protocol a reviewer can directly
+compare against a cited number. Needed:
+
+- **Full NeRF-Synthetic** (all 8 scenes — lego is the only one attempted),
+  standard train/val/test split, standard resolution and view counts, not
+  a single scene picked for convenience.
+- **Mip-NeRF360** and **Tanks & Temples** — the scenes PUP 3D-GS and GAVIS
+  actually report numbers on. Reproducing (or closely approximating) their
+  splat-count-vs-quality and NBV-quality-vs-view-budget curves on the same
+  scenes is what makes "combining beats either alone" a comparison against
+  the literature rather than against an in-house visibility-proxy stand-in.
+- Where full reproduction of PUP/GAVIS's own pipeline isn't practical,
+  cite their published numbers on these exact scenes and report this
+  project's numbers on the same scenes/splits, so the comparison is
+  apples-to-apples even without re-running their code.
+- **Validate against a real reference 3DGS/gsplat trainer**, not only the
+  from-scratch minimal trainer written for this project
+  (`train_minimal_gsplat.py`). The minimal trainer was necessary to get
+  something working end-to-end fast, but a reviewer will reasonably ask
+  whether these results are an artifact of a non-standard, simplified
+  training loop. Re-run the core differentiation and combination
+  experiments against checkpoints from gsplat's own example trainer (or
+  the original Inria 3DGS repo) as a cross-check.
+
+### 5. Calibration, not just correlation
+
+Every real-data result so far is a correlation or ratio (BQ variance vs.
+sparsity, wide-zone vs. narrow-zone ratio). None of it answers "is this
+variance *calibrated*" — i.e., does a claimed 2x higher variance actually
+correspond to 2x the squared error, on average, on genuinely held-out data?
+Needed before any uncertainty number is used to justify a downstream
+decision in a paper:
+
+- **Sparsification curves**: remove the highest-uncertainty points first
+  and confirm error drops fastest of any ordering.
+- **AUSE** (Area Under the Sparsification Error curve) against the oracle
+  (error-ranked) ordering, the standard metric this project hasn't
+  computed yet.
+- **NLL on held-out test views**, using the fitted (not hardcoded) variance
+  from item 2 — this is also the natural evaluation metric if item 3's
+  likelihood-trained model ships.
+
+### 6. Systematic ablations, extended to match the plan's new pieces
+
+The project's existing ablation instincts are good (RBF vs. Matérn,
+position-only vs. position+direction, densification on/off, opacity floor
+for pruning) but ad hoc and one-off. Consolidate into one ablation matrix,
+run consistently across every main experiment rather than once each:
+
+- Kernel family: RBF vs. Matérn-3/2 vs. a compactly-supported kernel
+  matched to splat covariance (flagged as a candidate back in the original
+  pivot, never tried).
+- Bandwidth: fixed/hardcoded vs. marginal-likelihood-fit vs. per-splat
+  covariance (item 2).
+- Densification: gradient-triggered (current) vs. variance-triggered
+  (item 3) vs. off.
+- Window radius / von Mises-Fisher concentration (kappa): sensitivity
+  sweep — results so far pick one value per experiment without checking
+  how much the finding depends on it.
+- Opacity floor for pruning: extend the existing two-point sweep
+  (`pruning_experiment.py`, §15-16) to a real sweep with confidence
+  intervals, not two budget points on one checkpoint.
+
+### 7. Multi-scene, multi-seed statistics
+
+Every headline number so far (18.7x, 0.33x-0.46x, r=-0.74, +1.89dB) comes
+from one scene, sometimes replicated across two training seeds at most. A
+paper needs distributions, not point estimates: repeat the core
+differentiation and combination experiments across the full multi-scene
+benchmark set from item 4, with enough seeds to report a confidence
+interval or a Wilcoxon/paired test against baselines, not a single ratio.
+
+### 8. Realistic, multi-round next-best-view prediction
+
+The current NBV experiment (`nbv_experiment.py`, §17-19) is a real but
+narrow result: single-shot (one view added, one retrain), a small
+azimuth-only candidate pool where BQ and the visibility proxy happened to
+rank every candidate identically (correlation 1.000) — meaning the
+headline "guided beats poor" result doesn't yet demonstrate the more
+specific "combination beats either signal alone" the milestone was meant
+to show. Needed:
+
+- **Sequential/multi-round** NBV: pick a view, retrain, re-evaluate
+  uncertainty, pick the next view, repeat — the actual active-mapping loop
+  GAVIS and similar systems run, not a single add-and-compare.
+- A **realistic candidate-pose set** (informed by robot reachability or at
+  minimum a dense, non-degenerate 3D pose sampling), not a discrete
+  azimuth-only ring.
+- Scenes **deliberately constructed so BQ and visibility diverge** — the
+  single-cluster scene used so far structurally can't separate them, since
+  every candidate that reduces one reduces the other identically. A scene
+  with both an occluded-but-simple region and an unoccluded-but-fine-
+  structure region is needed to actually test whether the combined signal
+  beats either alone on view selection, which is the milestone's real
+  claim and not yet demonstrated.
+
+### 9. SLAM / incremental-mapping integration
+
+Motivated by the original design question that led to the directional
+kernel in the first place (`bq_splat/FINDINGS.md` §9): splats accumulate
+incrementally in a SLAM setting, and the pipeline already has a real
+likelihood (the BQ posterior) to plug into a mapping loop, rather than a
+NeRF-BQ-style ad hoc score. Concretely:
+
+- Wire the incremental/online case: as new views arrive and splats are
+  added or updated, update the BQ posterior (both position and directional
+  terms) incrementally instead of recomputing from scratch — this is a
+  real systems question, not just a re-run of the batch experiments on a
+  streaming schedule.
+- Use the combined signal to drive online loop-closure or re-visitation
+  decisions (go back to a region because directional uncertainty there is
+  high, not just because it hasn't been seen recently) — a concrete robot-
+  facing deliverable that ties back to the RA-L framing from the original
+  pivot.
+- This is the most exploratory item in this document and the one most
+  likely to need its own scoping pass once items 1-8 are further along —
+  listed here as a real target, not a promise of a specific result.
+
+### 10. Robustness and failure-mode analysis
+
+Nothing so far stress-tests the method against conditions where it should
+plausibly *fail* or degrade — a paper is stronger for characterizing this
+directly rather than a reviewer finding it first. Needed: behavior under
+sparse/noisy input views, under a badly-initialized or under-trained
+checkpoint, under scenes with reflective/transparent material (a known
+hard case for both 3DGS itself and for uncertainty methods built on top of
+it), and under adversarially-placed cameras designed to fool the
+directional term specifically.
+
+### 11. Runtime / cost benchmarking of the "nearly free" claim
+
+"Nearly free" is currently a qualitative claim resting on one CPU scaling
+benchmark (`benchmark_local_bq_scaling.py`, `bq_splat/FINDINGS.md` §8) plus
+one measured per-query GPU-adjacent timing during GIF rendering
+(2-3ms/solve at `max_neighbors=150`). Needed for the paper to make this
+claim with a number instead of an adjective: wall-clock and memory
+overhead of computing BQ variance (both terms) relative to plain rendering,
+at real checkpoint scale, on GPU, reported alongside the accuracy/
+calibration results — ideally as an actual table next to PUP's and GAVIS's
+reported throughput numbers, since both of those papers lead with speed.
+
+### 12. Real captured data
+
+Every scene used so far, including the "real-benchmark" lego run, is
+Blender-synthetic (NeRF-Synthetic is a recognized standard benchmark, but
+still rendered, not photographed). A genuine photograph + COLMAP/SfM
+capture — even one scene — is the standard sanity check a reviewer will
+ask for before trusting that any of this survives real sensor noise, real
+calibration error, and real (non-uniform, non-turntable) view distributions.
+
+## Technical core (unchanged, now explicitly the unification derivation)
 
 Reformulate GS rendering along a camera ray/pixel as a kernel-quadrature
 estimate: each contributing splat is a weighted kernel node (its learned
 covariance plays the role of kernel bandwidth/shape; its opacity and color
-the role of quadrature weight and function value). Under a GP prior tied to
-the splats' own kernel family:
+the role of quadrature weight and function value). Under a GP prior built
+from a **product kernel** — spatial component (integrated over the domain)
+times directional component (von Mises-Fisher, evaluated pointwise at a
+query direction):
+
 - The posterior mean over the pixel integral should recover (or closely
-  approximate) standard alpha-compositing — verify this formally and
-  empirically before building anything downstream.
-- The posterior variance gives a closed-form per-pixel/per-splat
-  uncertainty reflecting how well the *current, finite set of splats*
-  covers the integral.
+  approximate) standard alpha-compositing — item 1 above makes this
+  precise.
+- **Marginal (position-only) posterior variance** gives quadrature/
+  discretization uncertainty: how well the current, finite set of splats
+  covers the integral, independent of view count.
+- **Position+direction posterior variance, evaluated at the actual query
+  viewing direction**, gives directional/epistemic uncertainty: how well
+  the observed viewing directions constrain that specific query direction.
+- Both come from **one GP posterior**, not two separate models — the
+  central unification claim, already shown mathematically real at toy
+  scale (`bq_splat/FINDINGS.md` §9: 0.97x vs. 2.46x, isolating the
+  directional term's real effect against a confound-controlled baseline)
+  and replicated once at real GS scale (`gs_experiment/FINDINGS.md` §22,
+  §25).
 
-## The differentiation experiment (load-bearing — do this first)
+## Status so far (condensed — full detail in FINDINGS.md files)
 
-Construct or find a scene/setup where a region is well-visible (low
-visibility-uncertainty by a GAVIS-style measure) but poorly resolved
-(high-frequency or thin geometry, sparse local splat density). Show BQ
-quadrature uncertainty flags it while a visibility-based signal doesn't.
-This is what makes "orthogonal, not redundant" a demonstrated claim rather
-than an assertion — treat it as the actual go/no-go gate for the rest of
-the plan, ahead of both downstream tracks below.
+This section is a summary of what's been validated, kept short
+deliberately so it doesn't set the ceiling for the plan above. Full
+narrative detail, including every bug found and fixed along the way, lives
+in `bq_splat/results/FINDINGS.md` and `gs_experiment/results/FINDINGS.md`.
 
-## Downstream evaluation, as combination rather than competition
+**Toy scale (`bq_splat/`, pure numpy/scipy, CPU):**
+- RBF and Matérn-3/2 BQ math derived and unit-tested against
+  `models/nerf.py` and numerical integration.
+- Marginal-likelihood bandwidth fitting implemented; helps Matérn, doesn't
+  help RBF (a held-out test showed the RBF gain was overfitting — §7).
+- CPU scaling bottleneck identified (a `vv` term, not the linear solve) and
+  fixed via caching + KD-tree, ~2,400-3,000s -> ~140-420s per 800x800
+  image up to 10^6 synthetic splats (§8).
+- `ProductKernel` + `DirectionalKernel` (von Mises-Fisher) implemented; a
+  confound-controlled toy experiment isolates the directional term's real
+  effect (0.97x position-only vs. 2.46x position+direction — §9).
 
-Rather than separate "beat PUP on pruning" / "beat GAVIS on NBV" tracks,
-test whether **combining** BQ quadrature uncertainty with an existing
-visibility/epistemic signal (a simple visibility-count or entropy proxy
-standing in for GAVIS/PUP, where full reproduction isn't in scope) gives
-better densification or view-selection decisions than either signal alone:
-
-1. **Densification/pruning.** Use BQ variance alongside a
-   visibility/gradient-based criterion; check whether the combination
-   reaches equal quality at fewer splats, or catches failure cases
-   (under-resolved-but-visible regions) that the heuristic-only or
-   Hessian-only baseline misses.
-2. **Active view planning / NBV.** Use BQ variance alongside a visibility
-   proxy for candidate-view scoring; check whether the combined signal
-   selects views that improve reconstruction in under-resolved regions
-   faster than either signal alone.
-
-Cite PUP/GAVIS reported numbers rather than trying to outperform their
-optimized, real-time implementations outright.
-
-## Engineering plan
-
-- Build on `gsplat` (Python/PyTorch-hackable) rather than the original
-  Inria CUDA 3DGS repo, so a custom densification criterion and per-splat
-  uncertainty computation don't require hand-writing CUDA.
-- New components needed (none exist yet):
-  1. Per-pixel local BQ posterior-variance computation compatible with GS's
-     typical splat counts (hundreds of thousands to millions). Originally
-     flagged as needing a hard batched-closed-form solution because the
-     linear solve was assumed to be the bottleneck at scale — a CPU
-     benchmark (`bq_splat/scripts/benchmark_local_bq_scaling.py`,
-     `bq_splat/results/FINDINGS.md` §8) found that assumption wrong: the
-     solve is negligible even at hundreds of local neighbors, and the real
-     cost (94% of it) was a numerically-integrated `vv` term. Two concrete,
-     already-validated fixes carry over directly instead of requiring new
-     numerical-linear-algebra work: (a) KD-tree (or gsplat's own existing
-     tile/neighbor structures) for O(log N) local neighbor lookup instead
-     of brute force, and (b) caching `vv` per window size, exact rather
-     than approximate for a stationary kernel on a fixed-size, translated
-     window. Together these took a naive ~2,400-3,000s/image estimate to
-     ~140-420s on CPU alone, up to 10^6 synthetic splats — validate this
-     holds on small real synthetic scenes next, before assuming GPU
-     batching is required from day one.
-  2. A validation harness with two modes: (a) BQ posterior variance vs. a
-     brute-force baseline (leave-one-splat-out variance, or a GS-model
-     ensemble) on a small scene, to sanity-check the closed-form
-     derivation; (b) BQ variance vs. a visibility/epistemic proxy on the
-     differentiation-experiment scene, to check the two signals actually
-     diverge where expected.
-  3. Modified densification/pruning logic combining BQ variance with an
-     existing criterion.
-  4. An NBV/active-view selection loop combining BQ variance with a
-     visibility proxy, plus a candidate-pose evaluation harness — start on
-     Blender synthetic scenes with a discrete candidate-pose set before
-     considering real robot data.
-- Datasets: standard GS synthetic benchmark scenes, plus whatever scene
-  construction the differentiation experiment requires (likely a scene
-  with both open, well-covered regions and thin/high-frequency structure).
+**Real GS scale (`gs_experiment/`, gsplat + a from-scratch minimal
+trainer, RTX 3090):**
+- Real checkpoint loading, SH color evaluation, and geometric visibility
+  attribution implemented and tested against a synthetic-occluder case.
+- On a hand-built thin-rod scene: position+direction BQ variance shows an
+  18.7x wide/narrow-view-count ratio; the core position-only
+  quadrature-uncertainty claim (wide zone flagged as *more* uncertain than
+  narrow, opposite the visibility proxy's ranking) required real
+  gradient-triggered densification to appear at all, then replicated
+  across two seeds and both kernel families, and survived four independent
+  artifact checks — including a controlled test that refuted the leading
+  "redundancy" hypothesis for the mechanism, which remains genuinely open
+  (§9-14).
+- Pruning combination (BQ + opacity, opacity-floored) beat opacity-only at
+  a tight splat budget, no-op at looser ones (§15-16).
+- Single-shot NBV combination picked a view that improved held-out PSNR
+  ~3x more than a poor choice, but BQ and the visibility proxy ranked
+  every candidate identically in this scene (correlation 1.000) — item 8
+  above is what's needed to actually test signal combination for NBV
+  (§17-19).
+- On NeRF-Synthetic "lego" (real benchmark, not hand-built): BQ variance
+  correlates with local splat sparsity (r=-0.74, p=8e-27) and responds to
+  genuine angular coverage gaps rather than raw view count (flat across
+  100->12 random-subset views, 2.75x higher for the same 12-view count
+  when clustered instead of random) — direct support for the project's
+  "uncertainty nearly for free" claim that doesn't route through a proxy
+  (§20-25).
 
 ## Literature to read before drafting
 
 This space moves roughly monthly. At minimum, get an abstract-level read on
-these before finalizing framing (beyond PUP 3D-GS, GAVIS, and the July 2026
-Native Uncertainty preprint, already summarized above):
+these:
+- **PUP 3D-GS** (CVPR 2025) — Hessian/Fisher sensitivity pruning.
+- **GAVIS** (CVPR 2026) — anisotropic visibility field, Bayesian-network
+  renderer, active mapping/NBV.
+- **"Rendering-Aware Bayesian 3D Gaussian Splatting with Native Uncertainty
+  and Adaptive Complexity Control"** (arXiv, July 2026) — NIW/Dirichlet-
+  process posteriors, native uncertainty + complexity control + active
+  view selection in one paper.
 - Variational Bayes Gaussian Splatting (ICLR 2025)
 - Variational Multi-Scale Representation for Estimating Uncertainty in 3DGS
   (NeurIPS 2024)
@@ -207,261 +361,41 @@ Native Uncertainty preprint, already summarized above):
 - Uncertainty-Aware Gaussian Splatting with View-Dependent Regularization
   (Eurographics)
 
-## Milestones
+None of the above frames rendering uncertainty as quadrature/discretization
+error, and none unifies it with the directional/epistemic term via one
+posterior — that combination is still, as far as this search found, this
+project's actual opening. Re-check before drafting; a year is a long time
+in this literature.
 
-1. **Done** — derivation + small-scale validation, in `bq_splat/` (pure
-   numpy/scipy, no gsplat/torch dependency yet). RBF and Matérn-3/2 kernel
-   math is ported/derived and unit-tested against `models/nerf.py`'s exact
-   formula and against numerical integration. A 1D toy-ray Monte Carlo sweep
-   and a deliberate sparse-but-visible "gap" experiment are implemented and
-   run; see `bq_splat/results/FINDINGS.md` for the qualified-pass write-up
-   (BQ mean still loses to naive Riemann summation on raw accuracy, matching
-   the original NeRF-BQ result, but posterior variance is reasonably
-   calibrated for both kernels and the gap experiment shows ~3.9x higher
-   average local variance in an under-sampled-but-visible region, peaking at
-   the region's leading edge where sparse coverage meets real structure —
-   supporting the differentiation claim at toy scale, with a more specific
-   shape than a flat plateau. Also surfaced a real numerical-
-   conditioning issue (irregular node spacing can push the Gram matrix
-   condition number past 1e18 with a fixed jitter) and fixed it with a
-   relative jitter — a lesson that carries into the eventual gsplat port.
-   Follow-up: `hyperparams.py` fits the kernel bandwidth per scene via
-   marginal likelihood instead of hardcoding it (as `models/nerf.py` and
-   this package's own baseline both do); fitting closes most of the
-   accuracy gap against Riemann summation and fitted Matern beats Riemann
-   outright at n=20/40 nodes — confirming the gap was substantially a
-   fixed-bandwidth mismatch, not a fundamental BQ limitation. See
-   `bq_splat/results/FINDINGS.md` §5. Any bandwidth used once this moves
-   into the gsplat-integrated code should be fit the same way (or made a
-   literal torch.nn.Parameter optimized jointly with the rest of the
-   pipeline), not hardcoded. Second follow-up (all still CPU-only, ahead of
-   any GPU work): `toy_scene_2d.py` + `ProductKernel` +
-   `bayesian_quadrature_nd` generalize the whole toy setup from a 1D
-   ray-depth domain to a 2D image-plane domain with scattered splat-center
-   placement -- the geometry a real GS scene actually has, unlike a 1D ray
-   integral. The differentiation effect survives the move (4.85x
-   inside/outside variance ratio, same "peaks near the coverage boundary"
-   shape as the 1D case) -- see `bq_splat/results/FINDINGS.md` §6 and
-   `gap_experiment_2d.png`. This still isn't the real GS-based experiment
-   below (analytic mixture-of-Gaussians signal, isotropic placement, no
-   learned covariances or camera geometry), but de-risks it further before
-   any GPU time is spent. Third follow-up: a proper held-out test (fit a
-   bandwidth on one set of scenes, evaluate on disjoint unseen scenes) in
-   `validate_trainable_kernel_heldout.py` refines the fitted-bandwidth
-   story rather than just confirming it -- it generalizes for Matern (a
-   bandwidth fit once nearly matches, sometimes beats, an in-sample oracle
-   on unseen scenes) but not for RBF (the population-optimal RBF bandwidth
-   turned out to be almost exactly the original hardcoded 0.35, so RBF's
-   earlier per-scene gains were mostly overfitting to each scene's specific
-   sample layout, not a real mismatch worth fixing). See
-   `bq_splat/results/FINDINGS.md` §7. Fourth follow-up: computational
-   feasibility at GS scale (10^5-10^6 splats), benchmarked in
-   `benchmark_local_bq_scaling.py` -- the bottleneck was assumed to be an
-   expensive linear solve at scale, but profiling found 94% of per-query
-   cost was actually a numerically-integrated `vv` term; caching it per
-   window size (exact, not approximate, since a stationary kernel's `vv`
-   only depends on window size/shape, not position -- confirmed
-   numerically) plus a KD-tree for neighbor lookup takes a naive
-   ~2,400-3,000s single-threaded per-800x800-image estimate down to
-   ~140-420s, still CPU-only, up to a million synthetic splats. See
-   `bq_splat/results/FINDINGS.md` §8; this substantially updates the
-   engineering-risk assessment in the plan below. Fifth follow-up, prompted
-   by a design question about SLAM deployment (splats accumulating over
-   time -- does this give both quadrature *and* visibility/epistemic
-   uncertainty?): on its own, no -- a position-only kernel can't tell "seen
-   from every angle" apart from "seen once, obliquely." `DirectionalKernel`
-   (a von Mises-Fisher kernel on viewing direction) extends the same
-   `ProductKernel` structure to fix this: position stays integrated as
-   before, direction is evaluated pointwise at a query direction (a
-   rendered pixel looks in one direction, it doesn't integrate over a
-   range), via `bayesian_quadrature_directional`. A controlled toy
-   experiment (`validate_directional_combined.py`) with spatial density
-   held exactly equal between two zones (by construction, not luck -- see
-   `bq_splat/results/FINDINGS.md` §9 for a real confound this caught and
-   fixed) shows position-only variance reports no difference between a
-   widely-observed and a narrow-cone-observed zone (0.97x) while
-   position+direction variance correctly reports 2.46x higher variance in
-   the narrow-cone zone. Toy-scale evidence the unification is
-   mathematically real, not yet evidence it's a better or cheaper way to
-   get visibility uncertainty than a dedicated field (GAVIS-style) at GS
-   scale -- that comparison hasn't been attempted.
-2. The differentiation experiment — the real go/no-go gate, now to be run
-   on an actual GS scene rather than a 1D or 2D toy signal. This is the
-   first milestone that needs a GPU (gsplat rasterization). **Scaffolding
-   in progress** on branch `claude/gs-experiment-scaffold`: a new
-   `gs_experiment/` package wires `bq_splat`'s validated kernels/quadrature
-   (including the directional extension) to real 3D splat/camera data
-   structures, reuses the KD-tree + vv-caching optimizations from
-   `benchmark_local_bq_scaling.py` via a `LocalUncertaintyEngine`, and runs
-   end-to-end on a mock scene now (`gs_experiment/differentiation_experiment.py`)
-   with no GPU/torch/gsplat dependency. `bq_splat.quadrature` gained an
-   optional `precomputed_vv`/`precomputed_pos_vv` parameter to make that
-   caching a first-class, reusable library feature. Real checkpoint loading
-   (`gs_experiment/splat_scene.load_from_gsplat_checkpoint`) is a documented
-   stub pending GPU access and a trained scene; see `gs_experiment/README.md`
-   for exactly what's real, what's mocked, and what to do once both are
-   available. Deliberately deferred: per-splat heterogeneous covariance as
-   the BQ kernel bandwidth (a real extension, but a second unvalidated
-   change best kept separate from the GPU integration itself) and
-   image-plane pixel reprojection (gsplat's own rasterizer should provide
-   this rather than it being reimplemented here). Two follow-up pieces of
-   the real-checkpoint-loading gap are now built and tested (still no
-   GPU/torch/gsplat needed): `spherical_harmonics.eval_sh`, matching the
-   standard 3DGS/gsplat SH color convention exactly (its normalization
-   constants checked against closed-form values, not just trusted as
-   literals) — replacing `splat_observations`'s flat, direction-independent
-   color with genuinely view-dependent color when a scene sets
-   `sh_coeffs`; and `visibility_attribution.py`, a frustum + soft-z-buffer
-   occlusion proxy for `observed_camera_idx` (real training pipelines don't
-   record which views actually constrained which splat), validated against
-   a synthetic occluder case. `splat_scene.make_occluder_scene` is the
-   integration test that both compose with the rest of the pipeline, not
-   just that each works alone: a wall of splats correctly occludes a
-   target cluster from front cameras while back cameras see it directly,
-   using real geometric attribution rather than an assignment rule.
+## Write-up plan
 
-   **GPU access obtained; real-checkpoint run complete, go/no-go claim demonstrated.**
-   `load_from_gsplat_checkpoint` is now real (reads a standard 3DGS `.ply`
-   plus `transforms.json`), backed by a new Blender-based synthetic-scene
-   renderer (`gs_experiment/blender_render.py`) and a minimal from-scratch
-   gsplat trainer (`gs_experiment/train_minimal_gsplat.py`) on a 3090. The
-   real differentiation scene (two identical thin-rod clusters, one shot
-   from a 40-view turntable ring, one from a 10-view arc) was trained and
-   run through the full pipeline; see `gs_experiment/results/FINDINGS.md`
-   for the complete account, including four real bugs found and fixed
-   along the way (an occlusion-attribution default two orders of
-   magnitude too aggressive for dense real geometry; a query-direction
-   construction that silently broke when both camera rigs share an
-   elevation; an uncapped local-neighbor count that pegged 18 CPU cores
-   for half an hour before being caught; and a scale-initialization bug
-   that produced a visually-blank reconstruction behind a deceptively
-   reasonable PSNR). With those fixed: position+direction BQ variance
-   shows an 18.7x wide/narrow ratio (visibility proxy agrees at 1.7x),
-   stronger than section 9's 2.46x toy-scale result. RBF vs. Matérn-3/2
-   on this same real checkpoint agree on spatial pattern (correlation
-   0.98) but differ ~150x in absolute scale — the first real-data run of
-   the kernel-choice question from `bq_splat/results/FINDINGS.md` §5-7.
-   The core go/no-go claim — position-only variance flagging a
-   well-observed-but-poorly-resolved region — was initially *not*
-   demonstrated (ratio 0.98x-1.02x regardless of kernel), traced to the
-   trainer having no densification, so splat density near a region didn't
-   depend on view coverage the way a real 3DGS trainer's would.
-   **Real densification (gradient-triggered clone/split + opacity
-   pruning, against gsplat's own view-space gradient) was added and
-   calibrated against measured gradient magnitudes** (empirically
-   ~1e-6-1e-5 for this project's scenes, not the original 3DGS paper's
-   0.0002 -- a different image-space convention -- so the threshold is
-   now a per-cycle percentile of the observed distribution, not a
-   borrowed constant). With it, mean reconstruction PSNR rose from 33dB
-   to 43dB, and **the core claim is now demonstrated**: position-only BQ
-   variance ranks the wide (40-view) zone as *more* uncertain than the
-   narrow (10-view) zone (ratio ~0.33x-0.46x), the opposite ranking from
-   the visibility proxy (which correctly calls the wide zone
-   better-observed) -- replicated across two independent training seeds,
-   both kernel families (RBF and Matérn-3/2, correlation 0.995), and two
-   numerical/methodological concerns that were checked directly rather
-   than assumed benign (clone-position adjacency; camera-count leaking
-   into a signal meant to be blind to it via `splat_observations`' row
-   duplication -- neither was the driver). A fourth check went further:
-   the controlled isolation test the redundancy hypothesis called for
-   (matching splat count between zones, then matching spacing) was run
-   directly against the trained checkpoint, and **refuted the redundancy
-   hypothesis** -- neither manipulation moved the ratio. The effect has
-   now survived four independent "maybe this is an artifact" checks, which
-   is considerably stronger standing than one untested leading hypothesis,
-   but the *mechanism* is genuinely open again (a new candidate --
-   spatial anisotropy / off-rod-splat fraction differing between zones --
-   is proposed but not yet tested the way redundancy was). Full account,
-   including the numerical-conditioning checks this result was verified
-   against before being trusted, in `gs_experiment/results/FINDINGS.md`
-   §9-14. Practically: the effect itself is thoroughly checked and safe to
-   build on; understanding *why* needs another isolation test before
-   being claimed. The premise milestones 3-4 depend on (the effect exists
-   and replicates) has real, thoroughly-checked support on that basis.
-3. Densification/pruning combination experiment. **First pass done.**
-   `pruning_experiment.py` prunes the trained differentiation-scene
-   checkpoint two ways -- opacity-only (the standard heuristic) vs.
-   opacity combined with BQ position-only variance -- and compares
-   reconstruction PSNR at matched, reduced splat counts. First attempt
-   (unweighted combination) was genuinely mixed: +2.45dB at an aggressive
-   4000-splat budget, but -12dB and -11dB at looser 6000/9000-splat
-   budgets, traced to BQ variance being high in genuinely empty space too
-   (correct, but not useful for pruning) and an unweighted combination
-   spending keep-budget protecting near-transparent junk there. Flooring
-   the BQ term at a minimum opacity (splats need >=0.3 opacity before BQ
-   variance can protect them from pruning) fixed this: +2.3dB at the tight
-   budget, a strict no-op (never worse) at looser ones where opacity-only
-   already retains everything with real content. Full account, including
-   the caveats on how narrowly this has been validated (one scene, one
-   checkpoint, a two-point floor sweep) in
-   `gs_experiment/results/FINDINGS.md` §15-16.
-4. NBV combination experiment. **First pass done.** `nbv_experiment.py` +
-   `scene_spec.nbv_test_scene` score a discrete pool of candidate
-   next-views two ways -- BQ position+direction variance and a visibility
-   resultant-length proxy, both computed for free (no retraining) from a
-   baseline checkpoint trained on a narrow 10-view arc -- then actually
-   retrain with the top-combined-scored candidate added vs. a
-   deliberately poor (most redundant) one, and evaluate both plus the
-   baseline on a disjoint held-out ring. The guided pick improved
-   held-out PSNR nearly 3x more than the poor choice (+1.89dB vs.
-   +0.65dB over the 21.02dB baseline) -- real evidence NBV scoring picks
-   views that actually help, checked against retrained ground truth
-   rather than just a plausible ranking. Caveat: BQ and visibility ranked
-   every candidate identically here (correlation 1.000, since this simple
-   single-cluster, azimuth-only candidate pool doesn't give the two
-   signals room to disagree), so this demonstrates "guided beats poor,"
-   not yet the more specific "combination beats either signal alone" the
-   milestone asks for -- a scene designed so the signals can diverge
-   (mixing azimuth-only candidates with ones that are directionally
-   redundant but reveal unresolved fine geometry) is the natural next
-   step. Full account in `gs_experiment/results/FINDINGS.md` §17-19.
-5. Write-up: primer appendix, honest pilot-study section, main derivation,
-   differentiation experiment, and the two combination experiments.
-
-**Real-benchmark validation (not a numbered milestone, a cross-cutting
-check on 2-4).** Everything above ran on a hand-built thin-rod scene.
-`prepare_nerf_synthetic.py` repeats the core question on NeRF-Synthetic's
-standard "lego" benchmark (100 real training views + held-out official
-test split -- the same benchmark the original NeRF and 3DGS papers
-report on). Getting there surfaced a real RGBA-compositing bug and an
-incomplete public dataset mirror before anything could be trusted (see
-`gs_experiment/results/FINDINGS.md` §20). Both checkpoints' reconstruction
-quality was verified on genuine held-out test views first (27.17dB wide
-/ 19.80dB narrow, the expected sparse-view generalization gap) before
-trusting any BQ number built on top of them.
-
-The project's central "uncertainty nearly for free" claim -- that
-recognizing rendering as Bayesian quadrature gives a real uncertainty
-signal essentially for free from the same kernel structure already used
-to represent the scene -- now has direct real-data support that doesn't
-route through a harder geometric-fineness proxy:
-`sparsity_correlation_experiment.py` finds BQ variance strongly,
-significantly correlated with local splat sparsity (r=-0.74, p=8e-27,
-3.49x higher variance in the sparsest-20% vs. densest-20% regions), and
-`visibility_trend_experiment.py` finds it responds specifically to
-genuine angular coverage gaps rather than raw view count: five
-checkpoints (100/50/25/12 random-subset views, plus 12 angularly-
-clustered) show variance essentially flat across 100->50->25->12-random
-views but 2.75x higher for the *same* 12-view count when those views are
-clustered instead of random -- the signal isn't fooled by frame count
-alone, which is exactly the property a real active-view-planning policy
-(milestone 4) needs. The cross-checkpoint (view-count) differentiation
-claim from `real_benchmark_experiment.py` also replicates cleanly and
-even more strongly on real geometry (4.54x, vs. 2.46x-18.7x across every
-prior toy/hand-built result). The harder, more specific same-checkpoint
-thin-vs-thick claim does *not* show a clear effect with the query
-methodology tried (automatic per-splat-scale classification, no manual
-annotation) -- an open question with concrete next steps identified, no
-longer the load-bearing claim for what real-data validation needs to
-show. Full account in `gs_experiment/results/FINDINGS.md` §20-25.
+Primer appendix (Bayesian quadrature basics, from the tutorial notebook);
+the formal alpha-compositing equivalence (item 1) as the core derivation;
+the unification argument (one posterior, two projections) as the
+paper's central theoretical contribution; calibration results (item 5) and
+matched-baseline comparisons (item 4) as the main empirical section;
+training-under-the-likelihood (item 3) and kernel-fitting (item 2) as a
+secondary "closing the loop" section if results support it; NBV (item 8)
+and pruning as downstream-task validation; robustness (item 10) and
+runtime cost (item 11) as a "practicality" section; SLAM integration
+(item 9) either as a full section or scoped down to a discussion/future-
+work note depending on how far it gets. Honest pilot-study section
+covering the original NeRF-PSNR negative result and the refuted redundancy
+hypothesis — both are evidence of a careful process, not embarrassments to
+hide.
 
 ## Verification gates
 
-- Step 1's brute-force validation is necessary but not sufficient — passing
-  it doesn't rescue the paper if step 2 shows the uncertainty is redundant
-  with visibility.
-- Step 2 (differentiation experiment) is the actual gate before investing
-  in either downstream track.
-- Steps 3–4 are checked against cited PUP/GAVIS numbers and against the
-  signal-alone baselines run in the same harness — the claim to defend is
-  "combination beats either alone," not "beats PUP/GAVIS outright."
+- Item 1 (formal equivalence) gates everything downstream — if the
+  posterior mean doesn't track alpha-compositing closely enough, every
+  later "variance means X" claim needs re-deriving against whatever the
+  mean actually is.
+- Item 5 (calibration) gates any claim that a variance number is
+  meaningful in an absolute sense, not just directionally correlated with
+  error.
+- Item 8 (multi-round, divergence-capable NBV) gates the "combination
+  beats either alone" claim specifically — the current single-shot,
+  non-divergent result doesn't support it yet, however good it looks.
+- Item 4 (matched baselines) gates any comparison claim against PUP/GAVIS
+  — cite their numbers only on scenes/splits this project actually
+  reproduces the protocol for.
