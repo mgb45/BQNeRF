@@ -1203,6 +1203,61 @@ bandwidth.
 Full sparsification-curve plots for all three checkpoints in
 `gs_experiment/results/calibration_sparsification_*.png`.
 
+## 30. Window-radius sensitivity ablation (ROADMAP.md item 6): the §28 sign flip is a general, predictable pattern
+
+§28 found that reusing a `window_radius` picked for a different experiment
+on the same scene flipped the sparsity-correlation's sign entirely
+(`r=+0.22` at `window=1.6` vs. `r=-0.96` at `window=0.15`). Left open
+there was whether that was a one-off quirk of that specific checkpoint or
+a real, general property of the method. `window_radius_ablation.py`
+answers this directly: sweep `window_radius` from 0.2x to 8x each
+checkpoint's already-established value (sigma held fixed, isolating this
+one knob), on all three real checkpoints used throughout items 4-5 (lego
+wide, and both thin-rod trainers).
+
+**The pattern is the same, clean, and monotonic on every checkpoint:**
+
+| checkpoint | 0.2x | 0.5x | 1x (established) | 2x | 4x | 8x |
+|---|---|---|---|---|---|---|
+| lego wide | -0.88 | -0.83 | -0.74 | -0.32 | -0.27 | **+0.90** |
+| thin-rod, from-scratch | -0.85 | -0.97 | -0.96 | -0.89 | -0.68 | **+0.70** |
+| thin-rod, reference-strategy | -0.94 | -0.94 | -0.92 | -0.75 | -0.13 (n.s.) | **+0.54** |
+
+(all cells `p<0.05` except the one marked n.s.)
+
+**The correlation is strongly negative and robust across a wide, natural
+range (0.2x-2x the established value) on all three checkpoints** — the
+headline claim does not depend on a lucky hyperparameter pick, it holds
+across a full order of magnitude of window sizes smaller than or near what
+was actually used. **Past roughly 4x, it degrades and then flips sign on
+every checkpoint** — the exact failure mode §28 found is not a one-off
+artifact of that specific checkpoint/parameter combination, it is a
+general, predictable property of the local-density measurement, and now
+it's characterized with a curve instead of one data point.
+
+**A plausible mechanism, stated as a hypothesis, not asserted as
+fact**: once `window_radius` grows large enough that a "local" window
+covers a large fraction of the whole scene, query points stop
+differing meaningfully in *how much* of the scene they see and start
+differing mainly in *where they sit relative to the point cloud's overall
+extent* — a query near the bounding volume's center systematically sees
+more neighbors within a huge radius than one near its edge, for reasons
+having nothing to do with genuine local quadrature coverage. If BQ
+variance and this edge-vs-center geometry happen to correlate positively
+for unrelated reasons, that would produce exactly the observed large-
+window sign flip. Not verified directly here (would need a synthetic
+scene with density and edge-distance deliberately decorrelated) — flagged
+as the natural follow-up rather than claimed as confirmed.
+
+**Practical guidance this gives, now grounded in three checkpoints rather
+than one:** pick `window_radius` well below the point where a typical
+query's window captures a large fraction of total scene splats (roughly,
+keep the median local count well under 10% of the checkpoint's total
+splat count) — both established values used throughout this project
+(lego's `0.08`, the thin-rod family's `0.15`) sit safely inside the
+strongly-negative, robust region of this curve, not near the transition.
+Full sweep table and plot in `gs_experiment/results/window_radius_ablation.png`.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

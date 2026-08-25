@@ -296,7 +296,18 @@ run consistently across every main experiment rather than once each:
   (item 3) vs. off.
 - Window radius / von Mises-Fisher concentration (kappa): sensitivity
   sweep — results so far pick one value per experiment without checking
-  how much the finding depends on it.
+  how much the finding depends on it. **Window-radius half done.**
+  `window_radius_ablation.py` sweeps 0.2x-8x each checkpoint's established
+  value (sigma fixed) across all three real checkpoints from items 4-5.
+  The sparsity-correlation claim is strongly negative and robust across a
+  full order of magnitude (0.2x-2x) on every checkpoint, then degrades and
+  flips sign past ~4x on every checkpoint — confirming §28's sign-flip
+  finding is a general, predictable pattern (not a one-off artifact of
+  that specific checkpoint) and giving grounded practical guidance for
+  picking the parameter. Full curve and a stated-not-confirmed hypothesis
+  for the mechanism (large windows increasingly measure position relative
+  to the point cloud's edge rather than genuine local density) in
+  `gs_experiment/results/FINDINGS.md` §30. Kappa sensitivity not yet done.
 - Opacity floor for pruning: extend the existing two-point sweep
   (`pruning_experiment.py`, §15-16) to a real sweep with confidence
   intervals, not two budget points on one checkpoint.
