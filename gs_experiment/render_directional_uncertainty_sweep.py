@@ -1,25 +1,34 @@
-"""A sweeping-camera GIF of real, per-pixel *directional* BQ uncertainty
--- not the 5 point-sample summary numbers `directional_gradient_experiment.py`
-and its real-scene follow-ups reported, which (fairly) obscure whatever
-spatial structure exists between those 5 sample points. This renders the
-whole picture: RGB and directional-uncertainty side by side, at every
-pixel, as the camera orbits around the scene, so a region genuinely under-
-covered by training views should visibly light up as the camera sweeps
-past viewing angles training never saw, and a well-covered region should
-stay dark throughout.
+"""The general entry point for looking at BQ uncertainty on a real,
+arbitrary `gsplat` checkpoint: a sweeping-camera GIF with RGB, spatial
+(quadrature) uncertainty, and directional (epistemic) uncertainty side by
+side, at every pixel, as the camera orbits -- not the handful of
+point-sample summary numbers the earlier aggregate experiments reported,
+which (fairly) obscure whatever spatial structure exists between sample
+points. A region genuinely under-covered by training views should
+visibly light up as the camera sweeps past viewing angles training never
+saw; a well-covered region should stay dark throughout.
 
 Per pixel, per frame, the query *direction* is the real direction from
 that pixel's actual unprojected 3D point to the *current* camera position
--- not a single fixed direction reused across the whole sweep the way the
-aggregate experiments used one query direction per zone. This is the
-natural generalization: a rendered pixel always implies a specific
-viewing direction, and as the camera moves, that implied direction sweeps
-through the full range an NBV/SLAM system would actually query.
+-- not a single fixed direction reused across a whole sweep. A rendered
+pixel always implies a specific viewing direction, and as the camera
+moves, that implied direction sweeps through the full range an NBV/SLAM
+system would actually query.
 
-Same real-depth-unprojection construction as `render_sweep_gif.py`
-(gsplat's own "ED" expected-depth output, not an interpolated/sparse
-proxy) -- extended from spatial-only variance to the directional term,
-and from a fixed to a per-pixel, per-frame query direction.
+Real-depth-unprojection construction throughout (gsplat's own "ED"
+expected-depth output, not an interpolated/sparse proxy).
+
+Before rendering anything, this checks the checkpoint's own reconstruction
+quality (held-out PSNR against `<scene_dir>/../eval` if that sibling
+split exists, else a weaker training-view check) and refuses to proceed
+below `--min-psnr` unless `--force` is passed -- a BQ uncertainty number
+computed on a checkpoint nobody checked could actually reconstruct the
+scene isn't trustworthy in either direction (see ROADMAP.md item 2 and
+FINDINGS.md's bonsai/lego confound writeups).
+
+Kernel family (`--kernel-family rbf|matern`) and bandwidth are exposed,
+not hardcoded -- kernel flexibility is a strength of the method, not a
+gap to close (ROADMAP.md item 4).
 
 Needs torch + gsplat + Pillow.
 
@@ -45,13 +54,70 @@ from PIL import Image
 
 from bq_splat.kernels import DirectionalKernel
 from gs_experiment.camera import translate_cameras, turntable_ring
-from gs_experiment.nerf_transforms import fov_x_to_intrinsics
-from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
+from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms
+from gs_experiment.pixel_uncertainty import (
+    LocalUncertaintyEngine,
+    make_default_3d_matern_kernel,
+    make_default_3d_position_kernel,
+)
 from gs_experiment.ply_io import read_3dgs_ply
 from gs_experiment.splat_scene import load_from_gsplat_checkpoint, splat_observations
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def check_quality_gate(
+    scene_dir: str, eval_dir: str | None, min_psnr: float, force: bool, background_color=(1.0, 1.0, 1.0)
+) -> float:
+    """Held-out PSNR if a sibling eval split exists (the trustworthy
+    check -- see prepare_nerf_synthetic.py's `eval` condition), else a
+    training-view PSNR with a loud caveat (can be inflated by
+    overfitting/floaters, so it's a fallback, not an equal substitute).
+    `background_color` must match what the checkpoint was actually
+    trained against (NeRF-Synthetic scenes composite ground-truth photos
+    onto white; get this wrong and PSNR is meaningless -- e.g. a real
+    28.5dB lego checkpoint measures 1.8dB against the wrong background,
+    a bug caught exactly this way rather than trusted as a real result).
+    Raises SystemExit below min_psnr unless force=True.
+    """
+    from gs_experiment.render_reconstruction import render_views
+
+    if eval_dir is None:
+        candidate = Path(scene_dir).parent / "eval"
+        eval_dir = str(candidate) if candidate.is_dir() else None
+
+    if eval_dir is not None:
+        _, eval_frames = load_transforms(str(Path(eval_dir) / "transforms.json"))
+        import shutil
+
+        eval_copy_dir = str(Path(scene_dir)) + "_eval_gate"
+        Path(eval_copy_dir).mkdir(parents=True, exist_ok=True)
+        shutil.copy(Path(eval_dir) / "transforms.json", Path(eval_copy_dir) / "transforms.json")
+        images_link = Path(eval_copy_dir) / "test"
+        if not images_link.exists():
+            images_link.symlink_to((Path(eval_dir) / "test").resolve())
+        shutil.copy(Path(scene_dir) / "splats.ply", Path(eval_copy_dir) / "splats.ply")
+        results, _ = render_views(eval_copy_dir, list(range(len(eval_frames))), background_color=background_color)
+        kind = "held-out"
+    else:
+        _, frames = load_transforms(str(Path(scene_dir) / "transforms.json"))
+        results, _ = render_views(scene_dir, list(range(len(frames))), background_color=background_color)
+        kind = "TRAINING-VIEW (no sibling eval/ split found -- weaker check, treat cautiously)"
+
+    psnr = float(np.mean([-10.0 * np.log10(max(float(np.mean((gt - recon) ** 2)), 1e-10)) for _, gt, recon in results]))
+    print(f"quality gate: {kind} PSNR = {psnr:.2f}dB (threshold {min_psnr:.1f}dB)")
+    if psnr < min_psnr:
+        msg = (
+            f"reconstruction quality gate FAILED ({psnr:.2f}dB < {min_psnr:.1f}dB) -- "
+            "any uncertainty number computed here isn't trustworthy in either direction. "
+            "Retrain with more views/iterations, or pass --force to proceed anyway."
+        )
+        if force:
+            print(f"WARNING: {msg} Proceeding anyway (--force).")
+        else:
+            raise SystemExit(msg)
+    return psnr
 
 
 def c2w_from_camera_pose(camera) -> np.ndarray:
@@ -84,16 +150,17 @@ def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -
 
 def run(
     scene_dir: str,
-    center=(0.0, 0.0, 0.0),
+    center=None,
     n_frames: int = 60,
-    radius: float = 45.0,
+    radius: float | None = None,
     phi_deg: float = 35.0,
     fov_deg: float = 90.0,
     width: int = 640,
     height: int = 240,
     depth_width: int = 112,
     depth_height: int = 42,
-    sigma: float = 0.9,
+    kernel_family: str = "rbf",
+    bandwidth: float = 0.9,
     kappa: float = 4.0,
     window_radius: float = 1.6,
     min_opacity: float = 0.1,
@@ -103,17 +170,41 @@ def run(
     attribution_angular_tol: float = 0.01,
     device: str = "cuda",
     output_name: str = "directional_uncertainty_sweep",
+    eval_dir: str | None = None,
+    min_psnr: float = 20.0,
+    force: bool = False,
+    gate_background_color=(1.0, 1.0, 1.0),
 ):
     import gsplat
 
-    center = np.asarray(center, dtype=float)
+    check_quality_gate(scene_dir, eval_dir, min_psnr, force, background_color=gate_background_color)
 
     ck = read_3dgs_ply(f"{scene_dir}/splats.ply")
     scene = load_from_gsplat_checkpoint(scene_dir, attribution_angular_tol=attribution_angular_tol)
     obs_positions, obs_directions, obs_values = splat_observations(scene)
     bounds = tuple((obs_positions[:, d].min() - 1.0, obs_positions[:, d].max() + 1.0) for d in range(3))
 
-    pos_kernel = make_default_3d_position_kernel(sigma=sigma)
+    # Auto-frame from the checkpoint's own splat extent unless the caller
+    # overrides -- a fixed camera radius/center is scene-scale-specific
+    # (found the hard way: a radius tuned for one scene's world units left
+    # a NeRF-Synthetic-scale object, extent ~1-2 units, a tiny speck in an
+    # otherwise-empty frame), and this tool needs to work on an arbitrary
+    # checkpoint without per-scene tuning.
+    scene_center = ck["positions"].mean(axis=0)
+    scene_radius = float(np.percentile(np.linalg.norm(ck["positions"] - scene_center, axis=1), 95))
+    if center is None:
+        center = scene_center
+    center = np.asarray(center, dtype=float)
+    if radius is None:
+        radius = max(2.5 * scene_radius, 1e-3)
+        print(f"auto-framing: scene extent ~{scene_radius:.2f} -> camera radius {radius:.2f}, center {center}")
+
+    if kernel_family == "rbf":
+        pos_kernel = make_default_3d_position_kernel(sigma=bandwidth)
+    elif kernel_family == "matern":
+        pos_kernel = make_default_3d_matern_kernel(rho=bandwidth)
+    else:
+        raise ValueError(f"unknown kernel_family {kernel_family!r}, expected 'rbf' or 'matern'")
     dir_kernel = DirectionalKernel(kappa=kappa)
     engine = LocalUncertaintyEngine(
         positions=obs_positions, values=obs_values, pos_kernel=pos_kernel, scene_bounds=bounds,
@@ -124,11 +215,12 @@ def run(
     dummy_dir = np.array([0.0, 0.0, 1.0])
     for p in obs_positions[:30]:
         engine.directional_variance(p, dummy_dir, window_radius)
+        engine.spatial_only_variance(p, window_radius)
     per_query_s = (time.time() - t0) / 30
     total_queries = depth_width * depth_height * n_frames
     print(
-        f"measured {per_query_s * 1000:.2f} ms/directional-BQ-solve (max_neighbors={max_neighbors}); "
-        f"{depth_width}x{depth_height} x {n_frames} frames = {total_queries} solves "
+        f"measured {per_query_s * 1000:.2f} ms/pixel (both BQ solves, {kernel_family} kernel, "
+        f"max_neighbors={max_neighbors}); {depth_width}x{depth_height} x {n_frames} frames = {total_queries} pixels "
         f"-> est. {total_queries * per_query_s / 60:.1f} min total"
     )
 
@@ -176,36 +268,51 @@ def run(
 
             world_points = unproject_depth_grid(depth_map, K_depth, c2w_cv)
 
-            field = np.full((depth_height, depth_width), np.nan)
+            dir_field = np.full((depth_height, depth_width), np.nan)
+            spatial_field = np.full((depth_height, depth_width), np.nan)
             ys, xs = np.where(valid)
             cam_center = cam.center
             for y, x in zip(ys, xs):
                 point = world_points[y, x]
                 to_camera = cam_center - point
                 query_direction = to_camera / np.linalg.norm(to_camera)
-                field[y, x] = engine.directional_variance(point, query_direction, window_radius).variance
+                dir_field[y, x] = engine.directional_variance(point, query_direction, window_radius).variance
+                spatial_field[y, x] = engine.spatial_only_variance(point, window_radius).variance
 
-            field_img = Image.fromarray(np.nan_to_num(field, nan=0.0).astype(np.float32), mode="F")
-            valid_img = Image.fromarray((valid * 255).astype(np.uint8))
-            field_up = np.array(field_img.resize((width, height), Image.BILINEAR))
-            valid_up = np.array(valid_img.resize((width, height), Image.NEAREST)) > 127
-            field_up = np.where(valid_up, field_up, np.nan)
+            def upsample(field):
+                field_img = Image.fromarray(np.nan_to_num(field, nan=0.0).astype(np.float32), mode="F")
+                valid_img = Image.fromarray((valid * 255).astype(np.uint8))
+                field_up = np.array(field_img.resize((width, height), Image.BILINEAR))
+                valid_up = np.array(valid_img.resize((width, height), Image.NEAREST)) > 127
+                return np.where(valid_up, field_up, np.nan)
+
+            dir_up = upsample(dir_field)
+            spatial_up = upsample(spatial_field)
 
             if i == 0:
-                vmax = np.nanpercentile(field_up, 95)
+                dir_vmax = np.nanpercentile(dir_up, 95)
+                spatial_vmax = np.nanpercentile(spatial_up, 95)
 
-            fig, axes = plt.subplots(2, 1, figsize=(9, 6))
+            fig, axes = plt.subplots(3, 1, figsize=(9, 9))
             axes[0].imshow(recon)
             axes[0].set_title("reconstruction", fontsize=10)
             axes[0].axis("off")
 
-            im = axes[1].imshow(field_up, cmap=cmap, vmin=0, vmax=vmax)
+            im0 = axes[1].imshow(spatial_up, cmap=cmap, vmin=0, vmax=spatial_vmax)
             axes[1].set_title(
-                f"directional BQ uncertainty (per-pixel, {depth_width}x{depth_height} real ray-hits)\n"
-                "query direction = real direction from each point to THIS frame's camera", fontsize=8,
+                f"spatial (quadrature) BQ uncertainty -- how poorly the finite splat set\n"
+                "resolves this region, independent of viewing direction", fontsize=8,
             )
             axes[1].axis("off")
-            fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+            fig.colorbar(im0, ax=axes[1], fraction=0.046, pad=0.04)
+
+            im1 = axes[2].imshow(dir_up, cmap=cmap, vmin=0, vmax=dir_vmax)
+            axes[2].set_title(
+                f"directional (epistemic) BQ uncertainty (per-pixel, {depth_width}x{depth_height} real ray-hits)\n"
+                "query direction = real direction from each point to THIS frame's camera", fontsize=8,
+            )
+            axes[2].axis("off")
+            fig.colorbar(im1, ax=axes[2], fraction=0.046, pad=0.04)
 
             fig.tight_layout(pad=0.3)
             frame_path = frames_dir / f"frame_{i:03d}.png"
@@ -223,26 +330,36 @@ def run(
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scene_dir")
-    parser.add_argument("--center", type=float, nargs=3, default=(0.0, 0.0, 0.0))
+    parser.add_argument("--center", type=float, nargs=3, default=None, help="default: auto, from the checkpoint's own splat extent")
     parser.add_argument("--n-frames", type=int, default=60)
-    parser.add_argument("--radius", type=float, default=45.0)
+    parser.add_argument("--radius", type=float, default=None, help="default: auto, from the checkpoint's own splat extent")
     parser.add_argument("--phi-deg", type=float, default=35.0)
     parser.add_argument("--fov-deg", type=float, default=90.0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--depth-width", type=int, default=112)
     parser.add_argument("--depth-height", type=int, default=42)
-    parser.add_argument("--sigma", type=float, default=0.9)
+    parser.add_argument("--kernel-family", choices=["rbf", "matern"], default="rbf")
+    parser.add_argument("--bandwidth", type=float, default=0.9, help="sigma (rbf) or rho (matern)")
     parser.add_argument("--kappa", type=float, default=4.0)
     parser.add_argument("--window-radius", type=float, default=1.6)
     parser.add_argument("--max-neighbors", type=int, default=150)
     parser.add_argument("--output-name", default="directional_uncertainty_sweep")
+    parser.add_argument("--eval-dir", default=None, help="held-out split for the quality gate; default: <scene_dir>/../eval if present")
+    parser.add_argument("--min-psnr", type=float, default=20.0, help="quality gate threshold")
+    parser.add_argument("--force", action="store_true", help="proceed even if the quality gate fails")
+    parser.add_argument(
+        "--gate-background-color", type=float, nargs=3, default=[1.0, 1.0, 1.0],
+        help="must match what the checkpoint was trained against (NeRF-Synthetic: white, the default); wrong value makes the PSNR gate meaningless",
+    )
     args = parser.parse_args()
     run(
-        args.scene_dir, center=tuple(args.center), n_frames=args.n_frames, radius=args.radius, phi_deg=args.phi_deg,
+        args.scene_dir, center=(tuple(args.center) if args.center is not None else None), n_frames=args.n_frames,
+        radius=args.radius, phi_deg=args.phi_deg,
         fov_deg=args.fov_deg, width=args.width, height=args.height, depth_width=args.depth_width, depth_height=args.depth_height,
-        sigma=args.sigma, kappa=args.kappa, window_radius=args.window_radius, max_neighbors=args.max_neighbors,
-        output_name=args.output_name,
+        kernel_family=args.kernel_family, bandwidth=args.bandwidth, kappa=args.kappa, window_radius=args.window_radius,
+        max_neighbors=args.max_neighbors, output_name=args.output_name, eval_dir=args.eval_dir, min_psnr=args.min_psnr,
+        force=args.force, gate_background_color=tuple(args.gate_background_color),
     )
 
 

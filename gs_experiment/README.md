@@ -69,11 +69,21 @@ scenes.
   properly-resourced version (`--n-per-zone 30`, held-out PSNR checked
   before trusting any BQ number) that produced this project's current,
   most-trustworthy real-geometry result.
-- **`render_directional_uncertainty_sweep.py`** — replaces a handful of
-  point samples with a full per-pixel, per-frame animated sweep: real
-  depth-unprojected 3D points, queried at the real direction to the
-  *current* frame's camera as it orbits. Used to visually stress-test the
-  real-geometry results above rather than trust five numbers alone.
+- **`render_directional_uncertainty_sweep.py`** — the general entry
+  point for looking at BQ uncertainty on an arbitrary real checkpoint: a
+  per-pixel, per-frame animated sweep (real depth-unprojected 3D points,
+  queried at the real direction to the *current* frame's orbiting camera)
+  showing spatial (quadrature) and directional (epistemic) uncertainty
+  side by side with the reconstruction. Auto-frames the camera from the
+  checkpoint's own splat extent (no per-scene tuning needed), exposes
+  kernel family (`--kernel-family rbf|matern`) and bandwidth as
+  parameters rather than hardcoding one, and refuses to compute anything
+  on a checkpoint that fails a mandatory held-out-PSNR quality gate
+  (`--min-psnr`, `--force` to override) — replacing a handful of point
+  samples with the full picture, and replacing trust-then-check with
+  check-then-trust. This is now the primary way this project validates a
+  new result: render it and look, rather than reach for statistics first
+  (see `ROADMAP.md`).
 
 ## Foundational / designed-scene experiments
 

@@ -149,6 +149,25 @@ photographed bonsai scene yet. *(Archive §34, §35, §36, §37, §38 — §37
 specifically is the correction, worth reading if citing this result, and
 §38 is the current, most-trustworthy number.)*
 
+**Follow-up: the confound is structural, not a training-budget problem.**
+Retraining the widest-spread condition alone with 2.5x the iterations and
+1.6x the splat budget (15,000 iters, 40,000 max splats) reached a healthy
+27-30dB on its own training views throughout training, but held-out PSNR
+barely moved (15.3dB vs. the earlier 11.0dB at the smaller budget) --
+confirming the gap is sparse-view generalization, not undertraining: a
+fixed 30-view budget spread across a wide angular range leaves held-out
+views genuinely far from their nearest training view, and more training
+just fits the sparse set harder without closing that gap. Fixing this
+needs a different experimental design (more views specifically at the
+wide end, not more iterations) rather than more compute on the current
+one. Also found and fixed while re-checking this: a real bug where the
+held-out PSNR check composited against the wrong (near-black) background
+instead of NeRF-Synthetic's white -- caught because it made a genuinely
+good 100-view checkpoint measure 1.8dB instead of its real 27dB. Verified
+directly that this section's own PSNR numbers are unaffected (re-checked
+with the corrected background and got the same values), so they stand as
+reported.
+
 ## 5. What didn't work: training directly under the likelihood
 
 A natural next step — training with a Gaussian-NLL loss weighted by the

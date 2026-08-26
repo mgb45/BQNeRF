@@ -68,12 +68,17 @@ the result. If it doesn't, render more views/angles to see where it
 breaks, rather than re-running the same small statistical test with
 different parameters.
 
-### 4. One default kernel and bandwidth, not continued ablation
+### 4. Keep kernel choice pluggable — it's a strength, not a loose end
 
-RBF vs. Matérn and window-radius sensitivity are already characterized
-(see `FINDINGS.md`) — pick the sensible general default (RBF, fitted
-bandwidth) and move on. Revisit only if a real use case actually needs
-the other trade-off.
+RBF vs. Matérn already showed a real trade-off (see `FINDINGS.md`): no
+universal winner, different kernels better for different things. That's
+not a gap to close before shipping — the method being kernel-agnostic
+(swap in whatever kernel suits the use case, keep the same closed-form
+posterior/variance machinery) is a real advantage over bespoke
+single-purpose uncertainty methods. Keep the tool's kernel/bandwidth
+choice a clean, exposed parameter, not hardcoded to one default. Further
+exhaustive kernel exploration is a "let the field discover more kernels"
+problem for after publication, not a blocker now.
 
 ## Parked (not active — real, but not on the path to working general code)
 
