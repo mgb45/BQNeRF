@@ -1817,6 +1817,66 @@ spread-only comparison) forced picking a small shared count. The honest
 status of the real-geometry question, right now: **untested**, not
 "tested and negative."
 
+## 38. The properly-resourced real-scene test §37 called for: a stronger null, with one confound still unresolved
+
+§37's correction said the real-geometry question was untested, not
+negative, and named the fix: enough total views per condition (30-50+,
+not 6-8) for the reconstruction itself to be trustworthy, before any BQ
+number built on it means anything. Run directly: `real_directional_gradient_experiment.py`
+gained `--n-per-zone`/`--window-fractions`/`--condition-prefix` and a
+`check_reconstruction_quality` step that computes real held-out PSNR
+(against `lego_prepared/eval`'s official test-split views) *before*
+reporting any BQ number, closing exactly the gap the correction
+identified. Five lego conditions, `n_per_zone=30` (5x the earlier
+attempt), spanning a real `56-150 deg` angular-spread range, `6000`
+iterations, `max_splats=25000`.
+
+**Reconstruction quality is real and substantially better, though still
+not fully clean.** Train-view PSNR reaches `25-27dB` (vs. `~19-21dB` at
+6 views), and each checkpoint densifies to `13,151-15,571` splats above
+opacity 0.1 near the query point (vs. a query point sitting in
+essentially empty space before — checked directly again here: `92-167`
+real neighbors within `0.3` units of the origin in every condition, an
+order of magnitude improvement over §34's near-zero). But held-out PSNR
+(the honest, generalization-focused number, not the training-view one)
+is only `11.05-15.96dB` — mediocre by normal 3DGS standards, and, worth
+stating plainly, **it decreases monotonically as spread widens**
+(`15.96 -> 14.54 -> 13.54 -> 11.38 -> 11.05dB`). This is a real, useful,
+separate finding in its own right, and a genuine confound for this
+section's main question: `select_gradient_subset`'s construction (evenly
+subsample a *fixed count* from a *growing* window) means a wider-spread
+condition's `30` views are spread thinner per unit of angle than a
+narrower condition's — so "wider spread" and "worse local view density"
+move together in this specific construction, not just "wider spread"
+alone.
+
+**With that said, the result**: directional variance range `1.05x`,
+position-only control range `1.08x` — no directional-specific signal
+distinguishable from the control, the same qualitative pattern as §34's
+6-view attempt, now on checkpoints an order of magnitude richer and with
+a verified-valid query point. Plotted together, the two curves track each
+other closely in shape (both decline toward the widest condition) —
+consistent with both being driven by the same underlying confound
+(reconstruction quality/local density falling as spread widens) rather
+than a directional-specific effect layered on top of it. Plot in
+`gs_experiment/results/real_directional_gradient.png` (overwrites §34's
+plot of the same name — the numbers in this section's table are the
+current, correct ones).
+
+**Honest verdict**: this is meaningfully stronger evidence for a null
+than §34-37's inconclusive attempts — the query-point and gross-
+reconstruction-quality problems that made those uninterpretable are
+fixed and checked, not assumed. But it is still not a fully clean test of
+the spread variable alone, because held-out quality and spread are
+confounded in this construction. **Downgraded from "untested" (§37) to
+"a real, moderately-well-grounded null, with one remaining confound
+flagged rather than glossed over"** — not yet strong enough to assert
+"BQ directional variance doesn't track coverage on real geometry" as a
+clean paper claim. The concrete next fix, if this is worth pursuing
+further: a view-selection method that holds *local density* roughly
+constant across spread levels (not just total count), so widening spread
+doesn't systematically starve reconstruction quality at the same time.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

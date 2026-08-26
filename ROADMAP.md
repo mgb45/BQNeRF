@@ -454,9 +454,24 @@ enough for its BQ numbers to mean anything, while still varying only
 angular *spread* between conditions — every attempt so far conflated "few
 total views" with "narrow spread" by holding a small view count fixed.
 Full account and the correction itself in `gs_experiment/results/
-FINDINGS.md` §36-37. **The real-geometry question is untested, not
-tested-and-negative** — this is the honest status to carry into any
-paper claim about this item.
+FINDINGS.md` §36-37.
+
+**The properly-resourced re-test the correction called for is done, on
+lego** (`gs_experiment/results/FINDINGS.md` §38): `n_per_zone=30` (5x the
+earlier attempt), real held-out PSNR checked *before* trusting any BQ
+number this time. Reconstruction is genuinely better (train PSNR
+`25-27dB`, `13-15.5k` splats near a now-verified-valid query point), but
+held-out PSNR is still only `11-16dB` and — a real, separate finding —
+**decreases monotonically as spread widens**, because the view-selection
+method spreads a fixed view count thinner as the window grows, confounding
+spread with local density/reconstruction quality. Result: `1.05x`
+directional range, `1.08x` control range, same qualitative null,
+now on much better-grounded checkpoints. Downgraded from "untested" to
+**"a real, moderately-well-grounded null with one remaining confound
+flagged, not yet a clean paper-worthy claim either way"** — meaningfully
+stronger than §37's status, but the spread/quality confound means this
+still isn't a clean isolation of the spread variable alone. Bonsai has
+not yet had the same properly-resourced re-test.
 
 ### 9. SLAM / incremental-mapping integration
 
@@ -549,17 +564,22 @@ the claim survive real photographs" nor its opposite — it answers "not
 with only 8 total views feeding the reconstruction," which is a
 narrower, more honest finding.
 
-**What's still needed**: a real test needs enough total views per
-condition (likely 30-50+, not 6-8) for the checkpoint itself to be a
-trustworthy reconstruction, while still varying only angular *spread*
-between conditions — not yet attempted on either lego or bonsai. Full
-scene reconstruction quality at a competitive splat budget, and the
-sparsity-correlation/calibration checks (items 4-6), also still haven't
-been repeated on real captured data, only on synthetic scenes. The self-
-occlusion hypothesis from item 8 remains a plausible mechanism for a
-*future*, properly-resourced real-geometry test to check — it is no
-longer supported by the lego/bonsai results, since those results no
-longer support any conclusion about the mechanism either way.
+**What's still needed**: the properly-resourced re-test (`n_per_zone=30`,
+real held-out PSNR checked first) has been run on lego (item 8,
+`gs_experiment/results/FINDINGS.md` §38) — reconstruction is meaningfully
+better but held-out PSNR (`11-16dB`) is still mediocre and confounded
+with spread (wider-spread conditions have thinner local view density in
+this construction, so quality and spread aren't independently varied).
+Same qualitative null as before, now better-grounded but still not
+clean. **Bonsai has not yet had the same properly-resourced re-test** —
+the natural next step, using bonsai's already-downloaded 292 real photos
+with a larger `n_per_zone`. Full scene reconstruction quality at a
+competitive splat budget, and the sparsity-correlation/calibration checks
+(items 4-6), also still haven't been repeated on real captured data, only
+on synthetic scenes. The self-occlusion hypothesis from item 8 remains a
+plausible mechanism for a future test with the spread/quality confound
+also resolved (e.g. a selection method holding local density roughly
+fixed across spread levels) — still not confirmed or ruled out.
 
 ## Technical core (unchanged, now explicitly the unification derivation)
 
