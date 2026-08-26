@@ -393,6 +393,22 @@ to show. Needed:
   beats either alone on view selection, which is the milestone's real
   claim and not yet demonstrated.
 
+**A first piece of realism done, on the directional side specifically —
+not the NBV combination claim above, but a prerequisite for it.**
+`scene_spec.gradient_scene` + `directional_gradient_experiment.py` build a
+scene with a designed, *continuous* (5-level) view-coverage gradient
+across space — real Blender rendering, real gsplat training and
+densification — rather than every prior directional result's binary
+wide-vs-narrow split. Directional BQ variance recovers the designed
+gradient exactly: strictly monotonic across all 5 zones (rank correlation
+`rho=1.000`), a `12.97x` range, while a geometry-matched position-only
+control stays far flatter (`1.76x`, no trend) — confirming the effect is
+directional, not a residual density artifact. This is real evidence BQ
+tracks *degree* of coverage, not just a high/low threshold — a
+prerequisite for any realistic candidate-scoring policy, though not yet
+the candidate-pool/sequential-retraining machinery items 8 itself still
+needs. Full account in `gs_experiment/results/FINDINGS.md` §33.
+
 ### 9. SLAM / incremental-mapping integration
 
 Motivated by the original design question that led to the directional

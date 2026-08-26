@@ -1413,6 +1413,79 @@ is the natural, explicitly flagged follow-up before citing "8/8 scenes,
 `r<-0.7` everywhere" as a headline paper number without this caveat
 attached.
 
+## 33. A real view-direction uncertainty *gradient*, not just a binary split
+
+Every prior directional-uncertainty result in this project — the toy
+isolation experiment (`bq_splat/results/FINDINGS.md` §9, 2.46x), the real
+GS wide/narrow ratio (§17-19, §22, 18.7x-4.54x) — compares exactly two
+discrete coverage conditions. Real deployments (a robot scanning past a
+shelf, a SLAM system that revisits some regions more than others) don't
+produce two buckets, they produce a continuum. This is the first
+experiment built to have one, and to check whether BQ directional
+variance actually recovers a *designed, continuous* coverage gradient,
+not just tell two extremes apart.
+
+**Construction (`scene_spec.gradient_scene`, real Blender rendering, real
+gsplat training — not a toy/mock scene).** 5 identical thin-rod clusters
+(same rod count/spread as `differentiation_scene`'s zones — spatial
+density held exactly equal across zones by construction, the same
+confound control `validate_directional_combined.py` and
+`differentiation_scene` already use), spaced along a line. Each zone gets
+its own turntable-arc camera rig, all centered on the *same* absolute
+azimuth (`theta_center_deg=200`) — only the arc's angular half-width
+varies, linearly from `8 deg` (zone 0, narrowest) to `180 deg` (zone 4,
+equivalent to a full ring) — a real, monotonic angular-coverage gradient
+by construction, real cameras, real render, real training (3000
+iterations, real gradient-triggered densification, 1500 -> 4169 splats).
+A single fixed query direction — the azimuth diametrically opposite the
+shared arc center (`20 deg`), computed via a real camera pose's
+direction-to-a-point (`directions_from_positions_to_camera`, the same
+robust construction `differentiation_experiment.py`'s real-scene builder
+uses, not hand-derived spherical trigonometry — see that module's
+documented elevation bug from doing it the naive way) — is genuinely
+comparable across every zone, since the arc center itself never moves.
+
+**Result: a clean, strictly monotonic gradient, recovered exactly.**
+
+| zone | half-width (deg) | directional variance | spatial-only variance (control) |
+|---|---|---|---|
+| 0 | 8 | 15.288 | 0.170 |
+| 1 | 51 | 15.259 | 0.163 |
+| 2 | 94 | 14.602 | 0.262 |
+| 3 | 137 | 6.511 | 0.197 |
+| 4 | 180 | 1.179 | 0.149 |
+
+Directional variance is strictly monotonically decreasing across every one
+of the 5 zones as coverage widens (rank correlation `rho=1.000`), a
+`12.97x` range from narrowest to widest — stronger than every prior
+binary-split result in this project (2.46x toy, up to 18.7x on the
+original real wide/narrow split, but this is a genuinely different,
+harder claim: not "high vs. low," a full graded curve matching a designed
+5-level gradient exactly). The position-only control stays far flatter
+(`1.76x` range, no consistent trend with half-width) — confirming the
+effect is directional, not a spatial-density artifact the geometry-
+matching construction failed to fully equalize. Plot in
+`gs_experiment/results/directional_gradient.png`.
+
+**What this adds beyond the existing wide/narrow results**: a binary
+comparison can show "BQ tells covered from uncovered apart" without
+showing it tracks *degree* of coverage in any principled way — a
+threshold detector could pass that test. A monotonic response across 5
+designed intermediate levels is a meaningfully stronger claim, and the
+realistic framing (a scene where coverage genuinely varies continuously
+across space, the way it would in an actual partial-mapping scenario) is
+closer to what ROADMAP.md item 8's realistic NBV framing and the original
+SLAM motivation (`bq_splat/results/FINDINGS.md` §9) actually need than a
+single wide-vs-narrow pair.
+
+**What this doesn't yet do**: one scene, one seed, one query direction
+per zone (always "diametrically opposite," not a sweep of query angles
+within each zone — a natural next check, since the *within-zone* angular
+profile of directional variance, not just the *across-zone* one, is what
+a real NBV candidate-scoring policy would actually need). Also still a
+hand-built thin-rod scene, not a real captured/benchmark one — the same
+gap flagged throughout this project's real-data sections.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

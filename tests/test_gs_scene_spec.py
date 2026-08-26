@@ -1,7 +1,7 @@
 import numpy as np
 
 from gs_experiment.camera import translate_camera, translate_cameras, turntable_ring
-from gs_experiment.scene_spec import differentiation_scene, quick_validation_scene
+from gs_experiment.scene_spec import differentiation_scene, gradient_scene, quick_validation_scene
 
 
 def test_translate_camera_preserves_orientation_shifts_center():
@@ -65,3 +65,34 @@ def test_differentiation_scene_separates_wide_and_narrow_rigs_by_geometry():
     locations = np.array([o.location for o in spec.objects])
     assert locations[:, 0].min() < 2.0  # wide cluster near x=0
     assert locations[:, 0].max() > 15.0  # narrow cluster near x=separation
+
+
+def test_gradient_scene_half_widths_increase_monotonically_across_zones():
+    spec, info = gradient_scene(n_zones=5, n_views_per_zone=4, min_half_width_deg=8.0, max_half_width_deg=180.0)
+    half_widths = info["half_widths_deg"]
+    assert len(half_widths) == 5
+    assert np.all(np.diff(half_widths) > 0)
+    assert half_widths[0] == 8.0
+    assert half_widths[-1] == 180.0
+
+
+def test_gradient_scene_zones_have_matched_geometry_and_disjoint_camera_ranges():
+    spec, info = gradient_scene(n_zones=4, n_views_per_zone=6)
+
+    # every zone's thin-rod cluster has the same rod count (14) -- spatial
+    # density held equal across zones by construction, so the directional
+    # signal isn't confounded with a density difference.
+    locations = np.array([o.location for o in spec.objects])
+    assert len(spec.objects) == 4 * 14
+
+    ranges = info["zone_camera_ranges"]
+    assert len(ranges) == 4
+    assert ranges[0][0] == 0
+    for (a_start, a_end), (b_start, _) in zip(ranges, ranges[1:]):
+        assert a_end == b_start  # camera ranges are contiguous, non-overlapping
+    assert ranges[-1][1] == len(spec.cameras) == 4 * 6
+
+
+def test_gradient_scene_query_direction_is_opposite_the_shared_arc_center():
+    _, info = gradient_scene(theta_center_deg=200.0)
+    assert info["query_theta_deg"] == 20.0

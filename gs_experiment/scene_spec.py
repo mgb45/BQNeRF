@@ -151,6 +151,76 @@ def differentiation_scene(
     return RenderSceneSpec(objects=objects, cameras=cameras, resolution=400, fov_deg=fov_deg)
 
 
+def gradient_scene(
+    n_zones: int = 5,
+    n_views_per_zone: int = 12,
+    zone_spacing: float = 18.0,
+    radius: float = 6.5,
+    fov_deg: float = 40.0,
+    theta_center_deg: float = 200.0,
+    min_half_width_deg: float = 8.0,
+    max_half_width_deg: float = 180.0,
+):
+    """A realistic view-direction *uncertainty gradient*, not the binary
+    wide-vs-narrow split `differentiation_scene`/`nbv_test_scene` use.
+    Every prior directional-uncertainty result in this project (toy scale:
+    bq_splat/results/FINDINGS.md section 9; real scale: gs_experiment/
+    results/FINDINGS.md sections 17-19, 22) compares exactly two
+    conditions. A robot scanning past a shelf, or a SLAM system that
+    revisits some parts of a scene more than others, doesn't produce two
+    discrete coverage buckets -- it produces a continuum. This scene is
+    built to have one.
+
+    `n_zones` identical thin-rod clusters (same construction, same rod
+    count/spread, as `differentiation_scene`'s zones -- geometry and local
+    spatial density are held exactly equal across zones, isolating the
+    directional effect the same way `validate_directional_combined.py`
+    and `differentiation_scene` already do), spaced `zone_spacing` apart
+    along the x-axis. Each zone gets its own turntable-arc camera rig,
+    all centered on the *same* absolute azimuth (`theta_center_deg`) --
+    only the arc's *half-width* varies, linearly from `min_half_width_deg`
+    (zone 0, the narrowest -- most under-covered) to `max_half_width_deg`
+    (the last zone -- `180` spans the full azimuth range, equivalent to a
+    complete ring). Keeping `theta_center_deg` fixed across zones (rather
+    than each zone's own local convention) means a single fixed query
+    direction -- the azimuth diametrically opposite `theta_center_deg` --
+    is a genuinely consistent "how well is the view I haven't taken
+    covered" probe across every zone: for the narrowest zone that
+    direction is deep outside the tiny observed arc; for the widest
+    (effectively full-ring) zone, that same direction is already covered.
+    A real, monotonic angular-coverage gradient, by construction -- what
+    the directional BQ variance is asked to recover, not assumed to.
+    """
+    rng = np.random.default_rng(2)
+    zone_centers = [np.array([i * zone_spacing, 0.0, 0.0]) for i in range(n_zones)]
+    half_widths = np.linspace(min_half_width_deg, max_half_width_deg, n_zones)
+
+    objects = []
+    cameras = []
+    zone_camera_ranges = []
+    for center, half_width in zip(zone_centers, half_widths):
+        objects += thin_rod_cluster(rng, center, n_rods=14, spread=0.8)
+        zone_cams = turntable_arc(
+            radius=radius, n_views=n_views_per_zone, theta_center_deg=theta_center_deg,
+            half_width_deg=float(half_width), phi_deg=35.0,
+        )
+        zone_cams = translate_cameras(zone_cams, center)
+        start = len(cameras)
+        cameras += zone_cams
+        zone_camera_ranges.append((start, len(cameras)))
+
+    query_theta_deg = (theta_center_deg + 180.0) % 360.0
+    info = dict(
+        zone_centers=np.array(zone_centers),
+        half_widths_deg=half_widths,
+        zone_camera_ranges=zone_camera_ranges,
+        theta_center_deg=theta_center_deg,
+        query_theta_deg=query_theta_deg,
+    )
+    spec = RenderSceneSpec(objects=objects, cameras=cameras, resolution=400, fov_deg=fov_deg)
+    return spec, info
+
+
 def nbv_test_scene(
     n_train_views: int = 10,
     n_candidate_views: int = 16,
