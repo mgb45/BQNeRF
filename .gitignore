@@ -6,3 +6,4 @@ __pycache__/
 gs_experiment/local_runs/
 gs_experiment/results/sweep_frames/
 gs_experiment/results/*_sweep_frames/
+gs_experiment/results/*_grid_cache.npz
