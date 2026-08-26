@@ -38,18 +38,29 @@ a paper. Two concrete changes to how this project validates itself:
 
 Short list, in order.
 
-### 1. Extend the gap-based directional design to a genuinely photographed scene
+### 1. Get every gap-experiment checkpoint above the quality bar, not just the tool
 
-The real-geometry directional question is now settled on real
-NeRF-Synthetic lego (see "what's already solid" below). The same
-properly-controlled design
-(`gap_directional_experiment.py`'s approach: remove a deliberate angular
-gap from a dense real view pool, leave everything else untouched) hasn't
-been run on the actual photographed Mip-NeRF360 "bonsai" scene yet — the
-natural next step if the result needs to hold on real photographs, not
-just a synthetic benchmark's clean renders.
+The gap-based directional result (see "what's already solid" below) is
+real but every one of its 5 checkpoints falls short of this project's
+own >20dB held-out-PSNR bar — caught by directly looking at the renders,
+not by the averaged PSNR number, which hid a wide per-view quality
+spread. A within-checkpoint contrast check (querying the same messy
+checkpoint at the missing direction vs. a well-covered one) supports the
+signal being real, not just noise, but that's supporting evidence, not a
+substitute for reconstructions clean enough to trust outright. Lego's
+100-view pool caps how far this can go; needs either a smaller max gap
+width (trading effect size for quality) or a denser real dataset.
 
-### 2. Keep kernel choice pluggable — it's a strength, not a loose end
+### 2. Extend the gap-based directional design to a genuinely photographed scene
+
+The same design (`gap_directional_experiment.py`: remove a deliberate
+angular gap from a dense real view pool, leave everything else
+untouched) hasn't been run on the actual photographed Mip-NeRF360
+"bonsai" scene yet — and per item 1, reconstruction quality needs
+checking with the same skepticism from the start this time, not after a
+rendered GIF prompts the question.
+
+### 3. Keep kernel choice pluggable — it's a strength, not a loose end
 
 RBF vs. Matérn already showed a real trade-off (see `FINDINGS.md`): no
 universal winner, different kernels better for different things. That's
@@ -93,13 +104,19 @@ current goal.
   real checkpoint scale.
 - Training directly under the BQ likelihood (loss term, densification
   trigger) was tried and didn't help — a real negative result, kept.
-- **The directional/coverage signal is confirmed on both designed
-  geometry (`gradient_scene`) and real geometry.** The first two real-
-  geometry attempts hit a genuine reconstruction-quality confound
-  (thinning view density everywhere as "spread" widened); redesigning the
-  manipulation as a deliberate angular gap carved out of an otherwise-
-  dense real view pool (`gap_directional_experiment.py`) removed it —
-  held-out PSNR stays tight across conditions while directional BQ
-  variance tracks gap width cleanly (`rho=1.000`, `6.95x` range vs. a
-  `1.34x` position-only control). Not yet run on a genuinely photographed
-  scene — see active item 1.
+- **The directional/coverage signal is confirmed on designed geometry
+  (`gradient_scene`), and real but not yet fully clean on real geometry.**
+  The first two real-geometry attempts hit a genuine reconstruction-
+  quality confound (thinning view density everywhere as "spread"
+  widened); redesigning the manipulation as a deliberate angular gap
+  carved out of an otherwise-dense real view pool
+  (`gap_directional_experiment.py`) removed that confound — directional
+  BQ variance tracks gap width cleanly (`rho=1.000`, `6.95x` range vs. a
+  `1.34x` position-only control), and a within-checkpoint contrast (same
+  messy checkpoint, missing direction vs. a well-covered one, `14.78` vs.
+  `6.98`) supports the signal being direction-specific, not just general
+  checkpoint noise. But every checkpoint in this result is genuinely
+  below this project's own quality bar — the averaged PSNR looked
+  acceptable, but the actual held-out renders are mostly unrecognizable
+  except near surviving training angles, caught only by looking directly
+  at them. See active items 1-2.

@@ -152,16 +152,53 @@ coverage problem rather than a global one. Against that properly-
 controlled design: **directional BQ variance tracks the gap size
 cleanly** — strictly monotonic across all 5 conditions (rank correlation
 `rho=1.000`), a `6.95x` range from no-gap to widest-gap, while a
-position-only control stays far flatter (`1.34x`) — a real, positive,
-honestly-earned result on real geometry, not just the earlier designed
-toy scene. A full per-pixel animated sweep on the widest-gap checkpoint
-visually confirms the gap region lighting up as the camera orbits through
-it (`gs_experiment/results/gap4_sweep.gif`). The same properly-controlled
-design hasn't been run on the photographed bonsai scene yet — the
-natural next step if this needs to hold on a genuinely photographed
-scene, not just NeRF-Synthetic. *(Archive §34, §35, §36, §37, §38 for the
-full confound-diagnosis history; the gap-based result above is the
-current, most-trustworthy number on real geometry.)*
+position-only control stays far flatter (`1.34x`).
+
+**But looking at the actual renders (not just the PSNR average) surfaced
+a real quality problem worth stating plainly, not glossing over: the
+widest-gap checkpoint's held-out views are, for the most part, genuinely
+unrecognizable** — soft color blobs, not a lego bulldozer — except for
+the rare held-out view lucky enough to land near a surviving training
+angle (`gs_experiment/results/gap4_heldout_reconstruction.png` vs. the
+much healthier `gap0_heldout_reconstruction.png` baseline). The overall
+PSNR average (16.0dB) hides a wide per-view spread that only became
+visible by rendering and looking, exactly the failure mode item 2 of
+`ROADMAP.md` exists to catch — caught here because a direct visual
+question ("I have no idea what object is in those images") is a faster
+and more honest check than trusting an averaged number, precisely the
+shift `ROADMAP.md` commits to.
+
+That raises the obvious follow-up question directly: is the elevated
+directional variance on the widest-gap checkpoint tracking the actual
+missing direction, or is it just picking up general floater noise from
+an overall-broken reconstruction? Checked directly, not assumed: querying
+the *same* widest-gap checkpoint at the gap's own direction gives
+`14.78`, more than double the `6.98` from querying the opposite
+(well-covered) direction on that identical checkpoint — a real,
+direction-specific contrast within one checkpoint, not just "this
+checkpoint is bad everywhere." The clean baseline checkpoint (no gap at
+all) shows no comparable spike at that same direction (`2.13` vs. `8.27`
+at the two directions — if anything the untouched, naturally-covered
+direction already runs higher, a real asymmetry in NeRF-Synthetic's own
+camera distribution worth remembering when picking a "control" direction
+in future runs). So the signal does appear to be tracking something real
+and localized, on top of — not merely because of — the checkpoint's
+general messiness.
+
+**Honest overall status: a real, positive, and now more carefully
+checked result, but resting on checkpoints whose absolute reconstruction
+quality is genuinely poor by this project's own >20dB bar** (every one of
+the 5 gap conditions falls short of it, some — the widest gap especially
+— by a lot). The within-checkpoint contrast check is real supporting
+evidence, not a full substitute for reconstructions clean enough to trust
+outright; a larger real view pool (lego's is capped at 100 total views)
+or a genuinely denser real capture would be needed to clear that bar
+properly. The same design hasn't been run on the photographed bonsai
+scene yet — the natural next step, and one where reconstruction quality
+will need checking with the same skepticism from the start, not after a
+GIF prompts the question. *(Archive §34, §35, §36, §37, §38 for the full
+confound-diagnosis history; the gap-based result above, with this
+follow-up, is the current, most-trustworthy picture on real geometry.)*
 
 ## 5. What didn't work: training directly under the likelihood
 
@@ -272,8 +309,12 @@ ranking-based uses (like pruning) are on firmer ground than literal
 confidence values. Kernel choice is a real trade-off, not a solved
 question (§3). The directional/viewing-angle-coverage half of the
 unification claim works cleanly on designed geometry, and — after
-diagnosing and designing out a real reconstruction-quality confound —
-now also on real geometry (§4), including one genuine negative result
-along the way (§5) and one real methodological lesson that generalizes
-across most of the above (§6). See `ARCHIVE_FULL_LOG.md` for the complete
-process, including everything that didn't make this summary.
+diagnosing and designing out a real reconstruction-quality confound, then
+a second round of scrutiny prompted by directly looking at the renders
+and asking "what object is this even supposed to be" — now also on real
+geometry (§4), with a real, direction-specific within-checkpoint contrast
+as supporting evidence, though still resting on checkpoints below this
+project's own quality bar. One genuine negative result along the way
+(§5) and one real methodological lesson that generalizes across most of
+the above (§6). See `ARCHIVE_FULL_LOG.md` for the complete process,
+including everything that didn't make this summary.
