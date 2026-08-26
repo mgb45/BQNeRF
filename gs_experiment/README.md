@@ -1,246 +1,171 @@
-# gs_experiment — scaffold for the real GS differentiation experiment
+# gs_experiment — Bayesian quadrature on real Gaussian Splatting
 
-ROADMAP.md milestone 2 ("the differentiation experiment — the real go/no-go
-gate ... the first milestone that needs a GPU"). This package is everything
-that can be built and tested *before* GPU/gsplat access is available: the
-glue between `bq_splat`'s validated kernel/quadrature math and real 3D
-Gaussian Splatting data structures, plus a mock scene that exercises the
-whole pipeline end-to-end right now.
+Real experiments against real trained `gsplat` checkpoints. This is where
+`bq_splat`'s toy-scale validated math (kernels, quadrature, the
+directional extension) gets applied to real 3D Gaussian Splatting scenes
+— real cameras, real training, real densification. Needs a GPU and
+`gsplat` for anything that trains or loads a checkpoint (see
+[`../requirements-gsplat.txt`](../requirements-gsplat.txt) for setup,
+including two real CUDA/compiler gotchas already solved there); a few
+pure-geometry modules (`camera.py`, `scene_spec.py`, `visibility_attribution.py`,
+`spherical_harmonics.py`) run on `numpy`/`scipy` alone and are covered by
+the main test suite (`pytest tests/`).
 
-## What's real vs. mocked
+**Results**: see [`results/FINDINGS.md`](results/FINDINGS.md) for the
+current-conclusions summary (real scenes first), and
+[`results/ARCHIVE_FULL_LOG.md`](results/ARCHIVE_FULL_LOG.md) for the
+complete process log.
 
-**Real, tested, no dependency on GPU/torch/gsplat:**
-- `camera.py` — camera pose representation and turntable pose generation
-  (ported from `models/pose.py`'s spherical convention to plain numpy),
-  plus computing the viewing direction from any 3D point to a camera.
-- `splat_scene.py` — the `SplatScene` data structure, a `make_mock_scene`
-  generator for testing, and `splat_observations` to expand a scene into
-  the (position, direction, value) rows `bayesian_quadrature_directional`
-  expects.
-- `pixel_uncertainty.py` — `LocalUncertaintyEngine`: builds a KD-tree once
-  over splat positions and caches the kernel's `vv` term per window size,
-  directly applying the two exact optimizations validated in
-  `benchmark_local_bq_scaling.py` (bq_splat/results/FINDINGS.md section 8)
-  to real query geometry instead of synthetic timing data. Reuses
-  `bayesian_quadrature_nd`/`bayesian_quadrature_directional` from
-  `bq_splat` unmodified (that package gained an optional
-  `precomputed_vv`/`precomputed_pos_vv` parameter to make the caching a
-  first-class, reusable feature rather than something reimplemented here).
-- `visibility_baseline.py` — a simple, deliberately non-Bayesian-quadrature
-  visibility-coverage proxy (mean resultant length of local observation
-  directions, standard circular statistics), standing in for a real
-  visibility field (GAVIS-style) or Hessian sensitivity (PUP-style) per
-  ROADMAP.md's "combination not competition" framing.
-- `spherical_harmonics.py` — `eval_sh`, matching the standard 3DGS/gsplat
-  SH color convention (the widely-reused Plenoxels/instant-ngp `eval_sh`
-  utility) exactly, including its "+0.5" DC-offset convention. The
-  hardcoded normalization constants (`SH_C0`, `SH_C1`, `SH_C2`) are checked
-  against their closed-form analytic values (e.g. `SH_C0 == 1/sqrt(4*pi)`)
-  in tests, not just trusted as literals. Real splats store view-dependent
-  color this way, not as the flat scalar `colors` field used to; a splat's
-  color now genuinely depends on viewing direction when `sh_coeffs` is set
-  on its `SplatScene` (`splat_observations` uses `eval_sh` per observation
-  when available, falling back to flat `colors` otherwise).
-- `visibility_attribution.py` — frustum + occlusion attribution: which
-  cameras plausibly saw each splat, from pure geometry (no rendering).
-  `in_frustum` checks field-of-view and being in front of the camera;
-  `occlusion_mask` is a soft z-buffer (project splats to camera-local
-  angular bearing via a KD-tree, flag a splat as occluded if a
-  meaningfully-closer splat shares its bearing). Real training pipelines
-  don't record "which views actually constrained this splat," so this is a
-  genuine proxy, validated against a synthetic occluder (one splat directly
-  behind another, same bearing, gets flagged; a splat at the same depth but
-  a different bearing doesn't) rather than assumed correct.
-- `splat_scene.make_occluder_scene` — the integration test that SH color
-  and real visibility attribution actually compose with the rest of the
-  pipeline, not just that each works alone: a "wall" of splats occludes a
-  cluster of "target" splats behind it from cameras in front, while cameras
-  behind the targets see them directly — `observed_camera_idx` comes from
-  `attribute_observations`, not an assignment rule, and colors come from
-  random SH coefficients. Confirmed front cameras see none of the targets
-  and back cameras see most of them.
-- `differentiation_experiment.py` — wires the original (non-occluder)
-  pipeline together and runs end-to-end on a mock scene right now (see
-  below); doesn't yet use `make_occluder_scene`/SH colors, since that
-  script's zone-based mock predates them — a reasonable next follow-up.
+## Real-scene experiments (the main results)
 
-**Real, GPU-validated (see `gs_experiment/results/FINDINGS.md` for the full account):**
-- `splat_scene.load_from_gsplat_checkpoint` is implemented: reads a
-  standard 3DGS `.ply` (`ply_io.py`, schema matched against the reference
-  implementation's property order) plus `transforms.json`
-  (`nerf_transforms.py`), and derives `observed_camera_idx` via real
-  frustum + occlusion attribution. `blender_render.py` (a Blender
-  headless script, needs `bpy`) and `train_minimal_gsplat.py` (a minimal
-  from-scratch gsplat trainer, needs `requirements-gsplat.txt`) produce
-  the synthetic multi-view data and trained checkpoints this loader reads
-  — together the first fully real (not mocked) path through this
-  package, run on a 3090. `render_reconstruction.py` renders ground-truth
-  vs. reconstruction comparisons for visually sanity-checking a trained
-  checkpoint — worth running before trusting any uncertainty numbers off
-  of it (`FINDINGS.md` §6 is a concrete case where skipping this step
-  would have meant trusting a degenerate, blank reconstruction that still
-  reported a deceptively reasonable PSNR).
-- `kernel_comparison.py` runs the RBF-vs-Matérn question
-  (`bq_splat/results/FINDINGS.md` §5-7, previously toy-scale only)
-  against a real checkpoint.
-- `render_uncertainty_views.py` projects BQ variance, queried at real
-  splat positions, into an actual camera's pixel coordinates alongside
-  its RGB reconstruction — a splat-level approximation of the still-
-  deferred full per-pixel reprojection below, not the same thing (each
-  point is one splat's own variance at its own 3D position, not an
-  alpha-composited per-pixel value), but a real image-plane view rather
-  than the abstract top-down world-space slice
-  `differentiation_experiment.py` uses. Its position+direction panel
-  queries each splat at the direction it's *actually seen from by that
-  camera* (not a single global "discriminating direction" picked for
-  cross-zone comparison), which only makes sense per-view.
-- `pruning_experiment.py` — ROADMAP.md milestone 3 (densification/pruning
-  combination): prunes a checkpoint by opacity alone vs. opacity combined
-  with BQ position-only variance (read cheaply from
-  `differentiation_experiment.py`'s cached uncertainty grid), and compares
-  reconstruction PSNR at matched, reduced splat counts. See
-  `FINDINGS.md` §15-16 for the result (a real win at tight budgets, a
-  regression at loose ones fixed by flooring the BQ term at a minimum
-  opacity).
-- `nbv_experiment.py` (+ `scene_spec.nbv_test_scene`) — ROADMAP.md
-  milestone 4 (active-view/NBV combination): scores a discrete pool of
-  candidate next-views by BQ position+direction variance and a
-  visibility resultant-length proxy (both free, no retraining, from a
-  baseline checkpoint), then actually retrains with the best- vs.
-  worst-scored candidate added and evaluates both on a disjoint held-out
-  ring. See `FINDINGS.md` §17-19 for the result (guided selection beat a
-  poor choice by ~3x) and the caveat (BQ and visibility agreed perfectly
-  on this simple scene, so it doesn't yet show combination beats either
-  signal alone).
-- `prepare_nerf_synthetic.py` — real, standardized-benchmark data prep
-  (NeRF-Synthetic "lego": 100 real training views + a held-out official
-  test split, not a hand-built scene). Alpha-composites the dataset's
-  real RGBA images onto a real background before training (a bug worth
-  knowing about if reusing this on another NeRF-Synthetic scene: naively
-  `.convert("RGB")`-ing an RGBA source drops the alpha channel instead of
-  compositing it).
-- `sparsity_correlation_experiment.py` — the direct "uncertainty nearly
-  for free" check: does BQ position-only variance correlate with local
-  splat sparsity on a real checkpoint? Yes, strongly (r=-0.74, p=8e-27;
-  see `FINDINGS.md` §24) — no geometric classification needed, just local
-  quadrature-node density vs. the closed-form variance computed from it.
-- `visibility_trend_experiment.py` — five checkpoints of the same real
-  object at 100/50/25/12 random-subset views plus 12 angularly-clustered
-  views, all queried at the same fixed points. Finds BQ variance responds
-  to genuine angular coverage gaps, not raw view count (2.75x from
-  clustering alone, count held fixed at 12) — see `FINDINGS.md` §25.
-- `real_benchmark_experiment.py` — wide (100-view) vs. narrow (12-view,
-  angularly clustered) cross-checkpoint comparison. See `FINDINGS.md`
-  §20-23: the cross-checkpoint (view-count) differentiation claim
-  replicates even more strongly on real geometry (4.54x); the
-  same-checkpoint thin-vs-thick claim, tested via automatic
-  per-splat-scale classification (no manual annotation), does not yet
-  show a clear effect — reported as an open question, not forced into a
-  positive result, and no longer the load-bearing real-data claim (see
-  §24-25 instead).
+These are the scripts behind `FINDINGS.md`'s headline claims — run
+against real trained checkpoints from standard benchmarks, not hand-built
+scenes.
 
-**Still not attempted:**
-- A full per-pixel (not per-splat) reprojection. `render_uncertainty_views.py`
-  projects per-splat variance into image space (see above), but mapping
-  world-space uncertainty to a genuine alpha-composited per-pixel value is
-  a different, deferred step that a live gsplat renderer's own
-  projection/ray logic should provide directly, rather than it being
-  reimplemented here.
-- `visibility_attribution.py`'s occlusion test is a bearing-based soft
-  z-buffer, not what the actual training/rendering pipeline used to decide
-  which views constrained which splat. Good enough to unblock building the
-  rest of the pipeline; revisit if real-data results look sensitive to it.
+- **`prepare_nerf_synthetic.py`** — downloads/prepares a standard
+  NeRF-Synthetic scene (100 real training views + an official held-out
+  test split) into this project's pipeline; also builds a "narrow"
+  (angularly clustered) real-view subset and `select_gradient_subset`
+  for graded-spread conditions.
+- **`multi_scene_experiment.py`** — the full-benchmark run: downloads,
+  trains, and evaluates the sparsity-correlation and calibration checks
+  across all 8 standard NeRF-Synthetic scenes.
+- **`sparsity_correlation_experiment.py`** — the direct "uncertainty
+  nearly for free" check on one real checkpoint: does local splat density
+  correlate with BQ position-only variance?
+- **`calibration_experiment.py`** — leave-one-out cross-validation on
+  real splat colors: is the variance *calibrated* (Pearson r, AUSE
+  sparsification curves, held-out NLL vs. a flat baseline), not just
+  correlated with sparsity?
+- **`kernel_family_ablation.py`** — RBF vs. Matérn-3/2 on real
+  checkpoints, at *fitted* (not arbitrary) bandwidths for each.
+- **`window_radius_ablation.py`** — sensitivity of the sparsity-
+  correlation claim to the local-window-size hyperparameter, swept
+  across real checkpoints.
+- **`visibility_trend_experiment.py`** — does BQ variance respond to
+  genuine angular coverage gaps, or just raw view count? (checkpoints at
+  matched view counts, varying only how clustered the views are.)
+- **`real_benchmark_experiment.py`** — wide (100-view) vs. narrow
+  (12-view, angularly clustered) cross-checkpoint comparison on lego.
+- **`../scripts/fit_hyperparameters_real_checkpoint.py`** — extends
+  `bq_splat/hyperparams.py`'s marginal-likelihood bandwidth fitting from
+  toy scenes to a real checkpoint's local windows, with a held-out check.
+- **`train_minimal_gsplat.py`** (`train_with_reference_strategy`) —
+  validates results aren't an artifact of this project's own from-scratch
+  trainer by training with `gsplat`'s own official reference
+  densification strategy instead.
+- **`nll_training_experiment.py`** — training directly under the BQ
+  likelihood (as a loss term and as a densification trigger): a real
+  negative result, kept in.
+- **`colmap_loader.py`** — reads real COLMAP camera poses (the format
+  real photographed datasets like Mip-NeRF360 ship), for scenes where
+  poses are an SfM *estimate*, not exactly known.
+- **`real_directional_gradient_experiment.py`** /
+  **`real_capture_gradient_experiment.py`** — the directional/viewing-
+  angle-coverage question on real geometry: subsampling a real dataset's
+  fixed camera pool into equal-count, increasing-spread conditions, on
+  lego and on a real photographed scene (Mip-NeRF360 "bonsai")
+  respectively. `real_directional_gradient_experiment.py` also has the
+  properly-resourced version (`--n-per-zone 30`, held-out PSNR checked
+  before trusting any BQ number) that produced this project's current,
+  most-trustworthy real-geometry result.
+- **`render_directional_uncertainty_sweep.py`** — replaces a handful of
+  point samples with a full per-pixel, per-frame animated sweep: real
+  depth-unprojected 3D points, queried at the real direction to the
+  *current* frame's camera as it orbits. Used to visually stress-test the
+  real-geometry results above rather than trust five numbers alone.
 
-**Deliberately not attempted (documented decision, see module docstrings):**
-per-splat heterogeneous covariance as the BQ kernel bandwidth. Real splats
-each have their own learned covariance; the validated `bq_splat` machinery
-uses one shared or pooled-fit bandwidth instead (FINDINGS.md sections 5, 7).
-Using each splat's own covariance as its own kernel bandwidth is a real,
-mathematically plausible extension, but it's a second, unvalidated change —
-stacking it on top of the GPU/gsplat integration at the same time would
-make it hard to tell which change caused which result. `scales`/`rotations`
-are carried as scene metadata for this reason, not consumed by the kernel.
+## Foundational / designed-scene experiments
 
-## Running it now
+Real `gsplat` training throughout, but on hand-built (not standard-
+benchmark) scenes — used to de-risk and cleanly isolate an effect before
+testing whether it survives real, messier geometry.
+
+- **`scene_spec.py`** — builds the hand-built scenes: `differentiation_scene`
+  (two identical thin-rod clusters, one widely observed, one narrowly),
+  `nbv_test_scene` (a candidate-view pool for active-view selection), and
+  `gradient_scene` (five identical zones with camera-arc coverage width
+  increasing linearly — a designed, continuous coverage gradient, not a
+  binary split). `blender_render.py` renders them (needs `bpy`).
+- **`differentiation_experiment.py`** — the original go/no-go test: can
+  position-only BQ variance flag a region that's well-*observed* but
+  poorly *resolved*, something a visibility-only signal structurally
+  can't see? Demonstrated once real densification was added (see
+  `FINDINGS.md`); the mechanism behind *why* remains genuinely open.
+- **`pruning_experiment.py`** — combining BQ variance with opacity-based
+  pruning.
+- **`nbv_experiment.py`** — combining BQ variance with a visibility
+  proxy for next-best-view candidate scoring.
+- **`directional_gradient_experiment.py`** — the designed-scene version
+  of the coverage-gradient test (`gradient_scene`): BQ directional
+  variance recovers a real, continuous, designed gradient cleanly. Its
+  real-geometry counterparts are `real_directional_gradient_experiment.py`
+  and `real_capture_gradient_experiment.py` above.
+- **`render_sweep_gif.py`** / **`render_uncertainty_views.py`** — earlier
+  visualization scripts (position-only variance, per-splat and per-pixel
+  respectively); superseded for the directional question by
+  `render_directional_uncertainty_sweep.py` above, still useful for the
+  spatial/sparsity signal.
+- **`kernel_comparison.py`** — RBF vs. Matérn-3/2 on a real checkpoint
+  (position-only variance, hardcoded bandwidths) — the real-data
+  predecessor to `kernel_family_ablation.py`'s fitted-bandwidth version.
+- **`validate_declustering_isolation.py`** — the controlled test that
+  refuted the leading hypothesis for the differentiation experiment's
+  mechanism (redundant clustering from densification) — see
+  `FINDINGS.md`.
+
+## Core library modules
+
+- **`pixel_uncertainty.py`** — `LocalUncertaintyEngine`: the main
+  entry point for querying BQ variance against a real checkpoint. Builds
+  a KD-tree once, caches the kernel's `vv` term per window size (the two
+  exact optimizations `bq_splat` validated for GS-scale cost), and caps
+  local-neighbor count for tractability.
+- **`splat_scene.py`** — `load_from_gsplat_checkpoint` (reads a real
+  `.ply` + `transforms.json`), `splat_observations` (expands a scene into
+  the (position, direction, value) rows the directional kernel needs).
+- **`camera.py`** — camera pose representation, turntable pose
+  generation, and per-splat viewing-direction geometry.
+- **`visibility_attribution.py`** — frustum + soft-z-buffer occlusion
+  proxy for "which cameras plausibly saw this splat" (real training
+  pipelines don't record this).
+- **`visibility_baseline.py`** — a simple, deliberately non-BQ visibility
+  proxy (mean resultant length of observation directions), standing in
+  for a dedicated visibility field in the combination experiments.
+- **`spherical_harmonics.py`** — `eval_sh`, matching the standard
+  3DGS/gsplat SH color convention.
+- **`ply_io.py`** / **`nerf_transforms.py`** — the standard 3DGS `.ply`
+  schema and NeRF-style `transforms.json` I/O, including the OpenCV/OpenGL
+  convention conversions `colmap_loader.py` also uses.
+- **`train_minimal_gsplat.py`** — a minimal from-scratch `gsplat` trainer
+  with real gradient-triggered densification, plus the reference-strategy
+  and training-under-the-likelihood variants used above.
+- **`render_reconstruction.py`** — renders ground-truth vs. reconstruction
+  comparisons; worth running before trusting any uncertainty number off a
+  new checkpoint (a real past incident: a degenerate, blank reconstruction
+  still reported a deceptively reasonable PSNR — see `FINDINGS.md`).
+
+## Running it
 
 ```
-python -m pytest tests/test_gs_camera.py tests/test_gs_splat_scene.py tests/test_gs_pixel_uncertainty.py tests/test_gs_visibility_attribution.py tests/test_spherical_harmonics.py -v
-python gs_experiment/differentiation_experiment.py
+pytest ../tests/test_gs_camera.py ../tests/test_gs_splat_scene.py \
+  ../tests/test_gs_pixel_uncertainty.py ../tests/test_gs_visibility_attribution.py \
+  ../tests/test_spherical_harmonics.py ../tests/test_gs_colmap_loader.py -v
 ```
 
-The experiment script builds a mock scene (350 splats, two zones with
-spatial density *not* explicitly controlled this time, unlike
-`scripts/validate_directional_combined.py`'s exact-offset construction —
-see below), computes all three signals over a 2D slice, and writes
-`gs_experiment/results/differentiation_experiment_mock.png`.
+runs everything that doesn't need a GPU. For a real experiment end to
+end, with a `gsplat` environment set up (`../requirements-gsplat.txt`):
 
-**Result on the mock scene:** position-only variance ratio (narrow/wide
-zone) = 0.57x, position+direction ratio = 4.08x, visibility-proxy ratio =
-2.07x. The direction is right and the effect size is large, but 0.57x is
-not the clean ~1.0 the toy experiment achieved (`validate_directional_
-combined.py`, 0.97x) — that script explicitly gave both zones the
-*identical* relative offset pattern from their own center to hold spatial
-density exactly equal; this scaffold's mock scene instead scatters
-splats uniformly at random everywhere, so the two zones' spatial density
-isn't controlled the same way. Worth knowing before reading too much into
-the exact ratios here: this script demonstrates the *pipeline* works
-end-to-end, not a repeat of the controlled statistical claim already
-established at toy scale. Tightening the mock scene to match the toy
-experiment's exact-offset construction would be a small, worthwhile
-follow-up if this script's numbers themselves are ever going to be quoted
-rather than just used to confirm the code runs.
-
-## GPU access obtained — status and what's left
-
-Steps 1-4 of this section's original plan (install deps, implement the
-loader, swap it into `differentiation_experiment.py`, construct a real
-differentiation scene) are done — see `gs_experiment/results/FINDINGS.md`
-for the complete account, including four real bugs found getting from
-"the pipeline runs" to "the numbers are trustworthy": an occlusion-
-attribution default far too aggressive for dense real geometry
-(`--angular-tol`), a query-direction construction that broke when both
-camera rigs share an elevation, an uncapped local-neighbor count that
-briefly pegged the whole machine's CPU (`LocalUncertaintyEngine.
-max_neighbors`), and a scale-initialization bug that produced a blank
-reconstruction behind a deceptively reasonable PSNR (`train_minimal_
-gsplat`'s `init_scale`).
-
-Run it (with real densification, the setup that demonstrated the go/no-go
-claim below):
 ```
-.venv-gsplat/bin/python -m gs_experiment.train_minimal_gsplat <scene_dir> <out.ply> \
-    --init-scale 0.1 --n-iters 10000 --n-splats 2000 \
-    --densify --densify-interval 300 --densify-start 300 --max-splats 15000
-.venv-gsplat/bin/python gs_experiment/render_reconstruction.py <scene_dir>   # sanity-check before trusting anything below
-.venv-gsplat/bin/python gs_experiment/differentiation_experiment.py --checkpoint <scene_dir> --angular-tol 0.01
-.venv-gsplat/bin/python gs_experiment/kernel_comparison.py <scene_dir> --angular-tol 0.01
+.venv-gsplat/bin/python gs_experiment/prepare_nerf_synthetic.py <raw_scene_dir> <out_dir>
+.venv-gsplat/bin/python -m gs_experiment.train_minimal_gsplat <out_dir>/wide <out_dir>/wide/splats.ply --densify
+.venv-gsplat/bin/python gs_experiment/render_reconstruction.py <out_dir>/wide   # sanity-check before trusting anything below
+.venv-gsplat/bin/python gs_experiment/sparsity_correlation_experiment.py <out_dir>/wide/splats.ply
 ```
 
-**Core go/no-go claim: demonstrated, and thoroughly checked.** With real
-densification (gradient-triggered clone/split + opacity pruning,
-calibrated against measured gradient magnitudes rather than a borrowed
-constant — see `FINDINGS.md` §9), position-only BQ variance ranks the
-wide (well-observed-by-visibility) zone as *more* uncertain than the
-narrow zone — the opposite ranking from the visibility proxy — replicated
-across two training seeds, both kernel families, and four separate
-"maybe this is an artifact" checks (clone-position adjacency §10,
-camera-count leaking into the signal §13, splat-count matching §14,
-splat-spacing matching §14), none of which moved the result. The
-mechanism, though, is genuinely open: `validate_declustering_isolation.py`
-directly refuted the leading candidate (redundant clustering from
-densification) by matching count and spacing between zones and finding
-the effect unchanged either way — see `FINDINGS.md` §12 and §14 for both
-the original hypothesis and its refutation, and §14's replacement
-candidate (spatial anisotropy / off-rod-splat fraction), not yet tested.
+or, for the full 8-scene benchmark run behind `FINDINGS.md`'s headline
+multi-scene result:
 
-Still open:
-5. A controlled test of §14's anisotropy/off-rod-fraction hypothesis
-   (e.g. opacity-weighted or on-rod-vs-off-rod partitioned variants of
-   `validate_declustering_isolation.py`'s methodology).
-6. Add the real visibility-field/Hessian-sensitivity comparison ROADMAP.md
-   calls for (reproducing or citing PUP/GAVIS numbers) — `visibility_
-   baseline.py`'s proxy is intentionally simple and not meant to stand in
-   for that comparison.
-7. Real captured data (photographs + COLMAP or similar SfM pose
-   estimation) rather than synthetic Blender renders with known ground-
-   truth poses — not started.
+```
+.venv-gsplat/bin/python gs_experiment/multi_scene_experiment.py chair drums ficus hotdog lego materials mic ship
+```

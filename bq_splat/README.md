@@ -69,57 +69,20 @@ alone and combined with the spatial signal.
 
 ## Findings so far
 
-See [`results/FINDINGS.md`](results/FINDINGS.md) for the full write-up.
-Short version: with a hardcoded kernel bandwidth, BQ's posterior mean loses
-to a plain Riemann sum on raw integral accuracy at every node count tested —
-consistent with the original NeRF-BQ result recorded in this repo's history.
-But that turns out to be substantially a fixed-bandwidth mismatch, not a
-fundamental limitation: fitting the bandwidth per scene via marginal
-likelihood (`hyperparams.py`) closes most of the gap, and fitted Matern
-actually beats Riemann at n=20 and n=40 nodes. Separately, BQ's posterior
-variance is reasonably well correlated with its own actual error for both
-kernels (~0.7), and a deliberately under-sampled-but-visible region shows
-~3.9x higher local BQ variance than well-covered regions on average —
-peaking (~1.2) right at the region's leading edge, where sparse coverage
-first meets real signal structure — a toy-scale replication of the paper's
-central differentiation claim. One implementation lesson worth carrying into
-the gsplat port: irregular (as opposed to evenly stratified) node placement
-can push the Gram matrix condition number past 1e18 with a naive fixed
-jitter; a jitter relative to the kernel's own scale fixes it and materially
-changes downstream numbers (see FINDINGS.md).
+See [`results/FINDINGS.md`](results/FINDINGS.md) for the current-conclusions
+summary — short version: the ported math is correct, the raw-accuracy gap
+against naive Riemann summation is understood and fixable (a bandwidth-
+fitting issue, not a fundamental limitation), posterior variance is
+reasonably calibrated and rises in genuinely under-resolved regions, the
+computational-scaling concern that motivated an early GPU-rewrite worry
+was resolved on CPU alone, and the directional-kernel extension (does the
+same formalism catch viewing-angle coverage, not just spatial coverage?)
+works at toy scale. A formal proof that the BQ posterior mean recovers
+alpha compositing exactly, with the posterior variance as a *provable*
+error bound, is in
+[`PROOF_alpha_compositing_equivalence.md`](PROOF_alpha_compositing_equivalence.md).
 
-Separately, the differentiation effect survives moving from a 1D ray-depth
-domain to a 2D image-plane domain with scattered splat-center placement —
-the geometry a real GS scene actually has — with a 4.85x inside/outside
-variance ratio and the same "peaks near the coverage boundary" shape found
-in 1D (see FINDINGS.md §6 and `results/gap_experiment_2d.png`).
-
-A held-out check (§7) refines the bandwidth-fitting story: it's real and
-generalizes for Matern (a bandwidth fit once on a calibration set nearly
-matches an in-sample oracle on unseen scenes) but not for RBF (the
-population-optimal RBF bandwidth turned out to be almost exactly the
-original hardcoded 0.35 — RBF's earlier per-scene gains were mostly
-overfitting to each scene's specific sample layout). And a computational
-scaling check (§8) found the bottleneck ROADMAP.md worried about — an
-expensive linear solve at GS scale — wasn't the real one: profiling found
-94% of per-query cost was a numerically-integrated `vv` term, fixed exactly
-(not approximated) by caching it per window size, since it's provably
-position-independent for a fixed-size window under a stationary kernel.
-That plus a KD-tree for neighbor lookup takes a naive ~2,400-3,000s
-single-threaded per-800x800-image estimate down to ~140-420s, on CPU, with
-up to a million synthetic splats — before any GPU code is written.
-
-A follow-up question (§9): does any of this give you visibility/epistemic
-uncertainty too, as splats accumulate in a SLAM setting, or only quadrature
-uncertainty? On its own, only the latter — a position-only kernel can't
-tell "seen from every angle" apart from "seen once, obliquely." Extending
-`ProductKernel`'s multiplicative structure with a directional (von
-Mises-Fisher) factor fixes that with the same closed-form machinery: a
-controlled toy experiment holding spatial density *exactly* equal between
-two zones (by construction — an earlier attempt relying on independently-
-random equal-count placement wasn't actually matched, a real confound worth
-having caught) shows position-only variance correctly reports no
-difference (0.97x) while position+direction variance correctly reports
-2.46x higher variance in the zone observed from a narrow cone. Toy-scale
-evidence the unification is mathematically real, not a demonstration it's
-better or cheaper than a dedicated visibility field at GS scale.
+For the complete chronological account — every bug, every intermediate
+number — see [`results/ARCHIVE_FULL_LOG.md`](results/ARCHIVE_FULL_LOG.md).
+For how these toy-scale results held up on real Gaussian-Splatting data,
+see [`../gs_experiment/results/FINDINGS.md`](../gs_experiment/results/FINDINGS.md).
