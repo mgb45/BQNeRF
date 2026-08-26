@@ -493,6 +493,43 @@ capture — even one scene — is the standard sanity check a reviewer will
 ask for before trusting that any of this survives real sensor noise, real
 calibration error, and real (non-uniform, non-turntable) view distributions.
 
+**First real photographed scene done — a real, diagnosed negative
+result, not a sanity-check pass.** `colmap_loader.py` reads COLMAP's
+binary pose format (a genuinely new capability — every prior scene had
+either hand-authored or dataset-provided exact poses, not an SfM
+estimate), verified by a unit test that round-trips a random pose through
+it and this project's own `opencv_viewmat_from_c2w` and confirms an exact
+match, not just that it runs. Applied to Mip-NeRF360 "bonsai" (real
+photographs, the actual kind of data GAVIS/PUP 3D-GS report numbers on)
+via `real_capture_gradient_experiment.py`, repeating the §33/§34
+view-coverage-gradient construction on real COLMAP-derived poses. Caught
+and fixed a real, scene-specific pitfall before trusting the result (world
+origin, safe to assume as "near the object" for NeRF-Synthetic's
+convention, is not for a COLMAP reconstruction — checked directly:
+nearest real splat was ~0.8 units from the origin with almost no real
+neighbors in a reasonable window; fixed with a real, data-derived query
+point). With that fixed, the result replicates item 8's lego null on a
+harder, more externally valid test: `1.01x` directional-variance range,
+statistically indistinguishable from the position-only control's own
+`1.02x`. Two independent real/real-ish-geometry attempts now both null
+against one clean positive on designed, occlusion-free geometry — real
+support (not yet confirmed) for the self-occlusion decoupling hypothesis
+from item 8. Full account, including the exact honest sensor-noise/
+calibration-error caveat this item originally asked about (COLMAP
+distortion parameters are read but not applied — a real, acknowledged
+approximation), in `gs_experiment/results/FINDINGS.md` §35.
+
+**What's still needed**: this answers "does the directional-gradient
+claim survive real photographs" (no, not without further work) but not
+the item's other asks — full scene reconstruction quality on a real
+capture at a competitive splat budget, and the sparsity-correlation/
+calibration checks (items 4-6) have not yet been repeated on real
+captured data, only on synthetic scenes. The self-occlusion hypothesis
+itself also remains unconfirmed — the concrete next diagnostic from item
+8 (compare each splat's real attributed-observation spread against its
+camera rig's nominal spread) still applies here too, now with two real
+scenes available to run it on instead of one.
+
 ## Technical core (unchanged, now explicitly the unification derivation)
 
 Reformulate GS rendering along a camera ray/pixel as a kernel-quadrature

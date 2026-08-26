@@ -1574,6 +1574,109 @@ reportable finding in its own right about what real self-occluding
 geometry does to the directional-uncertainty mechanism, worth exactly as
 much attention in any write-up as §33's positive result.
 
+## 35. The same test on an actual photographed scene (GAVIS/PUP-style real capture): the null replicates, on a stronger test
+
+§34 found the directional-gradient effect doesn't transfer from the
+hand-built thin-rod scene to real (but still synthetic-Blender-rendered)
+lego geometry. The natural next question — does it fare any differently
+on a genuinely *photographed* scene, with real COLMAP-estimated poses,
+the actual kind of data GAVIS and PUP 3D-GS report numbers on — was
+tested directly rather than left to the lego result to answer by
+extrapolation.
+
+**A new capability this required, not previously needed anywhere in this
+project**: `colmap_loader.py` reads COLMAP's binary `cameras.bin`/
+`images.bin` format (the standard pose output for real-captured NeRF/GS
+datasets) and converts to this project's `transforms.json` convention.
+Every prior scene had either hand-authored ground-truth poses (Blender)
+or a synthetic dataset's own pre-baked poses (NeRF-Synthetic); this is
+the first time poses themselves are an SfM *estimate* from real
+photographs, not known exactly. Verified independently, not just run:
+`colmap_image_to_c2w_opengl` is documented as the exact inverse of
+`nerf_transforms.opencv_viewmat_from_c2w`'s operation, and a unit test
+checks this by round-tripping a random pose through both functions and
+confirming it recovers the original world-to-camera matrix exactly, not
+just "runs without crashing." Known, stated limitation: COLMAP's
+distortion parameters are read but not applied (this project's rendering
+pipeline has no distortion model) — a real, acknowledged source of error
+specific to using genuine photographs that no synthetic scene has.
+
+**Scene**: Mip-NeRF360 "bonsai" (`nvs-bench/mipnerf360` on Hugging Face,
+COLMAP `PINHOLE` model, 292 real photographs, verified single shared
+camera matching this project's one-`camera_angle_x`-per-scene
+convention). Same construction as §34: 5 equal-view-count (8 views each)
+conditions of increasing real angular spread around a shared reference
+view, built directly on COLMAP-derived poses via the same
+`select_gradient_subset` used for lego (no change needed — it only reads
+frame translations), each trained into its own real checkpoint (3000
+iterations, real densification, reasonable convergence: 20-24dB train
+PSNR at this light budget).
+
+**The exact same query-point pitfall as §28/§30/§34 showed up again, in a
+new form, and was caught the same way — by checking, not assuming.**
+World origin is close to the camera-center *centroid* here (confirmed:
+`[0.07, 0.07, 0.05]`), which was the working assumption carried over from
+NeRF-Synthetic's object-centered convention — but a COLMAP reconstruction
+places its origin from SfM geometry, with no guarantee the *photographed
+object itself* sits there just because the cameras orbit near it. Checked
+directly: the nearest real splat to the origin was ~0.7-0.9 units away
+with a handful of real neighbors at best in a reasonable window, in every
+one of the 5 checkpoints — an even more clear-cut version of the same
+degenerate-query problem, this time from a wrong assumption about the
+scene's own coordinate convention rather than a mismatched kernel
+parameter. Fixed the same way as before (check, don't assume): computed
+each checkpoint's own median high-opacity splat position and used the
+mean of those five real, data-derived points (`[0.61, 1.17, 1.51]`) as a
+genuinely representative query point, then re-swept window radius until a
+real, substantial neighbor pool (hundreds of real splats) was confirmed
+reached in every condition (`window_radius=0.8`).
+
+**With the query point and window radius both grounded in real,
+confirmed data rather than assumed convention, the result replicates
+§34's null, on a harder, more externally valid test:**
+
+| zone | real spread (deg) | n_neighbors | directional variance | spatial-only variance |
+|---|---|---|---|---|
+| 0 | 23.9 | 400 | 3.79719 | 3.65249 |
+| 1 | 35.9 | 400 | 3.79719 | 3.66404 |
+| 2 | 61.8 | 400 | 3.79719 | 3.67942 |
+| 3 | 103.4 | 266 | 3.79709 | 3.74072 |
+| 4 | 172.9 | 268 | 3.77485 | 3.73572 |
+
+Directional variance range: `1.01x`. Position-only control range:
+`1.02x` — if anything, the control varies slightly *more* than the
+directional signal, the same "no signal standing out above the control's
+own noise" pattern §34 found on lego. Plot in `gs_experiment/results/
+real_capture_directional_gradient.png`.
+
+**This is now a two-for-two null on real geometry, against a one-for-one
+positive on designed geometry — worth stating plainly rather than
+averaged into a vague "mixed results".** The hand-built thin-rod scene
+(§33) reliably produces the effect (12.97x, clean monotonic gradient).
+Both attempts at real or real-ish geometry (§34's lego, this section's
+genuinely photographed bonsai) show no directional signal distinguishable
+from a position-only control's own noise floor, despite two independent,
+scene-specific artifact checks (window radius, query point) being caught
+and fixed *before* trusting either null result — these are not two
+untroubleshot negative results, they're two results that survived real
+troubleshooting and still came back null. The self-occlusion /
+locally-varying-surface-normal hypothesis from §34 gains real, if still
+unconfirmed, support: it would predict exactly this pattern (isolated,
+occlusion-free toy geometry shows the effect; any real object with
+self-occlusion, synthetic or photographed, does not), and now has two
+independent real-geometry data points consistent with it rather than one.
+
+**What a paper claim should say given this, right now**: "BQ directional
+variance recovers a designed view-coverage gradient on isolated,
+occlusion-free geometry" is supported. "BQ directional variance tracks
+view-coverage gradients on real objects/scenes" is *not* supported by
+this project's evidence and should not be asserted without either (a)
+confirming and then correcting for the self-occlusion mechanism, or (b) a
+different real-scene construction where the manipulated variable (camera
+spread) and the measured one (per-splat observed-direction spread) are
+less decoupled by real geometry than an arbitrary query point on a
+complex object apparently allows.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA
