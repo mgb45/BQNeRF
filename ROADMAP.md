@@ -439,6 +439,26 @@ narrows what the "realistic" framing in this item can currently claim —
 the mechanism is demonstrated on designed scenes, not yet on real
 geometry, and that gap is now characterized rather than assumed closed.
 
+**All three point-sample results (toy, lego, real bonsai capture) were
+re-checked with full per-pixel animated sweeps** rather than trusted as 5
+numbers per scene — `render_directional_uncertainty_sweep.py`, querying
+directional BQ variance at every pixel using the real direction from that
+pixel's actual 3D point to the *current* frame's camera as the camera
+orbits. The toy scene's gradient is confirmed and shown to have real
+sub-structure the point samples missed. Both real-geometry nulls are
+confirmed, not contradicted, by the full sweep — but the real checkpoints'
+visibly poor reconstruction quality (visible in the RGB panel, not just
+inferred) surfaced a concrete confound the point samples didn't:
+`select_gradient_subset`'s fixed-count design means every real-scene
+condition tested so far (6-8 total views) is a severe absolute view-count
+shortage on real geometry, not a clean spread-only manipulation — plausibly
+enough on its own to explain uniformly-high uncertainty regardless of
+spread. The natural next real-scene test, not yet run: enough total views
+to reconstruct well (30-50), varying only their angular clustering, to
+isolate the spread variable the way the toy scene's construction actually
+did. Full account, all five GIFs, in `gs_experiment/results/FINDINGS.md`
+§36.
+
 ### 9. SLAM / incremental-mapping integration
 
 Motivated by the original design question that led to the directional
@@ -529,6 +549,17 @@ itself also remains unconfirmed — the concrete next diagnostic from item
 8 (compare each splat's real attributed-observation spread against its
 camera rig's nominal spread) still applies here too, now with two real
 scenes available to run it on instead of one.
+
+Bonsai's null was also re-checked with a full per-pixel animated sweep
+(item 8, `gs_experiment/results/FINDINGS.md` §36), not just point
+samples: it shows real, richer spatial structure than lego's near-total
+saturation, but no visually obvious camera-coverage-tracking trend
+distinguishing the narrow and wide conditions — consistent with, not
+contradicting, the quantitative null. Also surfaced the same
+few-total-views confound found on lego (8 total real photos per
+condition), which item 8's next-step real-scene test (enough views to
+reconstruct well, spread-only variation) would resolve for this dataset
+too.
 
 ## Technical core (unchanged, now explicitly the unification derivation)
 

@@ -1677,6 +1677,96 @@ spread) and the measured one (per-splat observed-direction spread) are
 less decoupled by real geometry than an arbitrary query point on a
 complex object apparently allows.
 
+## 36. Replacing the point-sample summaries with full per-pixel animated sweeps, on all three scenes
+
+§33-35's numbers (5 zone-center point samples per scene) are honest but,
+fairly, easy to distrust: five numbers cannot rule out real spatial
+structure the sample points happened to miss, in either direction. This
+section replaces the point samples with a full per-pixel, per-frame
+visualization on all three scenes tested so far, to see the whole picture
+rather than infer it from five points.
+
+**Mechanism (`render_directional_uncertainty_sweep.py`).** Same real-
+depth-unprojection construction as `render_sweep_gif.py` (gsplat's own
+expected-depth output, not an interpolated proxy), extended two ways: the
+BQ term queried is *directional* (position+direction), not position-only;
+and the query *direction* at every pixel is the real direction from that
+pixel's actual unprojected 3D point to the *current frame's* camera
+position — not one fixed direction reused for a whole sweep. As the
+camera orbits, this is the natural generalization of the aggregate
+experiments' single query direction to the full range an NBV/SLAM policy
+would actually evaluate. A framing bug was caught and fixed before
+producing anything worth keeping: the first render used a fixed square
+crop and a far camera, wasting most of the frame on empty space around
+the (elongated, small) toy scene — fixed with a wide (640x240) aspect
+ratio and a tighter, geometry-matched radius/FOV.
+
+**Toy gradient scene (§33's positive result): confirmed, with real
+sub-structure the point samples didn't show.** [`directional_uncertainty_sweep_toy.gif`]
+Across the 60-frame orbit, the designed left-to-right (narrow-to-wide)
+gradient is visible directly: zone 0 (narrowest, 8 deg) lights up sharply
+whenever the current viewing angle falls outside its training arc, while
+zone 4 (full-ring) stays dark almost everywhere. It also shows real
+structure the 5 point samples entirely missed — e.g. zone 0 has a
+consistent *partial* dark patch even at angles mostly outside its
+training arc (a real sub-region that happens to be better-constrained
+than the rest of that zone), and at the sweep's ~90/270-degree marks the
+row is viewed end-on (a real, expected geometric consequence of orbiting
+a linear arrangement of zones, not an artifact). The point-sample summary
+was a fair compression of a real, rich pattern, not misleading.
+
+**Real lego (§34's null): confirmed, and a real interpretive caveat
+surfaced that the aggregate number didn't make visible.**
+[`lego_gradient_0_sweep.gif`, `lego_gradient_4_sweep.gif`] Both the
+narrowest (13.3 deg) and widest (150 deg) real-view conditions show
+directional uncertainty saturated near its maximum across almost the
+entire frame, in every frame of both sweeps — visually confirming the
+1.01x-range null, not contradicting it. But the reconstructions
+themselves are also visibly poor quality in both conditions (heavy
+floater/artifact noise) — because each condition trains on only *6 real
+views total*, `select_gradient_subset`'s fixed-count design (needed to
+hold count constant while varying spread — see §34) means even the
+"wide" 150-degree condition is a severe absolute view-count shortage on
+real, complex geometry, not just a spread manipulation. Seeing this
+required looking at the actual renders — the aggregate PSNR-style numbers
+never reported here would have shown "some reconstruction happened" without
+revealing how poor. **This is a real confound the point-sample results
+didn't surface**: uniformly-high uncertainty in both conditions may partly
+reflect "not enough total data to reconstruct at all" rather than being
+cleanly diagnostic of coverage *spread* specifically.
+
+**Real bonsai (§35's null): confirmed, but visually a genuinely different
+character than lego, still without a clean directional trend.**
+[`bonsai_gradient_0_sweep.gif`, `bonsai_gradient_4_sweep.gif`] Unlike
+lego's near-total saturation, both bonsai conditions show real, rich
+spatial structure — patchy, high-frequency light/dark regions that shift
+noticeably frame to frame. This is genuinely more structure than a flat
+null would suggest, and worth taking seriously rather than dismissing. But
+comparing the narrowest and widest conditions side by side, the pattern
+looks comparably noisy/patchy in *both* — no obvious, consistent
+difference distinguishing them the way the toy scene's zones were
+visually distinct. This is consistent with, not a contradiction of, the
+quantitative null (1.01x range, indistinguishable from the position-only
+control's own 1.02x) — real per-splat variation exists, but it does not
+resolve into a visible camera-coverage-tracking trend.
+
+**What this changes about the real-geometry null going forward**: the
+self-occlusion hypothesis from §34 remains the leading, still-unconfirmed
+explanation, but this section adds a second, concrete, testable
+alternative specific to the real-scene *construction* used so far: both
+lego and bonsai's gradient conditions confound "narrow angular spread"
+with "few total views," because `select_gradient_subset` was built to
+hold view *count* fixed while it varies spread — which, given real
+datasets don't offer arbitrarily many views within an arbitrarily tight
+cone, meant picking a small fixed count (6-8) that both conditions share.
+**A cleaner real-scene test, not yet run**: a condition with enough total
+views to reconstruct well (e.g. 30-50), varying only how tightly those
+views cluster in angle — isolating the spread variable the way the toy
+scene's construction did (matched rod-cluster geometry, only arc width
+varied), rather than conflating it with a shared view-count shortage.
+
+All five GIFs saved under `gs_experiment/results/`.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA
