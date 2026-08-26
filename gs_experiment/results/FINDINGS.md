@@ -1767,6 +1767,56 @@ varied), rather than conflating it with a shared view-count shortage.
 
 All five GIFs saved under `gs_experiment/results/`.
 
+## 37. Correction: §34-36's real-geometry results are not a null, they're inconclusive
+
+Directly challenged, correctly: "the bonsai reconstruction is awful, so
+nothing here is meaningful." Right, and it applies to lego too, not just
+bonsai — §36 already noted the poor reconstruction quality as a
+*confound* on the interpretation, but still described the underlying
+result as "the null is confirmed, not contradicted." That's the wrong
+framing, and worth being precise about why, not just softening the
+language.
+
+A BQ posterior variance is a statement about how well a *given* set of
+splats, at their *actual* fitted positions/colors, constrains a query —
+it says nothing trustworthy if those splats themselves are a bad fit to
+the real scene. §36's own screenshots showed heavy floater/artifact noise
+in every real-scene reconstruction (lego's 6-view conditions, bonsai's
+8-view conditions) — splats scattered through free space, fitting noise
+rather than real geometry. A BQ variance number computed on top of that
+isn't measuring "how well does viewing-angle coverage constrain this real
+surface point" — the *positions and colors feeding the query are
+themselves close to garbage*. Whether the resulting variance number comes
+out flat, noisy, high, or low is close to uninformative either way: a
+flat, saturated result (lego) doesn't confirm "no directional effect on
+real geometry" any more than a noisy, patchy one (bonsai) would have
+confirmed the opposite. **Both are consistent with "the input was too
+degraded for this measurement to mean anything," which is a different,
+weaker claim than either a positive or a negative result.**
+
+**What this changes, precisely**: §34's "the effect does not transfer,"
+§35's "the null replicates on a stronger test," and §36's "the null is
+confirmed, not contradicted" should all be read as **inconclusive**, not
+negative — real attempts, with real diagnostic work that ruled out two
+genuine artifacts (window radius, query point) before reaching this
+point, but built on reconstructions too degraded to license a conclusion
+either way. This is not a small caveat added after the fact — it's a
+retraction of the confidence level those sections claimed, prompted by
+direct scrutiny of the same visual evidence §36 itself introduced to be
+more trustworthy than the point samples, not less.
+
+**What a real test needs, and doesn't have yet**: enough total views for
+the checkpoint itself to be a reasonable reconstruction (real PSNR in a
+normal range for the scene, not a floater-dominated fit) — likely 30-50+
+real views per condition, not 6-8 — while still varying only the angular
+*spread* of those views between conditions, the way the toy scene's
+construction varied only arc width while holding rod-cluster geometry
+identical. Every real-scene attempt so far conflated "few views" with
+"narrow spread" because holding view *count* fixed (needed for a clean
+spread-only comparison) forced picking a small shared count. The honest
+status of the real-geometry question, right now: **untested**, not
+"tested and negative."
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

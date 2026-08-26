@@ -409,9 +409,9 @@ prerequisite for any realistic candidate-scoring policy, though not yet
 the candidate-pool/sequential-retraining machinery items 8 itself still
 needs. Full account in `gs_experiment/results/FINDINGS.md` §33.
 
-**Tested on a real benchmark scene immediately after — the effect does
-not transfer, and a real, diagnosed reason why, not an unexplained
-null.** `real_directional_gradient_experiment.py` approximates the same
+**Tested on a real benchmark scene immediately after — a real attempt,
+but the result turned out to be inconclusive, not negative (corrected
+below).** `real_directional_gradient_experiment.py` approximates the same
 gradient design on real lego camera poses (fixed by the dataset — 5
 equal-count, increasing-real-angular-spread subsets of the real 100-view
 pool, each trained into its own real checkpoint). Two candidate artifacts
@@ -422,42 +422,41 @@ fixed); and a concern that a real dataset simply can't offer as extreme
 an angular-spread manipulation as a purpose-built rig was checked and
 also ruled out (a tighter view-count-per-condition recovered a real
 13-150 deg range, comparable to §33's designed 8-180 deg one). With both
-ruled out, the result is a genuine null: `1.03x` directional-variance
-range, statistically indistinguishable from the position-only control's
-own `1.04x` range — no directional signal above the control's noise
-floor, where §33 showed one ~7x above it. Real, reasoned (not yet
-confirmed) hypothesis: §33's isolated, occlusion-free thin rods make
-camera-position spread and per-splat observed-direction spread the same
-thing by construction; real self-occlusion and locally-varying surface
-normals on an actual object decouple them, since `visibility_attribution`'s
-real geometric occlusion test — not an assignment rule — determines which
-selected cameras actually see any given splat, regardless of the rig's
-nominal spread. Full account, including the concrete next diagnostic (compare
-each splat's real attributed-observation spread against its rig's nominal
-spread), in `gs_experiment/results/FINDINGS.md` §34. This meaningfully
-narrows what the "realistic" framing in this item can currently claim —
-the mechanism is demonstrated on designed scenes, not yet on real
-geometry, and that gap is now characterized rather than assumed closed.
+ruled out, the measured result was `1.03x` directional-variance range,
+statistically indistinguishable from the position-only control's own
+`1.04x` — but see the correction below before treating this as "no
+directional signal on real geometry."
 
 **All three point-sample results (toy, lego, real bonsai capture) were
-re-checked with full per-pixel animated sweeps** rather than trusted as 5
-numbers per scene — `render_directional_uncertainty_sweep.py`, querying
+re-checked with full per-pixel animated sweeps**, not trusted as 5 numbers
+per scene — `render_directional_uncertainty_sweep.py`, querying
 directional BQ variance at every pixel using the real direction from that
 pixel's actual 3D point to the *current* frame's camera as the camera
 orbits. The toy scene's gradient is confirmed and shown to have real
-sub-structure the point samples missed. Both real-geometry nulls are
-confirmed, not contradicted, by the full sweep — but the real checkpoints'
-visibly poor reconstruction quality (visible in the RGB panel, not just
-inferred) surfaced a concrete confound the point samples didn't:
-`select_gradient_subset`'s fixed-count design means every real-scene
-condition tested so far (6-8 total views) is a severe absolute view-count
-shortage on real geometry, not a clean spread-only manipulation — plausibly
-enough on its own to explain uniformly-high uncertainty regardless of
-spread. The natural next real-scene test, not yet run: enough total views
-to reconstruct well (30-50), varying only their angular clustering, to
-isolate the spread variable the way the toy scene's construction actually
-did. Full account, all five GIFs, in `gs_experiment/results/FINDINGS.md`
-§36.
+sub-structure the point samples missed. The real-scene sweeps' own RGB
+panels showed heavy floater/artifact noise in every real checkpoint (both
+lego's 6-view and bonsai's 8-view conditions) — genuinely bad
+reconstructions, not just thin ones.
+
+**Correction, directly prompted by scrutiny of that same visual
+evidence**: "the effect does not transfer to real geometry" is the wrong
+conclusion to draw here. A BQ variance computed on splats that are
+themselves a bad fit to the real scene (floaters fitting noise, not real
+surfaces) isn't a trustworthy measurement of anything, including of
+"no directional effect" — that flat result is as consistent with "the
+input was too degraded to measure" as with a genuine null. **Both lego
+and bonsai's real-geometry results are downgraded from negative to
+inconclusive.** The self-occlusion hypothesis remains a plausible
+mechanism worth testing eventually, but the real, prerequisite gap is
+different: no real-scene attempt so far has used enough total views
+(likely 30-50+ per condition, not 6-8) to get a reconstruction good
+enough for its BQ numbers to mean anything, while still varying only
+angular *spread* between conditions — every attempt so far conflated "few
+total views" with "narrow spread" by holding a small view count fixed.
+Full account and the correction itself in `gs_experiment/results/
+FINDINGS.md` §36-37. **The real-geometry question is untested, not
+tested-and-negative** — this is the honest status to carry into any
+paper claim about this item.
 
 ### 9. SLAM / incremental-mapping integration
 
@@ -513,53 +512,54 @@ capture — even one scene — is the standard sanity check a reviewer will
 ask for before trusting that any of this survives real sensor noise, real
 calibration error, and real (non-uniform, non-turntable) view distributions.
 
-**First real photographed scene done — a real, diagnosed negative
-result, not a sanity-check pass.** `colmap_loader.py` reads COLMAP's
-binary pose format (a genuinely new capability — every prior scene had
-either hand-authored or dataset-provided exact poses, not an SfM
-estimate), verified by a unit test that round-trips a random pose through
-it and this project's own `opencv_viewmat_from_c2w` and confirms an exact
-match, not just that it runs. Applied to Mip-NeRF360 "bonsai" (real
-photographs, the actual kind of data GAVIS/PUP 3D-GS report numbers on)
-via `real_capture_gradient_experiment.py`, repeating the §33/§34
-view-coverage-gradient construction on real COLMAP-derived poses. Caught
-and fixed a real, scene-specific pitfall before trusting the result (world
+**First real photographed scene done — a real attempt, corrected from
+"negative" to "inconclusive" after direct scrutiny (see below).**
+`colmap_loader.py` reads COLMAP's binary pose format (a genuinely new
+capability — every prior scene had either hand-authored or dataset-
+provided exact poses, not an SfM estimate), verified by a unit test that
+round-trips a random pose through it and this project's own
+`opencv_viewmat_from_c2w` and confirms an exact match, not just that it
+runs. Applied to Mip-NeRF360 "bonsai" (real photographs, the actual kind
+of data GAVIS/PUP 3D-GS report numbers on) via
+`real_capture_gradient_experiment.py`, repeating the §33/§34 view-
+coverage-gradient construction on real COLMAP-derived poses. Caught and
+fixed a real, scene-specific pitfall before trusting the result (world
 origin, safe to assume as "near the object" for NeRF-Synthetic's
 convention, is not for a COLMAP reconstruction — checked directly:
 nearest real splat was ~0.8 units from the origin with almost no real
 neighbors in a reasonable window; fixed with a real, data-derived query
-point). With that fixed, the result replicates item 8's lego null on a
-harder, more externally valid test: `1.01x` directional-variance range,
-statistically indistinguishable from the position-only control's own
-`1.02x`. Two independent real/real-ish-geometry attempts now both null
-against one clean positive on designed, occlusion-free geometry — real
-support (not yet confirmed) for the self-occlusion decoupling hypothesis
-from item 8. Full account, including the exact honest sensor-noise/
-calibration-error caveat this item originally asked about (COLMAP
+point). With that fixed, the measured result was `1.01x` directional-
+variance range, statistically indistinguishable from the position-only
+control's own `1.02x`. Full account, including the exact honest sensor-
+noise/calibration-error caveat this item originally asked about (COLMAP
 distortion parameters are read but not applied — a real, acknowledged
 approximation), in `gs_experiment/results/FINDINGS.md` §35.
 
-**What's still needed**: this answers "does the directional-gradient
-claim survive real photographs" (no, not without further work) but not
-the item's other asks — full scene reconstruction quality on a real
-capture at a competitive splat budget, and the sparsity-correlation/
-calibration checks (items 4-6) have not yet been repeated on real
-captured data, only on synthetic scenes. The self-occlusion hypothesis
-itself also remains unconfirmed — the concrete next diagnostic from item
-8 (compare each splat's real attributed-observation spread against its
-camera rig's nominal spread) still applies here too, now with two real
-scenes available to run it on instead of one.
+**Correction (`gs_experiment/results/FINDINGS.md` §37), directly prompted
+by scrutiny of the visual sweep evidence in §36**: bonsai's reconstruction
+(8 real photos, `n_per_zone=8`) is genuinely poor — heavy floater/
+artifact noise, visible directly in the rendered RGB panel, not inferred.
+A BQ variance computed on splats that are themselves a bad fit to the
+real scene isn't a trustworthy measurement of anything, including of "no
+directional effect" — the flat result is as consistent with "the
+reconstruction was too degraded to measure" as with a genuine null.
+**Downgraded from negative to inconclusive**, matching the same
+correction applied to item 8's lego result. This answers neither "does
+the claim survive real photographs" nor its opposite — it answers "not
+with only 8 total views feeding the reconstruction," which is a
+narrower, more honest finding.
 
-Bonsai's null was also re-checked with a full per-pixel animated sweep
-(item 8, `gs_experiment/results/FINDINGS.md` §36), not just point
-samples: it shows real, richer spatial structure than lego's near-total
-saturation, but no visually obvious camera-coverage-tracking trend
-distinguishing the narrow and wide conditions — consistent with, not
-contradicting, the quantitative null. Also surfaced the same
-few-total-views confound found on lego (8 total real photos per
-condition), which item 8's next-step real-scene test (enough views to
-reconstruct well, spread-only variation) would resolve for this dataset
-too.
+**What's still needed**: a real test needs enough total views per
+condition (likely 30-50+, not 6-8) for the checkpoint itself to be a
+trustworthy reconstruction, while still varying only angular *spread*
+between conditions — not yet attempted on either lego or bonsai. Full
+scene reconstruction quality at a competitive splat budget, and the
+sparsity-correlation/calibration checks (items 4-6), also still haven't
+been repeated on real captured data, only on synthetic scenes. The self-
+occlusion hypothesis from item 8 remains a plausible mechanism for a
+*future*, properly-resourced real-geometry test to check — it is no
+longer supported by the lego/bonsai results, since those results no
+longer support any conclusion about the mechanism either way.
 
 ## Technical core (unchanged, now explicitly the unification derivation)
 
