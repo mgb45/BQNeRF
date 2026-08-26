@@ -409,6 +409,36 @@ prerequisite for any realistic candidate-scoring policy, though not yet
 the candidate-pool/sequential-retraining machinery items 8 itself still
 needs. Full account in `gs_experiment/results/FINDINGS.md` §33.
 
+**Tested on a real benchmark scene immediately after — the effect does
+not transfer, and a real, diagnosed reason why, not an unexplained
+null.** `real_directional_gradient_experiment.py` approximates the same
+gradient design on real lego camera poses (fixed by the dataset — 5
+equal-count, increasing-real-angular-spread subsets of the real 100-view
+pool, each trained into its own real checkpoint). Two candidate artifacts
+were checked and ruled out first: the initial near-flat result traced to
+the exact §28/§30 window-radius pitfall (the query window reached
+essentially zero real splats at these checkpoints' much lower density —
+fixed); and a concern that a real dataset simply can't offer as extreme
+an angular-spread manipulation as a purpose-built rig was checked and
+also ruled out (a tighter view-count-per-condition recovered a real
+13-150 deg range, comparable to §33's designed 8-180 deg one). With both
+ruled out, the result is a genuine null: `1.03x` directional-variance
+range, statistically indistinguishable from the position-only control's
+own `1.04x` range — no directional signal above the control's noise
+floor, where §33 showed one ~7x above it. Real, reasoned (not yet
+confirmed) hypothesis: §33's isolated, occlusion-free thin rods make
+camera-position spread and per-splat observed-direction spread the same
+thing by construction; real self-occlusion and locally-varying surface
+normals on an actual object decouple them, since `visibility_attribution`'s
+real geometric occlusion test — not an assignment rule — determines which
+selected cameras actually see any given splat, regardless of the rig's
+nominal spread. Full account, including the concrete next diagnostic (compare
+each splat's real attributed-observation spread against its rig's nominal
+spread), in `gs_experiment/results/FINDINGS.md` §34. This meaningfully
+narrows what the "realistic" framing in this item can currently claim —
+the mechanism is demonstrated on designed scenes, not yet on real
+geometry, and that gap is now characterized rather than assumed closed.
+
 ### 9. SLAM / incremental-mapping integration
 
 Motivated by the original design question that led to the directional

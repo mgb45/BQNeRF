@@ -1486,6 +1486,94 @@ a real NBV candidate-scoring policy would actually need). Also still a
 hand-built thin-rod scene, not a real captured/benchmark one — the same
 gap flagged throughout this project's real-data sections.
 
+## 34. The same gradient experiment on a real NeRF-Synthetic scene: the effect does not transfer, and a real, diagnosed reason why
+
+§33's designed 5-level coverage gradient (hand-built thin-rod clusters,
+purpose-built Blender camera arcs) gave a clean, strictly monotonic
+12.97x directional-variance range. The natural next question -- does the
+same effect show up on a real benchmark object, not a scene built to make
+it easy -- was tested directly rather than assumed to transfer. It does
+not, and the reason was chased down rather than left as an unexplained
+null result.
+
+**Construction (`real_directional_gradient_experiment.py`).** A real
+camera rig can't be redesigned for a real dataset -- lego's 100 real
+training poses are fixed. `prepare_nerf_synthetic.select_gradient_subset`
+approximates the same idea by subsampling the real pool into 5 conditions
+of *equal view count*, drawn from windows of increasing real angular
+spread around a shared reference view (holding count fixed the same way
+§33 held rod-cluster geometry fixed across zones). Each condition trains
+its own real gsplat checkpoint from that specific real 6-view subset of
+the same 100 real training photos. Directional and position-only BQ
+variance are queried at the same fixed point (world origin, NeRF-
+Synthetic's own object-centering convention) and the same fixed, real
+query direction (the real camera direction from the full 100-view pool
+most dissimilar to the reference view -- the same "opposite side"
+construction `differentiation_experiment.py`'s real-scene builder uses)
+across all 5 conditions.
+
+**First attempt: a clean-looking but degenerate null (window radius, not
+the underlying phenomenon).** Reusing lego's established
+`window_radius=0.08` gave an almost perfectly flat directional variance
+(1.00x range) -- but a direct check found *zero or one* splat within that
+radius of the query point (origin) in every single condition. These
+lighter, 6-15-view checkpoints have ~1,500-2,900 splats total (vs. the
+full wide checkpoint's 35,819), so `0.08` -- already shown in §28/§30 to
+need rescaling to a checkpoint's actual density -- was reaching essentially
+empty space, not real local geometry. The exact §28/§30 pitfall,
+recognized and checked before trusting the number, not reported as a
+finding.
+
+**Second attempt, correctly diagnosed: window radius fixed
+(`0.5`, confirmed hundreds of real neighbors reached), and a real
+achievable-spread-range concern also fixed and re-checked.** With the
+original `n_per_zone=15`, the tightest cluster of 15 real views achievable
+anywhere in lego's 100-view pool is already `37 deg` wide (real dataset
+density limit, not a construction bug -- checked directly: the 5 closest
+real views to any reference already span `13 deg`, but 15 do not fit in
+that a cone). Reducing to `n_per_zone=6` recovered a real range comparable
+to §33's designed one (`13.3 deg` to `150 deg`, ~11x, vs. §33's `8-180
+deg`, ~22.5x) -- ruling out "the real dataset just can't produce as
+extreme a manipulation" as the explanation before concluding anything.
+
+**With both confounds checked and ruled out, the result is a genuine,
+robust null**: directional variance is `0.885, 0.885, 0.885, 0.884,
+0.858` across the 5 conditions (13.3 deg -> 150 deg spread) -- a `1.03x`
+range, statistically indistinguishable in magnitude from the position-only
+*control*'s own `1.04x` range. Where §33 showed a directional signal
+~7x larger than its control's noise floor, this shows no directional
+signal standing out above the control at all. Plot in
+`gs_experiment/results/real_directional_gradient.png`.
+
+**A real, reasoned candidate explanation, stated as a hypothesis, not
+asserted as confirmed**: §33's thin-rod clusters are small, isolated, and
+nearly rotationally symmetric -- every camera in a zone's rig has an
+unoccluded view of the whole cluster, so camera-*position* spread and
+per-splat observed-*direction* spread are the same thing by construction.
+A real object like lego has genuine self-occlusion and locally-varying
+surface normals: a splat on one face can only ever be legitimately
+observed from a limited cone of angles regardless of how wide the overall
+camera rig spans, and `visibility_attribution`'s real geometric occlusion
+test (not an assignment rule) determines per-splat which of the selected
+cameras actually see it. A `150 deg`-wide camera-*position* rig may still
+only provide a much narrower *effective* observed-direction range for
+most individual splats than the rig's own spread suggests -- decoupling
+the manipulated variable (camera position spread) from what the
+directional kernel actually measures (per-splat observed-direction
+spread) in a way the toy scene's isolated, occlusion-free rods
+structurally could not. Not verified further here (would need comparing
+each splat's actual attributed-observation-direction spread against its
+camera rig's nominal spread, per condition) -- named as the concrete next
+diagnostic rather than left as a shrug.
+
+**Recorded plainly**: a clean, strong effect on a scene built to show it
+does not automatically transfer to a real object, even after ruling out
+two real candidate artifacts first. This is a genuine limit on the §33
+result's generality, not a contradiction of it -- and a substantive,
+reportable finding in its own right about what real self-occluding
+geometry does to the directional-uncertainty mechanism, worth exactly as
+much attention in any write-up as §33's positive result.
+
 ## Bottom line for real-benchmark validation
 
 Getting onto a real, standardized benchmark surfaced a real bug (RGBA

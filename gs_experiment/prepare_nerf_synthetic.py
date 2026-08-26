@@ -95,6 +95,36 @@ def select_narrow_subset(frames, n_narrow: int, reference_idx: int = 0) -> np.nd
     return order[:n_narrow]
 
 
+def select_gradient_subset(frames, n_per_zone: int, window_fraction: float, reference_idx: int = 0) -> np.ndarray:
+    """Generalizes `select_narrow_subset` from one fixed cluster to one
+    level of a coverage *gradient*, on a real dataset's fixed, pre-baked
+    camera poses (unlike `scene_spec.gradient_scene`, which can place
+    cameras anywhere -- a real benchmark's views are what they are).
+
+    Same real-3D-position cosine-similarity ranking as `select_narrow_
+    subset`, but rather than always taking the top `n_per_zone` most
+    similar views (which conflates "how many views" with "how spread
+    out"), this evenly subsamples `n_per_zone` views from a *window* of
+    the `window_fraction` most-similar views -- so view *count* is held
+    fixed across gradient levels (matching `gradient_scene`'s "hold
+    geometry/count equal, vary only angular spread" confound control) and
+    only the width of the window views are drawn from actually changes.
+    `window_fraction=1.0` draws from the entire pool (widest, most-spread
+    condition); a small `window_fraction` draws only from a tight cone
+    around the reference view (narrowest condition).
+    """
+    centers = np.array([c2w[:3, 3] for _, c2w in frames])
+    dirs = centers / np.linalg.norm(centers, axis=1, keepdims=True)
+    ref = dirs[reference_idx]
+    similarity = dirs @ ref
+    order = np.argsort(-similarity)
+
+    window_size = max(n_per_zone, int(round(window_fraction * len(frames))))
+    window = order[:window_size]
+    pick_positions = np.linspace(0, len(window) - 1, n_per_zone).round().astype(int)
+    return window[pick_positions]
+
+
 def write_condition(out_dir: str, camera_angle_x: float, frames, indices, condition_name: str, split_prefix: str):
     scene_dir = os.path.join(out_dir, condition_name)
     os.makedirs(scene_dir, exist_ok=True)
