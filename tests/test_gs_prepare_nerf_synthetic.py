@@ -1,6 +1,6 @@
 import numpy as np
 
-from gs_experiment.prepare_nerf_synthetic import select_gradient_subset
+from gs_experiment.prepare_nerf_synthetic import select_gap_subset, select_gradient_subset
 
 
 def _fake_frames_on_ring(n, radius=5.0):
@@ -38,6 +38,34 @@ def test_select_gradient_subset_narrow_window_stays_within_wide_windows_similari
     min_similarity_narrow = (dirs[idx_narrow] @ ref).min()
     min_similarity_wide = (dirs[idx_wide] @ ref).min()
     assert min_similarity_narrow > min_similarity_wide
+
+
+def test_select_gap_subset_zero_width_keeps_everything():
+    frames = _fake_frames_on_ring(100)
+    idx = select_gap_subset(frames, gap_half_width_deg=0.0)
+    assert len(idx) == 100
+
+
+def test_select_gap_subset_removes_only_views_within_the_gap():
+    frames = _fake_frames_on_ring(100)
+    centers = np.array([c2w[:3, 3] for _, c2w in frames])
+    dirs = centers / np.linalg.norm(centers, axis=1, keepdims=True)
+    ref = dirs[0]
+
+    idx = select_gap_subset(frames, gap_half_width_deg=30.0, reference_idx=0)
+    kept_angular_dist = np.degrees(np.arccos(np.clip(dirs[idx] @ ref, -1.0, 1.0)))
+    assert np.all(kept_angular_dist > 30.0)
+    # nothing outside the gap should have been dropped
+    all_angular_dist = np.degrees(np.arccos(np.clip(dirs @ ref, -1.0, 1.0)))
+    expected_kept = np.where(all_angular_dist > 30.0)[0]
+    assert set(idx.tolist()) == set(expected_kept.tolist())
+
+
+def test_select_gap_subset_wider_gap_removes_more_views():
+    frames = _fake_frames_on_ring(100)
+    idx_narrow_gap = select_gap_subset(frames, gap_half_width_deg=10.0)
+    idx_wide_gap = select_gap_subset(frames, gap_half_width_deg=60.0)
+    assert len(idx_wide_gap) < len(idx_narrow_gap) < 100
 
 
 def test_select_gradient_subset_window_fraction_one_spans_full_index_range():

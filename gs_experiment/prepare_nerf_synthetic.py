@@ -125,6 +125,30 @@ def select_gradient_subset(frames, n_per_zone: int, window_fraction: float, refe
     return window[pick_positions]
 
 
+def select_gap_subset(frames, gap_half_width_deg: float, reference_idx: int = 0) -> np.ndarray:
+    """A different confound control than `select_gradient_subset`: instead
+    of holding total view *count* fixed while thinning density everywhere
+    as the window widens (which was found to confound "spread" with
+    "overall reconstruction difficulty" -- held-out PSNR dropped with
+    spread even after a 2.5x training-budget increase, see FINDINGS.md
+    section 4's follow-up), this removes a single angular *gap* of
+    half-width `gap_half_width_deg` around the reference view's direction
+    and keeps every other view in the pool untouched. Density stays high
+    everywhere except inside the gap itself, so growing the gap shouldn't
+    move overall reconstruction quality much -- isolating the coverage-gap
+    manipulation instead of conflating it with global view thinning.
+    `gap_half_width_deg=0` keeps the full pool (baseline, no gap).
+    """
+    if gap_half_width_deg <= 0:
+        return np.arange(len(frames))
+    centers = np.array([c2w[:3, 3] for _, c2w in frames])
+    dirs = centers / np.linalg.norm(centers, axis=1, keepdims=True)
+    ref = dirs[reference_idx]
+    similarity = np.clip(dirs @ ref, -1.0, 1.0)
+    angular_dist_deg = np.degrees(np.arccos(similarity))
+    return np.where(angular_dist_deg > gap_half_width_deg)[0]
+
+
 def write_condition(out_dir: str, camera_angle_x: float, frames, indices, condition_name: str, split_prefix: str):
     scene_dir = os.path.join(out_dir, condition_name)
     os.makedirs(scene_dir, exist_ok=True)

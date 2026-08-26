@@ -38,37 +38,18 @@ a paper. Two concrete changes to how this project validates itself:
 
 Short list, in order.
 
-### 1. One clean, general tool, not a pile of one-off scripts
+### 1. Extend the gap-based directional design to a genuinely photographed scene
 
-`gs_experiment/` is ~40 scripts, many hardcoded to a specific scene/path
-from whatever question was being answered that day. Consolidate the
-actual reusable path — load any real `gsplat` checkpoint, compute BQ
-quadrature and directional variance, render it — into one general
-CLI/API (`LocalUncertaintyEngine` + `render_directional_uncertainty_sweep.py`
-are already most of the way there). Should work on an arbitrary
-checkpoint without per-scene tuning.
+The real-geometry directional question is now settled on real
+NeRF-Synthetic lego (see "what's already solid" below). The same
+properly-controlled design
+(`gap_directional_experiment.py`'s approach: remove a deliberate angular
+gap from a dense real view pool, leave everything else untouched) hasn't
+been run on the actual photographed Mip-NeRF360 "bonsai" scene yet — the
+natural next step if the result needs to hold on real photographs, not
+just a synthetic benchmark's clean renders.
 
-### 2. Make "reconstruction is good enough to trust" a gate, not a footnote
-
-`render_reconstruction.py` and the held-out-PSNR check already exist;
-wire them into the tool itself as a mandatory first step (refuse or
-loudly flag any uncertainty computation on a checkpoint that hasn't
-passed it), instead of a manual step that's easy to skip under time
-pressure — which is exactly how the bonsai/lego confounds happened.
-
-### 3. Settle the real-geometry directional question by rendering it well
-
-The open question from the old plan (does directional BQ variance track
-real viewing-angle coverage gaps on a real, well-reconstructed scene?)
-gets one more real attempt — full training budget, competitive quality,
-gated by item 2 — and the answer comes from watching
-`render_directional_uncertainty_sweep.py`'s output, not from a five-point
-correlation on an under-resourced checkpoint. If it looks right, that's
-the result. If it doesn't, render more views/angles to see where it
-breaks, rather than re-running the same small statistical test with
-different parameters.
-
-### 4. Keep kernel choice pluggable — it's a strength, not a loose end
+### 2. Keep kernel choice pluggable — it's a strength, not a loose end
 
 RBF vs. Matérn already showed a real trade-off (see `FINDINGS.md`): no
 universal winner, different kernels better for different things. That's
@@ -94,6 +75,14 @@ current goal.
 
 ## What's already solid (see FINDINGS.md for numbers)
 
+- **One clean, general tool, not a pile of one-off scripts.**
+  `render_directional_uncertainty_sweep.py` loads any real `gsplat`
+  checkpoint, computes both spatial (quadrature) and directional
+  (epistemic) BQ variance, and renders it — auto-framed from the
+  checkpoint's own splat extent, kernel family/bandwidth exposed as
+  parameters, and gated on a mandatory held-out-PSNR quality check before
+  computing anything (refuses, or `--force` to override). This is now
+  the primary way this project validates a new result.
 - The core math is proven, not just checked: BQ posterior mean = alpha
   compositing exactly, with a provable (not heuristic) error bound on the
   variance (`bq_splat/PROOF_alpha_compositing_equivalence.md`).
@@ -104,6 +93,13 @@ current goal.
   real checkpoint scale.
 - Training directly under the BQ likelihood (loss term, densification
   trigger) was tried and didn't help — a real negative result, kept.
-- The directional/coverage signal is confirmed on designed geometry
-  (`gradient_scene`) and open, not resolved, on real photographed
-  geometry — the specific question item 3 above re-attacks.
+- **The directional/coverage signal is confirmed on both designed
+  geometry (`gradient_scene`) and real geometry.** The first two real-
+  geometry attempts hit a genuine reconstruction-quality confound
+  (thinning view density everywhere as "spread" widened); redesigning the
+  manipulation as a deliberate angular gap carved out of an otherwise-
+  dense real view pool (`gap_directional_experiment.py`) removed it —
+  held-out PSNR stays tight across conditions while directional BQ
+  variance tracks gap width cleanly (`rho=1.000`, `6.95x` range vs. a
+  `1.34x` position-only control). Not yet run on a genuinely photographed
+  scene — see active item 1.

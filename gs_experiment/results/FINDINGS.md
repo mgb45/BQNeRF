@@ -120,53 +120,48 @@ trend) — confirming the effect is genuinely directional. A full per-pixel
 animated sweep (not just 5 point samples) confirms this visually, with
 real sub-structure the point samples missed. *(Archive §33, §36.)*
 
-**On real geometry — including a genuinely photographed scene — the
-question is honestly open, not resolved either way.** The same
-construction was tried on real lego (subsampling the real 100-view pool
-into equal-count, increasing-spread conditions) and on an actual
-photographed scene (Mip-NeRF360 "bonsai," 292 real photos, real
-COLMAP-estimated poses — the first scene in this project with poses
-themselves an SfM estimate, not known exactly). Two real, independently-
-checked artifacts were found and fixed along the way (a query-window/
-density mismatch; a query point that, unlike NeRF-Synthetic's convention,
-wasn't actually near the photographed object). But the first attempts on
-both scenes used only 6-8 total training views per condition — visibly
-poor reconstructions (heavy floater noise), on which a BQ variance number
-isn't a trustworthy measurement of anything, positive or negative. **That
-made the first "null" result on real geometry a wrong conclusion — it was
-corrected to "inconclusive."** A properly-resourced re-test on lego (30
-views/condition, real held-out PSNR checked *before* trusting any BQ
-number) gave meaningfully better reconstructions (train PSNR 25-27dB) but
-still-mediocre held-out PSNR (11-16dB) that itself **decreases as spread
-widens** — a real confound, since the view-selection method spreads a
-fixed count thinner as the window grows, so "wider spread" and "worse
-local density" move together in this construction rather than spread
-being cleanly isolated. With that confound flagged: no directional-
-specific signal above the position-only control (`1.05x` vs. `1.08x`) —
-**a real, moderately-well-grounded null, not yet a clean result either
-way.** The same properly-resourced re-test hasn't been run on the
-photographed bonsai scene yet. *(Archive §34, §35, §36, §37, §38 — §37
-specifically is the correction, worth reading if citing this result, and
-§38 is the current, most-trustworthy number.)*
-
-**Follow-up: the confound is structural, not a training-budget problem.**
-Retraining the widest-spread condition alone with 2.5x the iterations and
-1.6x the splat budget (15,000 iters, 40,000 max splats) reached a healthy
-27-30dB on its own training views throughout training, but held-out PSNR
-barely moved (15.3dB vs. the earlier 11.0dB at the smaller budget) --
-confirming the gap is sparse-view generalization, not undertraining: a
-fixed 30-view budget spread across a wide angular range leaves held-out
-views genuinely far from their nearest training view, and more training
-just fits the sparse set harder without closing that gap. Fixing this
-needs a different experimental design (more views specifically at the
-wide end, not more iterations) rather than more compute on the current
-one. Also found and fixed while re-checking this: a real bug where the
-held-out PSNR check composited against the wrong (near-black) background
-instead of NeRF-Synthetic's white -- caught because it made a genuinely
-good 100-view checkpoint measure 1.8dB instead of its real 27dB. Verified
-directly that this section's own PSNR numbers are unaffected (re-checked
-with the corrected background and got the same values), so they stand as
-reported.
+**On real geometry: works cleanly too, once the coverage manipulation
+is designed to not confound with overall reconstruction quality.** Two
+earlier attempts on real lego (subsampling the real 100-view pool into
+equal-count, increasing-spread conditions, `real_directional_gradient_
+experiment.py`) and on an actual photographed scene (Mip-NeRF360
+"bonsai," 292 real photos, real COLMAP-estimated poses) ran into a real,
+carefully-diagnosed confound: holding total view *count* fixed while
+widening the angular window they're drawn from also thins local view
+*density* everywhere, not just near the region being tested, so held-out
+PSNR degraded as spread widened for reasons unrelated to the directional
+signal being measured. This wasn't a training-budget artifact either —
+retraining the worst condition with 2.5x the iterations barely moved
+held-out PSNR (confirmed directly, see the archive), and a real
+background-compositing bug in the PSNR check itself was also found and
+fixed along the way (caught a good checkpoint measuring 1.8dB instead of
+its real 27dB). **The fix was a different experimental design, not more
+compute or more debugging of the old one:** `gap_directional_experiment.py`
+starts from the full real 100-view lego pool and removes a single
+deliberate angular gap around one query direction, leaving every other
+view in the pool untouched — so density stays high everywhere except
+inside the gap itself, and overall reconstruction quality shouldn't move
+much with gap size. Real held-out PSNR confirms the design works as
+intended: overall PSNR stays tight (18.5→18.2→18.1dB) across gap
+half-widths 0→15→30→50°, only softening at the most extreme 75° gap
+(16.0dB, expected — that condition drops almost half the training pool),
+while PSNR measured *only on eval views that actually fall inside each
+gap* is consistently and dramatically worse (8-10dB) than the overall
+number — direct evidence the manipulation creates a real, localized
+coverage problem rather than a global one. Against that properly-
+controlled design: **directional BQ variance tracks the gap size
+cleanly** — strictly monotonic across all 5 conditions (rank correlation
+`rho=1.000`), a `6.95x` range from no-gap to widest-gap, while a
+position-only control stays far flatter (`1.34x`) — a real, positive,
+honestly-earned result on real geometry, not just the earlier designed
+toy scene. A full per-pixel animated sweep on the widest-gap checkpoint
+visually confirms the gap region lighting up as the camera orbits through
+it (`gs_experiment/results/gap4_sweep.gif`). The same properly-controlled
+design hasn't been run on the photographed bonsai scene yet — the
+natural next step if this needs to hold on a genuinely photographed
+scene, not just NeRF-Synthetic. *(Archive §34, §35, §36, §37, §38 for the
+full confound-diagnosis history; the gap-based result above is the
+current, most-trustworthy number on real geometry.)*
 
 ## 5. What didn't work: training directly under the likelihood
 
@@ -276,8 +271,9 @@ code. Calibration in an absolute sense is not yet established (§2) —
 ranking-based uses (like pruning) are on firmer ground than literal
 confidence values. Kernel choice is a real trade-off, not a solved
 question (§3). The directional/viewing-angle-coverage half of the
-unification claim works cleanly on designed geometry but is honestly
-unresolved on real geometry (§4), including one genuine negative result
+unification claim works cleanly on designed geometry, and — after
+diagnosing and designing out a real reconstruction-quality confound —
+now also on real geometry (§4), including one genuine negative result
 along the way (§5) and one real methodological lesson that generalizes
 across most of the above (§6). See `ARCHIVE_FULL_LOG.md` for the complete
 process, including everything that didn't make this summary.
