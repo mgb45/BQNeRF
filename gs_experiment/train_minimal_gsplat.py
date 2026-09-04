@@ -127,6 +127,46 @@ def make_optimizer(params: dict) -> torch.optim.Optimizer:
     return torch.optim.Adam([{"params": [params[name]], "lr": lr, "name": name} for name, lr in LR_BY_NAME.items()])
 
 
+def _update_position_lr(optimizer: torch.optim.Optimizer, lr_init: float, lr_final: float, step: int, max_steps: int):
+    """Exponential decay of the position learning rate from lr_init to lr_final."""
+    t = step / max(max_steps - 1, 1)
+    lr = lr_init * (lr_final / lr_init) ** t
+    for group in optimizer.param_groups:
+        if group.get("name") == "positions":
+            group["lr"] = lr
+            break
+
+
+def _ssim(pred: torch.Tensor, gt: torch.Tensor, window_size: int = 11) -> torch.Tensor:
+    """Single-scale SSIM computed with a Gaussian window. Pure PyTorch, no extra deps.
+    Both pred and gt are (H, W, 3) float32 in [0, 1]."""
+    import torch.nn.functional as F
+
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    coords = torch.arange(window_size, dtype=torch.float32, device=pred.device) - window_size // 2
+    g = torch.exp(-0.5 * (coords / 1.5) ** 2)
+    g = g / g.sum()
+    window = (g.unsqueeze(1) * g.unsqueeze(0)).unsqueeze(0).unsqueeze(0)  # (1,1,w,w)
+    window = window.expand(3, 1, -1, -1)
+
+    p = pred.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
+    t = gt.permute(2, 0, 1).unsqueeze(0)
+    pad = window_size // 2
+
+    mu1 = F.conv2d(p, window, padding=pad, groups=3)
+    mu2 = F.conv2d(t, window, padding=pad, groups=3)
+    mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+
+    sigma1_sq = F.conv2d(p * p, window, padding=pad, groups=3) - mu1_sq
+    sigma2_sq = F.conv2d(t * t, window, padding=pad, groups=3) - mu2_sq
+    sigma12 = F.conv2d(p * t, window, padding=pad, groups=3) - mu1_mu2
+
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
+        (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    )
+    return ssim_map.mean()
+
+
 def _splat_positions_and_colors(params: dict):
     """Detached numpy snapshot of current splat state, in the (positions,
     scalar-color) form LocalUncertaintyEngine needs -- shared by both
@@ -379,7 +419,7 @@ def train(
     out_path: str,
     n_splats: int = 4000,
     bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)),
-    sh_degree: int = 1,
+    sh_degree: int = 3,
     n_iters: int = 2500,
     seed: int = 0,
     log_every: int = 250,
@@ -405,6 +445,8 @@ def train(
     nll_alpha_threshold: float = 0.5,
     nll_variance_floor: float = 1e-8,
     bq_densify_min_opacity: float = 0.0,
+    ssim_weight: float = 0.2,
+    position_lr_final: Optional[float] = None,
 ):
     """`densify`, off by default for backward compatibility with existing
     callers/results: turns on gradient-based clone/split + opacity
@@ -466,6 +508,19 @@ def train(
       `sigma=0.05`/`window_radius=0.08` used elsewhere in
       `gs_experiment/` -- pick values matching the actual scene's spatial
       scale, not these defaults blindly, for a different scene family.
+
+    `ssim_weight` (default 0.2): weight of the SSIM term in the loss,
+    following the standard 3DGS formulation `(1-w)*L1 + w*(1-SSIM)`.
+    The MSE term is dropped when SSIM is enabled (both measure
+    pixel-level discrepancy; SSIM is strictly more informative).
+    Set to 0 to recover the old L1+MSE loss.
+
+    `position_lr_final` (default None = no decay): when set, exponentially
+    decays the position learning rate from `LR_BY_NAME["positions"]`
+    (the initial value, 2e-3) down to this value over `n_iters`. This is
+    the single biggest quality fix vs. the original flat-LR trainer:
+    production 3DGS uses ~1e-5 to 1e-6 as the final value. Set to e.g.
+    `2e-5` for a 100x decay, matching common practice.
     """
     import gsplat  # deferred: only needed here, keeps ply_io/loader torch-free
 
@@ -536,6 +591,9 @@ def train(
             # backward().
             meta["means2d"].retain_grad()
 
+        if position_lr_final is not None:
+            _update_position_lr(optimizer, LR_BY_NAME["positions"], position_lr_final, it, n_iters)
+
         # opacity sparsity pressure: with no densify/prune step, splats
         # that never earn real photometric gradient (e.g. randomly
         # initialized far from anything the cameras actually see) would
@@ -550,11 +608,12 @@ def train(
         # their initial ~0.27 opacity, scattered across the whole
         # bounding volume, dominating local-neighborhood statistics in
         # regions with no real geometry).
-        loss = (
-            torch.nn.functional.l1_loss(pred, gt)
-            + torch.nn.functional.mse_loss(pred, gt)
-            + opacity_reg_weight * opacities.mean()
-        )
+        l1 = torch.nn.functional.l1_loss(pred, gt)
+        if ssim_weight > 0:
+            photo_loss = (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - _ssim(pred, gt))
+        else:
+            photo_loss = l1 + torch.nn.functional.mse_loss(pred, gt)
+        loss = photo_loss + opacity_reg_weight * opacities.mean()
 
         nll_term = None
         if nll_weight > 0 and it % nll_interval == 0 and it > 0:
@@ -782,7 +841,7 @@ def main():
     parser.add_argument("scene_dir", help="directory with transforms.json + images/ (gs_experiment.blender_render output)")
     parser.add_argument("out_path", help="output .ply path")
     parser.add_argument("--n-splats", type=int, default=4000)
-    parser.add_argument("--sh-degree", type=int, default=1)
+    parser.add_argument("--sh-degree", type=int, default=3)
     parser.add_argument("--n-iters", type=int, default=2500)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
@@ -803,6 +862,9 @@ def main():
     parser.add_argument("--nll-interval", type=int, default=100)
     parser.add_argument("--nll-grid-res", type=int, default=12)
     parser.add_argument("--bq-densify-min-opacity", type=float, default=0.0)
+    parser.add_argument("--ssim-weight", type=float, default=0.2, help="weight of (1-SSIM) term; 0 = old L1+MSE loss")
+    parser.add_argument("--position-lr-final", type=float, default=None,
+                        help="final position LR for exponential decay (e.g. 2e-5); None = flat LR")
     args = parser.parse_args()
 
     train(
@@ -830,6 +892,8 @@ def main():
         nll_interval=args.nll_interval,
         nll_grid_res=args.nll_grid_res,
         bq_densify_min_opacity=args.bq_densify_min_opacity,
+        ssim_weight=args.ssim_weight,
+        position_lr_final=args.position_lr_final,
     )
 
 
