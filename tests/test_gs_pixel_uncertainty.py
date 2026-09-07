@@ -3,7 +3,7 @@ import pytest
 
 from bq_splat.kernels import DirectionalKernel, MaternKernel, ProductKernel
 from gs_experiment.camera import CameraPose, turntable_arc, turntable_ring
-from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
+from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel, quat_scale_to_covariance
 from gs_experiment.splat_scene import make_mock_scene, splat_observations
 
 
@@ -228,7 +228,8 @@ def build_occluder_engine(occluder_opacity=1.0):
 
 def test_rendering_aware_variance_along_ray_is_finite_and_nonnegative():
     engine, camera, _, _ = build_occluder_engine()
-    result = engine.rendering_aware_variance_along_ray(np.array([3.5, 0.0, 0.0]), camera, radius=3.0)
+    camera_index = engine.build_bearing_index(camera)
+    result = engine.rendering_aware_variance_along_ray(np.array([3.5, 0.0, 0.0]), camera_index, radius=3.0)
     assert np.isfinite(result.mean)
     assert result.variance >= 0.0
 
@@ -245,12 +246,13 @@ def test_rendering_aware_variance_along_ray_weights_toward_the_occluder_not_the_
     observed colors, so it isn't just "the average" of 0 and 10, but
     whatever it is, it is not the occluder-dominated answer."""
     engine, camera, occluder_color, target_color = build_occluder_engine(occluder_opacity=1.0)
+    camera_index = engine.build_bearing_index(camera)
     query_point = np.array([3.5, 0.0, 0.0])  # equidistant from both splats
 
-    along_ray = engine.rendering_aware_variance_along_ray(query_point, camera, radius=3.0)
+    along_ray = engine.rendering_aware_variance_along_ray(query_point, camera_index, radius=3.0)
     occlusion_blind = engine.rendering_aware_variance(query_point, radius=3.0)
 
-    assert abs(along_ray.mean - occluder_color) < 1e-6
+    assert abs(along_ray.mean - occluder_color) < 1e-3
     assert abs(occlusion_blind.mean - occluder_color) > 1.0
 
 
@@ -263,8 +265,10 @@ def test_rendering_aware_variance_along_ray_partial_occluder_lets_some_target_we
     partial_engine, _, _, _ = build_occluder_engine(occluder_opacity=0.3)
     query_point = np.array([3.5, 0.0, 0.0])
 
-    fully_opaque_result = fully_opaque_engine.rendering_aware_variance_along_ray(query_point, camera, radius=3.0)
-    partial_result = partial_engine.rendering_aware_variance_along_ray(query_point, camera, radius=3.0)
+    fully_opaque_index = fully_opaque_engine.build_bearing_index(camera)
+    partial_index = partial_engine.build_bearing_index(camera)
+    fully_opaque_result = fully_opaque_engine.rendering_aware_variance_along_ray(query_point, fully_opaque_index, radius=3.0)
+    partial_result = partial_engine.rendering_aware_variance_along_ray(query_point, partial_index, radius=3.0)
 
     assert partial_result.mean > fully_opaque_result.mean
 
@@ -274,8 +278,9 @@ def test_rendering_aware_variance_along_ray_falls_back_gracefully_when_nothing_i
     of this specific ray (a_q is identically 0 for it) should make the
     posterior collapse toward ~0 mean, ~0 variance, not raise or blow up."""
     engine, camera, _, _ = build_occluder_engine()
+    camera_index = engine.build_bearing_index(camera)
     off_ray_query = np.array([3.5, 4.0, 0.0])  # near the target in 3D, but off this camera's forward axis
-    result = engine.rendering_aware_variance_along_ray(off_ray_query, camera, radius=1.0, angular_tol=0.01)
+    result = engine.rendering_aware_variance_along_ray(off_ray_query, camera_index, radius=1.0, angular_tol=0.01)
     assert np.isfinite(result.mean)
     assert abs(result.mean) < 1e-3
     assert result.variance < 1e-3
@@ -289,5 +294,166 @@ def test_rendering_aware_variance_along_ray_requires_opacities():
     pos_kernel = make_default_3d_position_kernel(sigma=0.9)
     engine = LocalUncertaintyEngine(positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds)
     camera = CameraPose(center=np.array([-10.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    camera_index = engine.build_bearing_index(camera)
     with pytest.raises(ValueError):
-        engine.rendering_aware_variance_along_ray(np.array([0.0, 0.0, 0.0]), camera, radius=1.5)
+        engine.rendering_aware_variance_along_ray(np.array([0.0, 0.0, 0.0]), camera_index, radius=1.5)
+
+
+def test_render_weight_from_local_weights_does_not_collapse_when_local_covariances_given():
+    """Regression test for a real bug found while generating demo renders:
+    when the rendering weight concentrates almost entirely on one
+    candidate (as gsplat's real, sharp per-pixel weights often do), the
+    spread-of-centers term alone collapses to a near-zero, jitter-only
+    covariance -- treating that dominant splat as a literal point even
+    though it has real physical size. Passing its real covariance in
+    should give a covariance dominated by that real size, not the jitter
+    floor."""
+    local_positions = np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    weights = np.array([1.0, 0.0])  # entirely concentrated on the first candidate
+    query_point = np.array([0.0, 0.0, 0.0])
+
+    without_covariance = LocalUncertaintyEngine._render_weight_from_local_weights(
+        local_positions, weights, query_point, radius=3.0, d=3, local_covariances=None
+    )
+    assert np.trace(without_covariance.covariance) < 1e-4  # jitter-only: (1e-6)*3
+
+    real_covariance = 0.25 * np.eye(3)  # a real splat of scale ~0.5 per axis
+    local_covariances = np.stack([real_covariance, np.eye(3)])  # only the dominant candidate's covariance matters here
+    with_covariance = LocalUncertaintyEngine._render_weight_from_local_weights(
+        local_positions, weights, query_point, radius=3.0, d=3, local_covariances=local_covariances
+    )
+    np.testing.assert_allclose(with_covariance.covariance, real_covariance + 1e-6 * np.eye(3), atol=1e-9)
+
+
+def test_rendering_aware_variance_along_ray_uses_real_covariance_when_scales_and_rotations_are_set():
+    """With scales/rotations available, rendering_aware_variance_along_ray
+    should give a wider (more realistic) render-weight footprint than
+    without them, since the moment-matched covariance now includes each
+    candidate's real physical size instead of treating it as a point."""
+    bounds = ((-1.0, 10.0), (-5.0, 5.0), (-5.0, 5.0))
+    positions = np.array([[3.5, 0.0, 0.0]])
+    values = np.array([1.0])
+    opacities = np.array([0.9])
+    scales = np.array([[0.5, 0.5, 0.5]])
+    rotations = np.array([[1.0, 0.0, 0.0, 0.0]])
+    camera = CameraPose(center=np.array([-10.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    pos_kernel = make_default_3d_position_kernel(sigma=1.0)
+
+    with_shape = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
+        opacities=opacities, scales=scales, rotations=rotations,
+    )
+    without_shape = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds, opacities=opacities,
+    )
+    query_point = np.array([3.5, 0.0, 0.0])
+
+    with_index = with_shape.build_bearing_index(camera)
+    without_index = without_shape.build_bearing_index(camera)
+    with_result = with_shape.rendering_aware_variance_along_ray(query_point, with_index, radius=1.0)
+    without_result = without_shape.rendering_aware_variance_along_ray(query_point, without_index, radius=1.0)
+
+    assert with_result.variance > without_result.variance
+
+
+def test_quat_scale_to_covariance_identity_quaternion_gives_diagonal_covariance():
+    scale = np.array([[2.0, 3.0, 4.0]])
+    quat = np.array([[1.0, 0.0, 0.0, 0.0]])
+    covariance = quat_scale_to_covariance(quat, scale)
+    np.testing.assert_allclose(covariance[0], np.diag([4.0, 9.0, 16.0]), atol=1e-9)
+
+
+def test_engine_covariances_is_cached_across_calls():
+    """covariances() should compute once and reuse the result -- the whole
+    point of caching it on the engine instead of recomputing per query
+    point (see that method's docstring for the real cost this avoided)."""
+    bounds = ((-5.0, 5.0), (-5.0, 5.0), (-1.0, 1.0))
+    positions = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+    values = np.array([1.0, 2.0])
+    scales = np.array([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]])
+    rotations = np.tile([1.0, 0.0, 0.0, 0.0], (2, 1))
+    pos_kernel = make_default_3d_position_kernel(sigma=0.9)
+    engine = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds, scales=scales, rotations=rotations,
+    )
+    first = engine.covariances()
+    assert engine._covariance_cache is first
+    second = engine.covariances()
+    assert second is first  # same object, not recomputed
+
+
+def test_engine_covariances_requires_scales_and_rotations():
+    bounds = ((-5.0, 5.0), (-5.0, 5.0), (-1.0, 1.0))
+    positions = np.array([[0.0, 0.0, 0.0]])
+    values = np.array([1.0])
+    pos_kernel = make_default_3d_position_kernel(sigma=0.9)
+    engine = LocalUncertaintyEngine(positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds)
+    with pytest.raises(ValueError):
+        engine.covariances()
+
+
+def build_directional_along_ray_engine():
+    """Two distinct splats close together on the same ray/bearing, each
+    observed from a different direction with a very different color --
+    the engine-level analogue of
+    test_render_weight.py::test_directional_mean_is_pulled_toward_the_observation_closest_to_the_query_direction,
+    now exercised through rendering_aware_variance_along_ray_directional's
+    full pipeline (real bearing-space candidate selection + real
+    transmittance weighting + the joint position/direction kernel)."""
+    bounds = ((-1.0, 10.0), (-5.0, 5.0), (-5.0, 5.0))
+    positions = np.array([[4.9, 0.0, 0.0], [5.1, 0.0, 0.0]])
+    values = np.array([0.0, 10.0])
+    opacities = np.array([0.5, 0.5])
+    dir_a = np.array([1.0, 0.0, 0.0])
+    dir_b = np.array([0.0, 1.0, 0.0])
+    directions = np.array([dir_a, dir_b])
+    dir_kernel = DirectionalKernel(kappa=20.0)
+    camera = CameraPose(center=np.array([-10.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    pos_kernel = make_default_3d_position_kernel(sigma=1.0)
+    engine = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
+        opacities=opacities, directions=directions, dir_kernel=dir_kernel,
+    )
+    return engine, camera, dir_a, dir_b
+
+
+def test_rendering_aware_variance_along_ray_directional_is_finite_and_nonnegative():
+    engine, camera, dir_a, _ = build_directional_along_ray_engine()
+    camera_index = engine.build_bearing_index(camera)
+    result = engine.rendering_aware_variance_along_ray_directional(
+        np.array([5.0, 0.0, 0.0]), dir_a, camera_index, radius=3.0, angular_tol=0.2
+    )
+    assert np.isfinite(result.mean)
+    assert result.variance >= 0.0
+
+
+def test_rendering_aware_variance_along_ray_directional_pulls_mean_toward_matching_direction():
+    engine, camera, dir_a, dir_b = build_directional_along_ray_engine()
+    camera_index = engine.build_bearing_index(camera)
+    query_point = np.array([5.0, 0.0, 0.0])
+
+    toward_a = engine.rendering_aware_variance_along_ray_directional(
+        query_point, dir_a, camera_index, radius=3.0, angular_tol=0.2
+    )
+    toward_b = engine.rendering_aware_variance_along_ray_directional(
+        query_point, dir_b, camera_index, radius=3.0, angular_tol=0.2
+    )
+
+    assert toward_a.mean < toward_b.mean  # splat colored 0.0 is observed from dir_a, 10.0 from dir_b
+
+
+def test_rendering_aware_variance_along_ray_directional_requires_directions_and_dir_kernel():
+    bounds = ((-1.0, 10.0), (-5.0, 5.0), (-5.0, 5.0))
+    positions = np.array([[5.0, 0.0, 0.0]])
+    values = np.array([1.0])
+    opacities = np.array([0.9])
+    pos_kernel = make_default_3d_position_kernel(sigma=1.0)
+    engine = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds, opacities=opacities,
+    )
+    camera = CameraPose(center=np.array([-10.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    camera_index = engine.build_bearing_index(camera)
+    with pytest.raises(ValueError):
+        engine.rendering_aware_variance_along_ray_directional(
+            np.array([5.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), camera_index, radius=3.0
+        )

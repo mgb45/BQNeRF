@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
+from scipy import integrate
 
-from bq_splat.kernels import MaternKernel, ProductKernel, RBFKernel
+from bq_splat.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
 from bq_splat.quadrature import (
     bayesian_quadrature_nd,
     bayesian_quadrature_rendering_aware,
+    bayesian_quadrature_rendering_aware_directional,
     numerical_rendering_moment_vector,
     numerical_rendering_prior_variance,
     renderer_centered_residual_variance,
@@ -22,6 +24,37 @@ def test_render_weight_peaks_at_amplitude_at_its_own_center():
 def test_render_weight_decays_away_from_center():
     w = GaussianRenderWeight(amplitude=1.0, center=[0.0], covariance=[[0.05]])
     assert w(np.array([[3.0]]))[0] < 1e-10
+
+
+def test_total_mass_matches_numerical_integration():
+    w = GaussianRenderWeight(amplitude=0.8, center=[1.0, -0.5], covariance=np.diag([0.2, 0.4]))
+
+    numerical, _ = integrate.dblquad(
+        lambda y, x: float(w(np.array([[x, y]]))[0]), -10, 12, -11, 9,
+    )
+    assert abs(w.total_mass - numerical) / numerical < 1e-6
+
+
+def test_from_total_mass_round_trips_the_requested_mass_regardless_of_footprint_scale():
+    """The whole point of from_total_mass: pin total_mass to a fixed,
+    physically meaningful value while covariance's *volume* varies wildly
+    (a real splat footprint vs. a coarse window) -- total_mass must come
+    out exactly right either way, unlike fixing amplitude directly (see
+    this module's docstring: that lets total_mass vanish for a tiny
+    footprint even at fixed amplitude)."""
+    for covariance in [1e-8 * np.eye(3), 1e-2 * np.eye(3), 5.0 * np.eye(3)]:
+        w = GaussianRenderWeight.from_total_mass(total_mass=0.42, center=[0.0, 0.0, 0.0], covariance=covariance)
+        assert abs(w.total_mass - 0.42) / 0.42 < 1e-9
+
+
+def test_from_total_mass_tiny_footprint_no_longer_vanishes():
+    """Direct regression check for the real bug this fixes: amplitude=1.0
+    (a real opacity) with a real, tiny splat covariance used to give a
+    total_mass around 1e-100 in practice -- from_total_mass keeps it
+    exactly at the requested, physically bounded value instead."""
+    tiny_covariance = (0.02**2) * np.eye(3)  # a real splat's actual scale
+    w = GaussianRenderWeight.from_total_mass(total_mass=0.9, center=[0.0, 0.0, 0.0], covariance=tiny_covariance)
+    assert abs(w.total_mass - 0.9) < 1e-9
 
 
 def test_closed_form_moment_vector_matches_numerical_1d():
@@ -222,3 +255,95 @@ def test_numerical_mode_requires_base_kernel_and_domain():
     w = GaussianRenderWeight(amplitude=1.0, center=[0.0], covariance=[[0.1]])
     with pytest.raises(ValueError):
         bayesian_quadrature_rendering_aware(np.array([[0.0]]), np.array([1.0]), w, mode="numerical")
+
+
+def test_directional_reduces_to_spatial_only_when_dir_kernel_is_kappa_zero():
+    """kappa=0 makes dir_kernel.k(d, d') = exp(0*(dot-1)) = 1 for every pair
+    of directions -- every direction is treated as perfectly correlated
+    with every other -- which should make
+    bayesian_quadrature_rendering_aware_directional collapse to exactly
+    bayesian_quadrature_rendering_aware's own (direction-free) result,
+    since K and z each pick up a factor of 1 everywhere."""
+    w = GaussianRenderWeight(amplitude=0.8, center=[1.0], covariance=[[0.2]])
+    sigma_rbf = 0.3
+    positions = np.array([[0.6], [1.0], [1.5]])
+    values = np.array([0.4, 0.9, 0.5])
+    directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])  # arbitrary, unrelated directions
+    query_direction = np.array([1.0, 1.0, 1.0]) / np.sqrt(3)
+
+    dir_kernel = DirectionalKernel(kappa=0.0)
+    directional = bayesian_quadrature_rendering_aware_directional(
+        positions, directions, values, w, dir_kernel, query_direction, sigma_rbf=sigma_rbf
+    )
+    spatial_only = bayesian_quadrature_rendering_aware(positions, values, w, sigma_rbf=sigma_rbf)
+
+    assert abs(directional.mean - spatial_only.mean) < 1e-9
+    assert abs(directional.variance - spatial_only.variance) < 1e-9
+
+
+def test_directional_prior_variance_matches_spatial_only_prior_variance():
+    """z_{q,0} should be exactly the spatial-only prior variance regardless
+    of dir_kernel/query_direction (self-similarity k_dir(d,d) == 1 always)
+    -- checked here via the n=0 fallback, where mean/variance reduce to
+    (0, z_{q,0}) directly."""
+    w = GaussianRenderWeight(amplitude=0.5, center=[0.0], covariance=[[0.3]])
+    sigma_rbf = 0.4
+    dir_kernel = DirectionalKernel(kappa=4.0)
+    query_direction = np.array([0.0, 0.0, 1.0])
+
+    result = bayesian_quadrature_rendering_aware_directional(
+        np.empty((0, 1)), np.empty((0, 3)), np.empty(0), w, dir_kernel, query_direction, sigma_rbf=sigma_rbf
+    )
+    assert result.mean == 0.0
+    assert abs(result.variance - rendering_aware_prior_variance(w, sigma_rbf)) < 1e-12
+
+
+def test_directional_mean_is_pulled_toward_the_observation_closest_to_the_query_direction():
+    """Two observations at the *same* position (so the spatial term alone
+    can't distinguish them) but different directions and very different
+    colors -- kappa large enough to sharply distinguish directions should
+    pull the mean toward whichever observation's direction matches the
+    query direction, exactly the classic directional-kernel behavior
+    (bayesian_quadrature_directional's own tests), now reproduced through
+    the rendering-aware a_q instead of a box kernel."""
+    w = GaussianRenderWeight(amplitude=1.0, center=[1.0], covariance=[[0.3]])
+    sigma_rbf = 0.4
+    positions = np.array([[1.0], [1.0]])
+    values = np.array([0.0, 10.0])
+    dir_a = np.array([1.0, 0.0, 0.0])
+    dir_b = np.array([0.0, 1.0, 0.0])
+    directions = np.array([dir_a, dir_b])
+    dir_kernel = DirectionalKernel(kappa=20.0)
+
+    toward_a = bayesian_quadrature_rendering_aware_directional(
+        positions, directions, values, w, dir_kernel, dir_a, sigma_rbf=sigma_rbf
+    )
+    toward_b = bayesian_quadrature_rendering_aware_directional(
+        positions, directions, values, w, dir_kernel, dir_b, sigma_rbf=sigma_rbf
+    )
+
+    assert toward_a.mean < toward_b.mean
+    assert abs(toward_a.mean - values[0]) < abs(toward_a.mean - values[1])
+    assert abs(toward_b.mean - values[1]) < abs(toward_b.mean - values[0])
+
+
+def test_directional_numerical_mode_matches_closed_form_mode():
+    w = GaussianRenderWeight(amplitude=0.7, center=[1.0], covariance=[[0.1]])
+    sigma_rbf = 0.3
+    positions = np.array([[0.8], [1.0], [1.3]])
+    values = np.array([0.5, 0.9, 0.4])
+    directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0] / np.sqrt(2)])
+    dir_kernel = DirectionalKernel(kappa=3.0)
+    query_direction = np.array([1.0, 0.0, 0.0])
+    base = ProductKernel([RBFKernel(sigma_rbf)])
+    domain = [(-9.0, 11.0)]
+
+    closed = bayesian_quadrature_rendering_aware_directional(
+        positions, directions, values, w, dir_kernel, query_direction, sigma_rbf=sigma_rbf, mode="closed_form"
+    )
+    numerical = bayesian_quadrature_rendering_aware_directional(
+        positions, directions, values, w, dir_kernel, query_direction, base_kernel=base, domain=domain, mode="numerical"
+    )
+
+    assert abs(closed.mean - numerical.mean) < 1e-4
+    assert abs(closed.variance - numerical.variance) < 1e-4

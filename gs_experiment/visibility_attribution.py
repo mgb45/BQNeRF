@@ -30,6 +30,9 @@ All of the above are pure numpy/scipy, no torch/gsplat dependency.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Optional
+
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -148,6 +151,60 @@ def ray_transmittance_weights(
         weights[i] = transmittance * alpha
         transmittance *= 1.0 - alpha
     return weights
+
+
+@dataclass
+class CameraSplatIndex:
+    """A real per-camera bearing/depth index over an entire scene's
+    splats, built once and reused for many per-pixel
+    `LocalUncertaintyEngine.rendering_aware_variance_along_ray` queries
+    against the same camera.
+
+    Replaces gathering candidates via a 3D-world-space ball query
+    (`LocalUncertaintyEngine.local_neighbors`) before handing them to
+    `ray_transmittance_weights`: on a real, densely-packed checkpoint, a
+    generously-sized 3D radius can return a large fraction of the *entire*
+    scene (confirmed directly: ~half of 300k splats within a 1.6-unit
+    radius on a real NeRF-Synthetic checkpoint), and `local_neighbors`
+    then keeps only `max_neighbors` of those *uniformly at random* --
+    almost never the splat that's actually relevant to a given pixel,
+    since relevance to one ray is about angular/depth alignment, not raw
+    3D Euclidean distance. Indexing by real bearing instead (this class)
+    and ranking any overflow by bearing distance (not randomly) fixes
+    both the correctness gap and the near-total candidate waste.
+    """
+
+    indices: np.ndarray  # into the original positions/opacities arrays -- in front of the camera only
+    bearings: np.ndarray  # (M, 2)
+    depths: np.ndarray  # (M,)
+    camera: CameraPose
+    _tree: Optional[cKDTree] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        self._tree = cKDTree(self.bearings) if len(self.indices) > 0 else None
+
+    @classmethod
+    def build(cls, positions: np.ndarray, camera: CameraPose) -> "CameraSplatIndex":
+        bearing_x, bearing_y, depth = project_to_camera_local(positions, camera)
+        valid = (depth > 0) & ~np.isnan(bearing_x)
+        idx = np.where(valid)[0]
+        return cls(indices=idx, bearings=np.stack([bearing_x[idx], bearing_y[idx]], axis=1), depths=depth[idx], camera=camera)
+
+    def query(self, reference_bearing, angular_tol: float, max_candidates: Optional[int] = None) -> np.ndarray:
+        """Indices (into the original positions/opacities arrays) of
+        splats within `angular_tol` of `reference_bearing`. If more than
+        `max_candidates` qualify, keeps the ones *nearest in bearing* --
+        a real relevance ranking, not a random, potentially-irrelevant
+        subsample."""
+        if self._tree is None:
+            return np.empty(0, dtype=int)
+        local = np.array(self._tree.query_ball_point(reference_bearing, angular_tol), dtype=int)
+        if local.size == 0:
+            return np.empty(0, dtype=int)
+        if max_candidates is not None and local.size > max_candidates:
+            dists = np.linalg.norm(self.bearings[local] - np.asarray(reference_bearing), axis=1)
+            local = local[np.argsort(dists)[:max_candidates]]
+        return self.indices[local]
 
 
 def attribute_observations(positions: np.ndarray, cameras: list, fov_deg: float = 60.0, angular_tol: float = 0.05, depth_margin: float = 0.05):

@@ -171,6 +171,85 @@ gsplat's CUDA kernels — a real, previously-undocumented-here reproduction
 of that exact "unsupported GNU version" gotcha was hit and resolved while
 building this.
 
+**A real bug found and fixed while generating demo renders against actual
+300k-splat checkpoints** (`chair`/`drums`/`hotdog`_prepared, held-out
+`eval` views): `_render_weight_from_local_weights`'s moment-matching
+treated every candidate splat as a literal point (spread of weighted
+centers only), which is a fine approximation when weight mass spreads
+across many comparable candidates, but collapses to a near-zero,
+jitter-only covariance whenever the real weights concentrate almost
+entirely on one dominant splat — confirmed happening in practice for
+`rendering_aware_variance_via_gsplat`'s real, much sharper per-pixel
+weights (posterior variance as small as `1e-105` in one real query).
+Fixed via standard Gaussian-mixture moment matching: covariance =
+spread-of-centers **+** the weighted average of each candidate's own real
+3D covariance (`quat_scale_to_covariance`, cross-checked against gsplat's
+own `quat_scale_to_covar_preci` in `tests/test_gsplat_rendering_weights.py`).
+Also: rendering-aware variance on a real scene spans many orders of
+magnitude across one image (the render weight's spatial "volume" varies
+hugely per query point) — a real, expected property of the theory, not a
+bug, but it means a linear color scale is close to useless for these
+fields; a log scale is the right default for any future visualization
+tool built on this.
+
+**A second, deeper bug: `a_q`'s total mass wasn't pinned to anything
+physically meaningful.** Peak-normalizing `amplitude` (fixing it to, say,
+a real opacity) and letting `covariance`'s volume float freely means
+`a_q`'s *integrated mass* — `amplitude * (2 pi)^(D/2) * |covariance|^(1/2)`
+— shrinks to near-zero for a real, physically tiny splat footprint
+regardless of how large the opacity actually is (confirmed: this is
+exactly what produced the `1e-95`-to-`1e-105`-scale variances above).
+Real alpha-compositing weights are bounded (`sum_i T_i alpha_i <= 1`);
+a quantity whose scale depends on an unrelated spatial choice cannot
+represent that in any comparable way across query points or scenes.
+Fixed with `GaussianRenderWeight.from_total_mass` (`bq_splat/render_weight.py`):
+pin `total_mass` (e.g. `sum(weights)`, which *is* `1 - T_final` for real
+compositing weights) and solve for whatever `amplitude` that requires,
+decoupling shape from scale.
+
+**A third, independent bug, found immediately after fixing the above:**
+gathering candidates via a 3D-world-space ball query
+(`LocalUncertaintyEngine.local_neighbors`) before real alpha weighting
+is itself unsound on a dense real checkpoint. Confirmed directly: a
+1.6-unit-radius ball query on the `chair` checkpoint (300k splats) found
+144,345 candidates — the `max_neighbors=400` cap then keeps a *uniform
+random* sample of those, so the one splat actually relevant to a given
+pixel survives with probability roughly 0.1%. Fixed by indexing
+candidates by real relevance instead of 3D distance:
+`gs_experiment.visibility_attribution.CameraSplatIndex` (bearing-space,
+pure numpy) and `gs_experiment.gsplat_rendering_weights.GsplatCameraProjection`
+(pixel-space, real gsplat projection) each project the whole scene once
+per camera and rank any overflow by real bearing/pixel distance, not
+randomly — both correct (relevance is about angular/pixel-footprint
+alignment, not raw 3D distance) and far cheaper (one projection per
+camera instead of one CUDA launch per query point).
+
+**The kernel was still missing half of the original construction.**
+Everything above built `k_q(xi, xi') = a_q(xi) k_pos(xi, xi') a_q(xi')` —
+position only. The prompt's own construction was always a *joint*
+position+direction kernel, `k_base = k_pos * k_dir`; the directional half
+existed in this codebase (`DirectionalKernel`, `bayesian_quadrature_directional`)
+but had never been merged with the new renderer-aware `a_q` machinery.
+Symptom, found by sweeping a camera through a real, designed 150°
+training-coverage gap (`lego_prepared/gap_4`): the position-only
+rendering-aware variance was *anti-correlated* with real coverage
+(Spearman `rho = -0.52` against this project's older, validated
+`directional_variance` tool over the same orbit) — confidently "low" in
+regions that were actually poorly covered, because a spatially-consistent
+local color field says nothing about whether the *viewing angle* being
+rendered was ever observed. Fixed with
+`bayesian_quadrature_rendering_aware_directional`
+(`bq_splat/quadrature.py`): `K` and the moment vector `z_q` each pick up
+a `k_dir(d_i, d_j)` / `k_dir(d_i, d_query)` factor (`z_{q,0}` is
+unchanged, since `k_dir(d,d) == 1` always), mirroring exactly how
+`bayesian_quadrature_directional` already generalized the old box kernel.
+Re-running the same gap_4 orbit with the completed joint kernel
+(`rendering_aware_variance_via_gsplat_directional`, built from real
+per-observation attribution — one row per (splat, observing-camera) pair,
+373,387 rows) gives `rho = 0.97` against the classic tool — the
+confidently-wrong region is gone, and the two independently-derived
+signals now agree almost exactly.
+
 ## Bottom line
 
 All of the above is a **qualified pass**: the ported math is correct, the
@@ -178,10 +257,17 @@ raw-accuracy gap is understood (a fixable bandwidth-mismatch issue, not a
 fundamental limitation) and no longer the claim being defended, posterior
 variance is reasonably calibrated and responds to under-resolved regions
 in the expected way, the computational cost concern that motivated a
-possible GPU rewrite was resolved on CPU alone, the directional extension
-is mathematically real at toy scale, and the box-quadrature gap flagged in
-`PROOF_alpha_compositing_equivalence.md` section 7 now has a working,
-validated fix (rendering-aware BQ, above) rather than remaining an open
-item. None of this is evidence yet that any of it is a *better or
-cheaper* way to get these signals than existing methods at real GS scale
-— that comparison is what `gs_experiment/` was built to test.
+possible GPU rewrite was resolved on CPU alone, and the box-quadrature gap
+flagged in `PROOF_alpha_compositing_equivalence.md` section 7 now has a
+working, validated fix (rendering-aware BQ) rather than remaining an open
+item. The rendering-aware construction itself went through three more
+rounds of real bugs found only by generating actual renders against real
+checkpoints and taking the results seriously rather than at face value
+(units/mass-normalization, candidate-selection relevance, and the missing
+directional half of the kernel) — each with its own before/after
+verification above, ending in a quantitative match (`rho = 0.97`) against
+this project's older, independently-validated directional tool on a real,
+designed coverage gap. That's a real, substantive result, not yet
+evidence that any of it is a *better or cheaper* way to get these signals
+than existing methods at real GS scale — that comparison is what
+`gs_experiment/` was built to test.

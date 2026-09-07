@@ -448,3 +448,92 @@ def renderer_centered_residual_variance(
     solved_z = np.linalg.solve(kxx, z)
     variance = float(z0 - z @ solved_z)
     return max(variance, 0.0)
+
+
+def bayesian_quadrature_rendering_aware_directional(
+    positions,
+    directions,
+    values,
+    render_weight,
+    dir_kernel: DirectionalKernel,
+    query_direction,
+    sigma_rbf: float | None = None,
+    base_kernel: ProductKernel | None = None,
+    domain=None,
+    rel_jitter: float = 1e-4,
+    mode: str = "closed_form",
+) -> BQResult:
+    """The full rendering-aware construction the original prompt specified
+    and this module only partially implemented until now: a JOINT
+    position+direction base kernel, `k_base(xi, xi') = k_pos(x, x') *
+    k_dir(d, d')`, so that `k_q(xi, xi') = a_q(x) k_base(xi, xi') a_q(x')`
+    carries both the renderer-specific spatial envelope
+    (`bayesian_quadrature_rendering_aware`'s `render_weight`) *and* the
+    directional/epistemic term (`bayesian_quadrature_directional`'s
+    `dir_kernel`) at once, instead of the two living as separate,
+    unconnected code paths. `a_q` itself is still position-only (T_q sigma
+    G_q are about *where* along a ray/footprint mass concentrates, not
+    which direction a splat happens to have been observed from) -- the
+    directional dependence enters purely through `k_dir`, exactly as the
+    prompt's `k_dir(d,d') = exp[kappa(d^T d' - 1)]` factor does.
+
+    Mirrors bayesian_quadrature_directional's own generalization of
+    bayesian_quadrature_nd (see that function's docstring): position is
+    integrated over via `render_weight`'s spatial envelope, direction is
+    evaluated at one `query_direction`, not integrated -- a rendered pixel
+    looks in one specific outgoing direction. Because
+    `dir_kernel.k(d, d) == 1` always (DirectionalKernel's docstring),
+    `z_{q,0}` is *exactly* the same spatial-only prior variance
+    `rendering_aware_prior_variance`/`bayesian_quadrature_rendering_aware`
+    already compute -- only `K` and the moment vector `z_q` pick up a
+    directional factor:
+
+        K_ij     = k_pos(x_i, x_j) * k_dir(d_i, d_j)
+        z_{q,i}  = [integral a_q(xi) k_pos(xi, x_i) dxi] * k_dir(d_i, d_query)
+        z_{q,0}  = integral integral a_q(xi) a_q(xi') k_pos(xi, xi') dxi dxi'
+
+    `positions`/`directions`/`values` are parallel arrays, one row per
+    (splat, observing-direction) pair -- the same input shape
+    bayesian_quadrature_directional expects (see that function's
+    docstring for why: a splat needs to be observed from *multiple*
+    directions during training for this term to carry any signal at all;
+    one row per splat with a single direction each cannot).
+    """
+    positions = np.atleast_2d(np.asarray(positions, dtype=float))
+    directions = np.asarray(directions, dtype=float)
+    values = np.asarray(values, dtype=float).reshape(-1)
+    n = positions.shape[0]
+
+    if mode == "closed_form":
+        if sigma_rbf is None:
+            raise ValueError("mode='closed_form' requires sigma_rbf (isotropic RBF base-kernel bandwidth)")
+        d = render_weight.dim
+        pos_kernel = ProductKernel([RBFKernel(sigma_rbf)] * d)
+        z0 = rendering_aware_prior_variance(render_weight, sigma_rbf)
+        z_pos = rendering_aware_moment_vector(positions, render_weight, sigma_rbf) if n else np.zeros(0)
+    elif mode == "numerical":
+        if base_kernel is None or domain is None:
+            raise ValueError("mode='numerical' requires base_kernel and domain")
+        pos_kernel = base_kernel
+        z0 = numerical_rendering_prior_variance(render_weight, base_kernel, domain)
+        z_pos = numerical_rendering_moment_vector(positions, render_weight, base_kernel, domain) if n else np.zeros(0)
+    else:
+        raise ValueError(f"unknown mode {mode!r}")
+
+    if n == 0:
+        return BQResult(mean=0.0, variance=max(float(z0), 0.0))
+
+    kxx = pos_kernel.k(positions, positions) * dir_kernel.k(directions, directions)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + jitter * np.eye(n)
+
+    v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
+    z = z_pos * v_dir
+
+    solved = np.linalg.solve(kxx, values)
+    mean = float(z @ solved)
+
+    solved_z = np.linalg.solve(kxx, z)
+    variance = float(z0 - z @ solved_z)
+
+    return BQResult(mean=mean, variance=max(variance, 0.0))

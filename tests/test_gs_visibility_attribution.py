@@ -2,6 +2,7 @@ import numpy as np
 
 from gs_experiment.camera import CameraPose
 from gs_experiment.visibility_attribution import (
+    CameraSplatIndex,
     attribute_observations,
     in_frustum,
     invert_to_observed_camera_idx,
@@ -127,3 +128,45 @@ def test_ray_transmittance_weights_all_zero_returns_all_zero_not_an_error():
     opacities = np.array([0.9])
     weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
     assert np.all(weights == 0.0)
+
+
+def test_camera_splat_index_finds_the_relevant_splat_among_many_distractors_within_3d_ball_query_range():
+    """The real bug this class fixes, at small scale: a dense cluster of
+    "distractor" splats sitting within what would be a generous 3D ball-
+    query radius of a query point, but at wildly different bearings (as
+    if they were on a totally different part of the object) -- a 3D
+    Euclidean neighbor search can't tell them apart from the one splat
+    that's actually on this ray, but bearing-space indexing does, by
+    construction."""
+    camera = make_camera()
+    rng = np.random.default_rng(0)
+    relevant = np.array([[5.0, 0.0, 0.0]])
+    # distractors: within 3D distance ~0.3-1.5 of the relevant splat, but
+    # scattered across a wide range of world-space y/z (very different bearings)
+    distractors = relevant + np.stack(
+        [np.zeros(500), rng.uniform(-3.0, 3.0, 500), rng.uniform(-3.0, 3.0, 500)], axis=1
+    )
+    positions = np.concatenate([relevant, distractors], axis=0)
+
+    index = CameraSplatIndex.build(positions, camera)
+    found = index.query(reference_bearing=(0.0, 0.0), angular_tol=0.05, max_candidates=None)
+
+    assert 0 in found  # the actually-relevant splat (index 0) must be found
+    assert len(found) < len(positions) / 2  # and the search correctly excluded most distractors
+
+
+def test_camera_splat_index_max_candidates_keeps_nearest_in_bearing_not_random():
+    camera = make_camera()
+    # three on-ray-ish splats at increasing bearing distance from the reference
+    positions = np.array([[5.0, 0.0, 0.0], [5.0, 0.3, 0.0], [5.0, 0.6, 0.0]])
+    index = CameraSplatIndex.build(positions, camera)
+    found = index.query(reference_bearing=(0.0, 0.0), angular_tol=1.0, max_candidates=1)
+    assert list(found) == [0]  # the nearest-in-bearing one, deterministically -- not a random pick among the 3
+
+
+def test_camera_splat_index_query_returns_empty_for_no_valid_splats():
+    camera = make_camera()
+    positions = np.array([[-5.0, 0.0, 0.0]])  # behind the camera
+    index = CameraSplatIndex.build(positions, camera)
+    found = index.query(reference_bearing=(0.0, 0.0), angular_tol=0.5)
+    assert found.shape == (0,)
