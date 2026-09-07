@@ -86,8 +86,8 @@ precisely because everything downstream depends on knowing exactly what
 
 Verified numerically to floating-point precision (`2.2e-16` max absolute
 error over 20 random piecewise-constant scenes) in
-`scripts/validate_alpha_compositing_equivalence.py`, `check_theorem_a` —
-see §8 below for the run.
+`bq_splat/validate.py`'s `alpha_compositing_check_theorem_a` (`--check
+alpha-compositing`) — see §8 below for the run.
 
 ## 3. Theorem B: BQ mean is RKHS-optimal, with a provable error bound
 
@@ -140,8 +140,9 @@ empirically-correlated — upper bound on its own mean's error, up to a
 fixed multiplicative constant reflecting how "rough" the true integrand
 `g` is relative to the kernel's smoothness assumption.
 
-Verified numerically in `scripts/validate_alpha_compositing_equivalence.py`,
-`check_theorem_b`: the bound was never violated across 40 random test
+Verified numerically in `bq_splat/validate.py`'s
+`alpha_compositing_check_theorem_b` (`--check alpha-compositing`): the
+bound was never violated across 40 random test
 functions per kernel (RBF and Matern-3/2), and — more importantly, since
 "never violated" alone doesn't rule out the bound being vacuously loose —
 the ratio `error / bound` was driven to `~0.999` for a test function
@@ -222,8 +223,8 @@ proof should not claim it is.
 What's left is an empirical question: at a fixed, finite bandwidth, and
 node spacing that doesn't exactly resolve the jump, how does each kernel's
 *practical* error and reported variance behave near a discontinuity?
-`check_discontinuity` in `scripts/validate_alpha_compositing_equivalence.py`
-checks this directly on a single-jump step scene, RBF (`sigma=0.6`) vs.
+`alpha_compositing_check_discontinuity` in `bq_splat/validate.py`
+(`--check alpha-compositing`) checks this directly on a single-jump step scene, RBF (`sigma=0.6`) vs.
 Matern-3/2 (`rho=0.6`), at matched nominal bandwidth parameter, node counts
 10/20/40/80. **The result is the opposite of the naive hypothesis**: RBF
 had *lower* error and *lower* reported variance than Matern at every node
@@ -273,7 +274,7 @@ concrete next step, not assumed.
 ## 8. Numerical verification: how to reproduce, and the results referenced above
 
 ```
-python3 scripts/validate_alpha_compositing_equivalence.py
+python3 -m bq_splat.validate --check alpha-compositing
 ```
 
 ```

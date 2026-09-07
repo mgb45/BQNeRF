@@ -76,7 +76,7 @@ def test_precomputed_vv_matches_recomputed_vv():
 def test_exclude_idx_removes_self_from_a_ball_query_centered_on_it():
     """Querying at a real splat's own position always finds that splat at
     distance 0 -- exclude_idx must filter it out, the basis for a
-    leave-one-out calibration check (gs_experiment/calibration_experiment.py)
+    leave-one-out calibration check (gs_experiment/evaluate_checkpoint.py calibration)
     not trivially seeing its own held-out answer."""
     engine, _ = build_engine()
     self_idx = 7
@@ -107,7 +107,7 @@ def test_spatial_only_variance_exclude_idx_changes_the_result():
 
 def test_directional_variance_higher_for_query_outside_narrow_zone_cone():
     """The gs_experiment-level analogue of
-    scripts/validate_directional_combined.py's core claim, using real 3D
+    bq_splat/validate.py --check directional-combined's core claim, using real 3D
     camera poses instead of a 2D angle parameterization."""
     engine, scene = build_engine()
     from gs_experiment.camera import directions_from_positions_to_camera

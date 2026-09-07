@@ -30,9 +30,24 @@ Kernel family (`--kernel-family rbf|matern`) and bandwidth are exposed,
 not hardcoded -- kernel flexibility is a strength of the method, not a
 gap to close (ROADMAP.md item 4).
 
+`--mode` selects what gets rendered:
+  - `directional` (default): the turntable sweep above, spatial +
+    directional uncertainty side by side.
+  - `position-only`: the same turntable sweep, but skipping the
+    directional/epistemic term entirely -- spatial (quadrature)
+    uncertainty only, two panels instead of three. Supersedes the old
+    render_sweep_gif.py.
+  - `view-projection`: per-real-camera-view uncertainty (position-only
+    and directional side by side), projected onto that view's own real
+    splat positions rather than a synthetic sweep -- for `--view-indices`
+    from the scene's own transforms.json, near `--zone-centers`.
+    Supersedes the old render_uncertainty_views.py.
+
 Needs torch + gsplat + Pillow.
 
 Run: .venv-gsplat/bin/python gs_experiment/render_directional_uncertainty_sweep.py <scene_dir> --center 36 0 0 --radius 80
+Run (position-only): .venv-gsplat/bin/python gs_experiment/render_directional_uncertainty_sweep.py <scene_dir> --mode position-only
+Run (view-projection): .venv-gsplat/bin/python gs_experiment/render_directional_uncertainty_sweep.py <scene_dir> --mode view-projection --view-indices 0 45 --zone-centers 0,0,0 18,0,0
 """
 
 from __future__ import annotations
@@ -53,8 +68,8 @@ import torch
 from PIL import Image
 
 from bq_splat.kernels import DirectionalKernel
-from gs_experiment.camera import translate_cameras, turntable_ring
-from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms
+from gs_experiment.camera import directions_from_positions_to_camera, translate_cameras, turntable_ring
+from gs_experiment.nerf_transforms import camera_pose_from_c2w, fov_x_to_intrinsics, load_transforms
 from gs_experiment.pixel_uncertainty import (
     LocalUncertaintyEngine,
     make_default_3d_matern_kernel,
@@ -89,16 +104,9 @@ def check_quality_gate(
 
     if eval_dir is not None:
         _, eval_frames = load_transforms(str(Path(eval_dir) / "transforms.json"))
-        import shutil
-
-        eval_copy_dir = str(Path(scene_dir)) + "_eval_gate"
-        Path(eval_copy_dir).mkdir(parents=True, exist_ok=True)
-        shutil.copy(Path(eval_dir) / "transforms.json", Path(eval_copy_dir) / "transforms.json")
-        images_link = Path(eval_copy_dir) / "test"
-        if not images_link.exists():
-            images_link.symlink_to((Path(eval_dir) / "test").resolve())
-        shutil.copy(Path(scene_dir) / "splats.ply", Path(eval_copy_dir) / "splats.ply")
-        results, _ = render_views(eval_copy_dir, list(range(len(eval_frames))), background_color=background_color)
+        results, _ = render_views(
+            eval_dir, list(range(len(eval_frames))), checkpoint_dir=scene_dir, background_color=background_color,
+        )
         kind = "held-out"
     else:
         _, frames = load_transforms(str(Path(scene_dir) / "transforms.json"))
@@ -148,8 +156,27 @@ def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -
     return world_points[..., :3]
 
 
+def project_to_pixels(positions: np.ndarray, viewmat: np.ndarray, K: np.ndarray):
+    """positions (N,3) world-space -> (pixels (N,2), in_front (N,) bool).
+    pixels are NaN where in_front is False (behind the camera). Used by
+    `--mode view-projection`, which projects real splat positions into a
+    real camera's own pixel coordinates rather than rendering a per-pixel
+    field via depth unprojection (what `run`'s turntable sweep does)."""
+    n = positions.shape[0]
+    homog = np.concatenate([positions, np.ones((n, 1))], axis=1)
+    cam = (viewmat @ homog.T).T  # (n, 4), OpenCV camera-space
+    depth = cam[:, 2]
+    in_front = depth > 1e-4
+    proj = (K @ cam[:, :3].T).T
+    pixels = np.full((n, 2), np.nan)
+    pixels[in_front, 0] = proj[in_front, 0] / proj[in_front, 2]
+    pixels[in_front, 1] = proj[in_front, 1] / proj[in_front, 2]
+    return pixels, in_front
+
+
 def run(
     scene_dir: str,
+    mode: str = "directional",
     center=None,
     n_frames: int = 60,
     radius: float | None = None,
@@ -169,13 +196,18 @@ def run(
     background_color=(0.05, 0.05, 0.05),
     attribution_angular_tol: float = 0.01,
     device: str = "cuda",
-    output_name: str = "directional_uncertainty_sweep",
+    output_name: str | None = None,
     eval_dir: str | None = None,
     min_psnr: float = 20.0,
     force: bool = False,
     gate_background_color=(1.0, 1.0, 1.0),
 ):
     import gsplat
+
+    if mode not in ("directional", "position-only"):
+        raise ValueError(f"run() handles mode 'directional' or 'position-only', got {mode!r} (see run_view_projection for 'view-projection')")
+    if output_name is None:
+        output_name = "directional_uncertainty_sweep" if mode == "directional" else "position_only_uncertainty_sweep"
 
     check_quality_gate(scene_dir, eval_dir, min_psnr, force, background_color=gate_background_color)
 
@@ -214,12 +246,14 @@ def run(
     t0 = time.time()
     dummy_dir = np.array([0.0, 0.0, 1.0])
     for p in obs_positions[:30]:
-        engine.directional_variance(p, dummy_dir, window_radius)
+        if mode == "directional":
+            engine.directional_variance(p, dummy_dir, window_radius)
         engine.spatial_only_variance(p, window_radius)
     per_query_s = (time.time() - t0) / 30
     total_queries = depth_width * depth_height * n_frames
+    solve_desc = "both BQ solves" if mode == "directional" else "spatial-only BQ solve"
     print(
-        f"measured {per_query_s * 1000:.2f} ms/pixel (both BQ solves, {kernel_family} kernel, "
+        f"measured {per_query_s * 1000:.2f} ms/pixel ({solve_desc}, {kernel_family} kernel, "
         f"max_neighbors={max_neighbors}); {depth_width}x{depth_height} x {n_frames} frames = {total_queries} pixels "
         f"-> est. {total_queries * per_query_s / 60:.1f} min total"
     )
@@ -268,15 +302,16 @@ def run(
 
             world_points = unproject_depth_grid(depth_map, K_depth, c2w_cv)
 
-            dir_field = np.full((depth_height, depth_width), np.nan)
+            dir_field = np.full((depth_height, depth_width), np.nan) if mode == "directional" else None
             spatial_field = np.full((depth_height, depth_width), np.nan)
             ys, xs = np.where(valid)
             cam_center = cam.center
             for y, x in zip(ys, xs):
                 point = world_points[y, x]
-                to_camera = cam_center - point
-                query_direction = to_camera / np.linalg.norm(to_camera)
-                dir_field[y, x] = engine.directional_variance(point, query_direction, window_radius).variance
+                if mode == "directional":
+                    to_camera = cam_center - point
+                    query_direction = to_camera / np.linalg.norm(to_camera)
+                    dir_field[y, x] = engine.directional_variance(point, query_direction, window_radius).variance
                 spatial_field[y, x] = engine.spatial_only_variance(point, window_radius).variance
 
             def upsample(field):
@@ -286,33 +321,44 @@ def run(
                 valid_up = np.array(valid_img.resize((width, height), Image.NEAREST)) > 127
                 return np.where(valid_up, field_up, np.nan)
 
-            dir_up = upsample(dir_field)
             spatial_up = upsample(spatial_field)
+            if mode == "directional":
+                dir_up = upsample(dir_field)
 
             if i == 0:
-                dir_vmax = np.nanpercentile(dir_up, 95)
                 spatial_vmax = np.nanpercentile(spatial_up, 95)
+                if mode == "directional":
+                    dir_vmax = np.nanpercentile(dir_up, 95)
 
-            fig, axes = plt.subplots(3, 1, figsize=(9, 9))
+            if mode == "directional":
+                fig, axes = plt.subplots(3, 1, figsize=(9, 9))
+            else:
+                fig, axes = plt.subplots(2, 1, figsize=(9, 6))
             axes[0].imshow(recon)
             axes[0].set_title("reconstruction", fontsize=10)
             axes[0].axis("off")
 
             im0 = axes[1].imshow(spatial_up, cmap=cmap, vmin=0, vmax=spatial_vmax)
-            axes[1].set_title(
-                f"spatial (quadrature) BQ uncertainty -- how poorly the finite splat set\n"
-                "resolves this region, independent of viewing direction", fontsize=8,
-            )
+            if mode == "directional":
+                axes[1].set_title(
+                    f"spatial (quadrature) BQ uncertainty -- how poorly the finite splat set\n"
+                    "resolves this region, independent of viewing direction", fontsize=8,
+                )
+            else:
+                axes[1].set_title(
+                    f"BQ position-only uncertainty\n(per-pixel, {depth_width}x{depth_height} real ray-hits)", fontsize=9,
+                )
             axes[1].axis("off")
             fig.colorbar(im0, ax=axes[1], fraction=0.046, pad=0.04)
 
-            im1 = axes[2].imshow(dir_up, cmap=cmap, vmin=0, vmax=dir_vmax)
-            axes[2].set_title(
-                f"directional (epistemic) BQ uncertainty (per-pixel, {depth_width}x{depth_height} real ray-hits)\n"
-                "query direction = real direction from each point to THIS frame's camera", fontsize=8,
-            )
-            axes[2].axis("off")
-            fig.colorbar(im1, ax=axes[2], fraction=0.046, pad=0.04)
+            if mode == "directional":
+                im1 = axes[2].imshow(dir_up, cmap=cmap, vmin=0, vmax=dir_vmax)
+                axes[2].set_title(
+                    f"directional (epistemic) BQ uncertainty (per-pixel, {depth_width}x{depth_height} real ray-hits)\n"
+                    "query direction = real direction from each point to THIS frame's camera", fontsize=8,
+                )
+                axes[2].axis("off")
+                fig.colorbar(im1, ax=axes[2], fraction=0.046, pad=0.04)
 
             fig.tight_layout(pad=0.3)
             frame_path = frames_dir / f"frame_{i:03d}.png"
@@ -327,9 +373,127 @@ def run(
     print(f"\nSaved {out_path} ({len(images)} frames)")
 
 
+def run_view_projection(
+    scene_dir: str,
+    view_indices,
+    zone_centers,
+    zone_radius: float = 1.6,
+    bandwidth: float = 0.9,
+    kappa: float = 4.0,
+    window_radius: float = 1.6,
+    max_points_per_view: int = 500,
+    min_opacity_for_display: float = 0.05,
+    attribution_angular_tol: float = 0.01,
+    seed: int = 0,
+    device: str = "cuda",
+    output_name: str = "uncertainty_views",
+):
+    """`--mode view-projection`: per-real-camera-view uncertainty, both
+    position-only and position+direction, at real splat positions
+    projected into that view's own pixel coordinates -- unlike `run`'s
+    turntable sweep (a synthetic orbit, per-pixel via depth
+    unprojection), this queries real dataset views (`view_indices`, from
+    the scene's own transforms.json) and real splat positions near a
+    chosen zone, projected with `project_to_pixels`. The query direction
+    per splat is the direction it's actually seen from by that camera
+    (`directions_from_positions_to_camera`), not a single fixed direction
+    reused across the whole scene. Supersedes the old
+    render_uncertainty_views.py."""
+    from gs_experiment.render_reconstruction import render_views
+
+    scene = load_from_gsplat_checkpoint(scene_dir, attribution_angular_tol=attribution_angular_tol)
+    positions, directions, values = splat_observations(scene)
+
+    pos_margin = 1.0
+    bounds = tuple(
+        (positions[:, d].min() - pos_margin, positions[:, d].max() + pos_margin) for d in range(3)
+    )
+    pos_kernel = make_default_3d_position_kernel(sigma=bandwidth)
+    dir_kernel = DirectionalKernel(kappa=kappa)
+    # deduplicated positions for position-only queries, camera-expanded
+    # rows for directional -- see differentiation_experiment.run's
+    # comment for why these need to differ (splat_observations'
+    # per-camera row expansion is correct input for the directional
+    # kernel but silently leaks observation-count into "position-only,
+    # blind to direction" if reused there unchanged).
+    spatial_engine = LocalUncertaintyEngine(positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds)
+    directional_engine = LocalUncertaintyEngine(
+        positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
+        directions=directions, dir_kernel=dir_kernel,
+    )
+
+    rgb_results, checkpoint = render_views(scene_dir, view_indices, device=device)
+    camera_angle_x, frames = load_transforms(str(Path(scene_dir) / "transforms.json"))
+    height, width = rgb_results[0][1].shape[:2]
+    K = fov_x_to_intrinsics(camera_angle_x, width, height)
+
+    rng = np.random.default_rng(seed)
+    splat_positions = checkpoint["positions"]
+    splat_opacities = checkpoint["opacities"]
+    zone_centers = [np.asarray(c, dtype=float) for c in zone_centers]
+
+    fig, axes = plt.subplots(len(view_indices), 3, figsize=(13, 4.2 * len(view_indices)))
+    if len(view_indices) == 1:
+        axes = axes[None, :]
+
+    for row, (view_idx, (_, gt, recon)) in enumerate(zip(view_indices, rgb_results)):
+        c2w = frames[view_idx][1]
+        viewmat = opencv_viewmat_from_c2w(c2w)
+        cam_pose = camera_pose_from_c2w(c2w)
+
+        center = min(zone_centers, key=lambda c: np.linalg.norm(cam_pose.center - c))
+        near = np.linalg.norm(splat_positions - center, axis=1) < zone_radius
+        near &= splat_opacities > min_opacity_for_display
+        near_idx = np.where(near)[0]
+        if len(near_idx) > max_points_per_view:
+            near_idx = rng.choice(near_idx, size=max_points_per_view, replace=False)
+
+        query_positions = splat_positions[near_idx]
+        query_dirs = directions_from_positions_to_camera(query_positions, cam_pose)
+
+        pos_var = np.array([spatial_engine.spatial_only_variance(p, window_radius).variance for p in query_positions])
+        dir_var = np.array(
+            [directional_engine.directional_variance(p, d, window_radius).variance for p, d in zip(query_positions, query_dirs)]
+        )
+        pixels, in_front = project_to_pixels(query_positions, viewmat, K)
+        in_view = in_front & (pixels[:, 0] >= 0) & (pixels[:, 0] < width) & (pixels[:, 1] >= 0) & (pixels[:, 1] < height)
+
+        axes[row, 0].imshow(recon)
+        axes[row, 0].set_title(f"view {view_idx}: reconstruction" if row == 0 else f"view {view_idx}")
+        axes[row, 0].axis("off")
+
+        for ax, var, title in [
+            (axes[row, 1], pos_var, "position-only BQ variance"),
+            (axes[row, 2], dir_var, "position+direction BQ variance"),
+        ]:
+            ax.imshow(recon, alpha=0.7)
+            sc = ax.scatter(
+                pixels[in_view, 0], pixels[in_view, 1], c=var[in_view], cmap="inferno", s=14,
+                edgecolors="white", linewidths=0.3,
+            )
+            ax.set_xlim(0, width)
+            ax.set_ylim(height, 0)
+            ax.set_title(title if row == 0 else "", fontsize=10)
+            ax.axis("off")
+            fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+
+    fig.suptitle(f"Per-view RGB + splat-projected BQ uncertainty ({scene_dir})")
+    fig.tight_layout()
+    out = RESULTS_DIR / f"{output_name}.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scene_dir")
+    parser.add_argument(
+        "--mode", choices=["directional", "position-only", "view-projection"], default="directional",
+        help="'directional': spatial+directional turntable sweep (default). 'position-only': same sweep, "
+        "spatial-only (supersedes render_sweep_gif.py). 'view-projection': per-real-view splat-projected "
+        "uncertainty (supersedes render_uncertainty_views.py) -- see --view-indices/--zone-centers.",
+    )
     parser.add_argument("--center", type=float, nargs=3, default=None, help="default: auto, from the checkpoint's own splat extent")
     parser.add_argument("--n-frames", type=int, default=60)
     parser.add_argument("--radius", type=float, default=None, help="default: auto, from the checkpoint's own splat extent")
@@ -344,23 +508,39 @@ def main():
     parser.add_argument("--kappa", type=float, default=4.0)
     parser.add_argument("--window-radius", type=float, default=1.6)
     parser.add_argument("--max-neighbors", type=int, default=150)
-    parser.add_argument("--output-name", default="directional_uncertainty_sweep")
-    parser.add_argument("--eval-dir", default=None, help="held-out split for the quality gate; default: <scene_dir>/../eval if present")
+    parser.add_argument("--output-name", default=None, help="default: mode-specific (directional_uncertainty_sweep / position_only_uncertainty_sweep / uncertainty_views)")
+    parser.add_argument("--eval-dir", default=None, help="held-out split for the quality gate; default: <scene_dir>/../eval if present (ignored in --mode view-projection, which has no quality gate)")
     parser.add_argument("--min-psnr", type=float, default=20.0, help="quality gate threshold")
     parser.add_argument("--force", action="store_true", help="proceed even if the quality gate fails")
     parser.add_argument(
         "--gate-background-color", type=float, nargs=3, default=[1.0, 1.0, 1.0],
         help="must match what the checkpoint was trained against (NeRF-Synthetic: white, the default); wrong value makes the PSNR gate meaningless",
     )
-    args = parser.parse_args()
-    run(
-        args.scene_dir, center=(tuple(args.center) if args.center is not None else None), n_frames=args.n_frames,
-        radius=args.radius, phi_deg=args.phi_deg,
-        fov_deg=args.fov_deg, width=args.width, height=args.height, depth_width=args.depth_width, depth_height=args.depth_height,
-        kernel_family=args.kernel_family, bandwidth=args.bandwidth, kappa=args.kappa, window_radius=args.window_radius,
-        max_neighbors=args.max_neighbors, output_name=args.output_name, eval_dir=args.eval_dir, min_psnr=args.min_psnr,
-        force=args.force, gate_background_color=tuple(args.gate_background_color),
+    parser.add_argument("--angular-tol", type=float, default=0.01, help="attribution_angular_tol for splat_scene.load_from_gsplat_checkpoint")
+    parser.add_argument("--view-indices", type=int, nargs="+", default=[0, 45], help="--mode view-projection only")
+    parser.add_argument(
+        "--zone-centers", type=str, nargs="+", default=["0,0,0", "18,0,0"],
+        help="--mode view-projection only: comma-separated x,y,z per zone center; each view is matched to its nearest one",
     )
+    parser.add_argument("--zone-radius", type=float, default=1.6, help="--mode view-projection only")
+    args = parser.parse_args()
+
+    if args.mode == "view-projection":
+        zone_centers = [tuple(float(v) for v in s.split(",")) for s in args.zone_centers]
+        run_view_projection(
+            args.scene_dir, args.view_indices, zone_centers, zone_radius=args.zone_radius,
+            bandwidth=args.bandwidth, kappa=args.kappa, window_radius=args.window_radius,
+            attribution_angular_tol=args.angular_tol, output_name=args.output_name or "uncertainty_views",
+        )
+    else:
+        run(
+            args.scene_dir, mode=args.mode, center=(tuple(args.center) if args.center is not None else None), n_frames=args.n_frames,
+            radius=args.radius, phi_deg=args.phi_deg,
+            fov_deg=args.fov_deg, width=args.width, height=args.height, depth_width=args.depth_width, depth_height=args.depth_height,
+            kernel_family=args.kernel_family, bandwidth=args.bandwidth, kappa=args.kappa, window_radius=args.window_radius,
+            max_neighbors=args.max_neighbors, output_name=args.output_name, eval_dir=args.eval_dir, min_psnr=args.min_psnr,
+            force=args.force, gate_background_color=tuple(args.gate_background_color), attribution_angular_tol=args.angular_tol,
+        )
 
 
 if __name__ == "__main__":

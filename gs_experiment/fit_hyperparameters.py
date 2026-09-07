@@ -11,7 +11,7 @@ neighborhoods, using the new `log_marginal_likelihood_nd` /
 `fit_kernel_param_pooled_nd` (bq_splat/hyperparams.py), and then checks
 whether the fitted bandwidth actually changes anything that matters: does
 it shift the BQ-variance-vs-sparsity correlation
-(sparsity_correlation_experiment.py) away from what the hardcoded sigma=0.05
+(evaluate_checkpoint.py sparsity) away from what the hardcoded sigma=0.05
 already found (r=-0.74, gs_experiment/results/FINDINGS.md section 20)?
 
 Procedure:
@@ -34,7 +34,7 @@ Procedure:
 Needs torch + gsplat only insofar as the checkpoint was already trained;
 this script itself is pure numpy/scipy.
 
-Run: .venv-gsplat/bin/python scripts/fit_hyperparameters_real_checkpoint.py <lego_prepared_dir>/wide/splats.ply
+Run: .venv-gsplat/bin/python gs_experiment/fit_hyperparameters.py <lego_prepared_dir>/wide/splats.ply
 """
 
 from __future__ import annotations

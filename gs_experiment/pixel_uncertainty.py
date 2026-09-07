@@ -1,7 +1,7 @@
 """Per-query-point local BQ uncertainty over a real (or mock) splat scene,
 in 3D world space. Directly reuses bq_splat's validated kernel/quadrature
 machinery and the two exact optimizations found in
-scripts/benchmark_local_bq_scaling.py (bq_splat/results/FINDINGS.md
+bq_splat/validate.py --check scaling (bq_splat/results/FINDINGS.md
 section 8): a KD-tree for neighbor lookup instead of brute force, and
 caching the kernel's `vv` term per window size instead of recomputing it
 per query (exact for a stationary kernel on a fixed-size, translated

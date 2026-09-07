@@ -239,7 +239,7 @@ def nbv_test_scene(
     and a held-out evaluation set). Three camera roles, distinguished by
     index range in the returned info dict rather than by anything in
     RenderSceneSpec itself (this renderer doesn't need to know the roles,
-    only nbv_experiment.py does):
+    only designed_scene_experiments.py's nbv mode does):
 
     - `train_idx`: a narrow arc of `n_train_views` cameras (identical
       construction to differentiation_scene's narrow zone) -- the

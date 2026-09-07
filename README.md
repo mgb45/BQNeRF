@@ -57,9 +57,8 @@ formally, not just asserted, in the proof document linked above.
 ## What's been tested, real scenes first
 
 Every result below is backed by a real experiment against real trained
-checkpoints — see each package's `results/FINDINGS.md` for the numbers,
-and `results/ARCHIVE_FULL_LOG.md` for the complete, warts-and-all process
-behind them (every bug, every dead end, every correction).
+checkpoints — see each package's `results/FINDINGS.md` for the numbers
+and the full reasoning behind them.
 
 - **Does the uncertainty signal track real sparse or missing coverage?**
   Tested across all 8 standard NeRF-Synthetic benchmark scenes (not one
@@ -111,12 +110,16 @@ behind them (every bug, every dead end, every correction).
   no GPU) and the formal proof. Start here to understand the theory.
 - [`gs_experiment/`](gs_experiment/) — real Gaussian-Splatting experiments
   (needs a GPU + `gsplat`). The results above live here.
-- [`archive/original_nerf_prototype/`](archive/original_nerf_prototype/)
-  — where this project actually started (Bayesian quadrature for a
-  from-scratch NeRF), kept for the record. Not part of the current work.
 - [`ROADMAP.md`](ROADMAP.md) — the forward-looking research plan: what a
   strong paper still needs, ordered by how load-bearing each gap is.
 - `tests/` — the active test suite (`pytest tests/`).
+
+Both packages follow the same shape: a handful of library modules
+(kernels, quadrature, camera/scene I/O) plus a small number of general,
+flag-driven CLI tools rather than one script per experiment run — each
+tool's flags select among what used to be separate one-off scripts, with
+the underlying math and results unchanged. See each package's own
+`README.md` for the full tool/flag list.
 
 ## Getting started
 
@@ -133,11 +136,11 @@ there) and, for example, run the sparsity-correlation check against a
 real checkpoint:
 
 ```
-.venv-gsplat/bin/python gs_experiment/sparsity_correlation_experiment.py <path/to/splats.ply>
+.venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py sparsity <path/to/splats.ply>
 ```
 
-`gs_experiment/README.md` has the full list of experiment scripts, what
-each one tests, and which real datasets they expect.
+`gs_experiment/README.md` has the full list of tools, what each one
+tests, and which real datasets they expect.
 
 ## Where to read more
 
@@ -145,7 +148,4 @@ each one tests, and which real datasets they expect.
   done, what's still open, ordered by priority for a paper.
 - [`bq_splat/results/FINDINGS.md`](bq_splat/results/FINDINGS.md) /
   [`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md)
-  — current-conclusions summaries.
-- Each has a companion `ARCHIVE_FULL_LOG.md` — the complete process log,
-  every bug and every intermediate number, for anyone who wants the whole
-  story.
+  — current-conclusions summaries, and the primary results documents.

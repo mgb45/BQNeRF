@@ -7,18 +7,13 @@ re-asked and answered on real scenes (see
 [`gs_experiment/results/FINDINGS.md`](../../gs_experiment/results/FINDINGS.md),
 the primary results document).
 
-This file is a short, current-conclusions summary. The complete
-chronological account — every bug, every intermediate number, the full
-reasoning behind each fix — is preserved in
-[`ARCHIVE_FULL_LOG.md`](ARCHIVE_FULL_LOG.md); each section below links the
-matching archive section(s).
+This file is a short, current-conclusions summary.
 
 ## The core math is correct
 
-RBF and Matérn-3/2 kernel/quadrature formulas are unit-tested against
-`models/nerf.py`'s exact closed-form RBF formula (see
-[archive/original_nerf_prototype](../../archive/original_nerf_prototype/))
-and against numerical integration. *(Archive §1, §4.)*
+RBF and Matérn-3/2 kernel/quadrature formulas are unit-tested against an
+exact closed-form RBF formula (from this project's original from-scratch
+NeRF prototype) and against numerical integration.
 
 A formal proof that the Bayesian-quadrature posterior mean recovers
 standard alpha compositing exactly (under the piecewise-constant model
@@ -30,7 +25,6 @@ This is also the rigorous grounding for this project's "unification"
 claim: quadrature uncertainty and directional/epistemic uncertainty turn
 out to be the same worst-case-error theorem applied to different linear
 functionals on one product-kernel posterior, not two separate mechanisms.
-*(Archive §10.)*
 
 ## Raw accuracy: BQ loses to a naive Riemann sum — with a hardcoded
 ## bandwidth. Fitting it closes most of the gap
@@ -50,7 +44,7 @@ mismatch worth fixing. Raw accuracy was never this project's claim to
 defend (see `ROADMAP.md`) — the point of this line of work is that the
 bandwidth question is real and kernel-family-dependent, which carries
 directly into `gs_experiment/results/FINDINGS.md`'s real-checkpoint
-bandwidth-fitting results. *(Archive §1, §5, §7.)*
+bandwidth-fitting results.
 
 ## Posterior variance is reasonably calibrated, and rises in genuinely
 ## under-resolved regions
@@ -65,14 +59,13 @@ moving from a 1D ray-depth domain to a 2D image-plane domain with
 scattered node placement (4.85x ratio), which is the geometry a real GS
 scene actually has. This is the toy-scale version of the central claim
 `gs_experiment/results/FINDINGS.md` later validates on real checkpoints
-(§S2 there). *(Archive §2, §3, §6.)*
+(§1 there).
 
 One real numerical-conditioning lesson from this work: irregular node
 placement can push the Gram matrix condition number past 1e18 with a
 fixed jitter; a jitter scaled to the kernel's own diagonal fixes it and
 materially changes downstream numbers (an earlier, uncorrected run showed
-a spuriously low RBF calibration correlation purely from this). *(Archive
-§4.)*
+a spuriously low RBF calibration correlation purely from this).
 
 ## Computational cost at real GS scale is dominated by a term you can
 ## cache exactly, not the linear solve
@@ -86,8 +79,7 @@ kernel. That plus a KD-tree for neighbor lookup takes a naive
 ~2,400-3,000s single-threaded per-800×800-image estimate down to
 ~140-420s, on CPU alone, up to a million synthetic splats — before any
 GPU code was written. Both optimizations carry directly into
-`gs_experiment/pixel_uncertainty.py`'s `LocalUncertaintyEngine`. *(Archive
-§8.)*
+`gs_experiment/pixel_uncertainty.py`'s `LocalUncertaintyEngine`.
 
 ## The directional extension: the same formalism catches viewing-angle
 ## coverage too
@@ -105,8 +97,7 @@ confound caught and fixed) shows position-only variance correctly reports
 no difference (0.97x) while position+direction variance correctly reports
 2.46x higher variance in a narrow-cone-observed zone. This toy-scale
 result is what `gs_experiment/`'s real-checkpoint directional-gradient
-work (§S5 there) later builds on and stress-tests on real geometry.
-*(Archive §9.)*
+work later builds on and stress-tests on real geometry.
 
 ## Bottom line
 
@@ -119,6 +110,4 @@ possible GPU rewrite was resolved on CPU alone, and the directional
 extension is mathematically real at toy scale. None of this is evidence
 yet that any of it is a *better or cheaper* way to get these signals than
 existing methods at real GS scale — that comparison is what
-`gs_experiment/` was built to test. See `ARCHIVE_FULL_LOG.md`'s own
-"Bottom line" section for the original, more detailed version of this
-paragraph.
+`gs_experiment/` was built to test.

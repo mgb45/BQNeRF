@@ -40,7 +40,7 @@ Short list, in order.
 
 ### 1. Get every gap-experiment checkpoint above the quality bar, not just the tool
 
-The gap-based directional result (see "what's already solid" below) is
+The gap-based directional result (see README's "What's been tested") is
 real but every one of its 5 checkpoints falls short of this project's
 own >20dB held-out-PSNR bar — caught by directly looking at the renders,
 not by the averaged PSNR number, which hid a wide per-view quality
@@ -53,12 +53,13 @@ width (trading effect size for quality) or a denser real dataset.
 
 ### 2. Extend the gap-based directional design to a genuinely photographed scene
 
-The same design (`gap_directional_experiment.py`: remove a deliberate
-angular gap from a dense real view pool, leave everything else
-untouched) hasn't been run on the actual photographed Mip-NeRF360
-"bonsai" scene yet — and per item 1, reconstruction quality needs
-checking with the same skepticism from the start this time, not after a
-rendered GIF prompts the question.
+The same design (`real_directional_coverage_experiment.py --design gap
+--dataset bonsai`: remove a deliberate angular gap from a dense real view
+pool, leave everything else untouched) has been run once on the actual
+photographed Mip-NeRF360 "bonsai" scene, with a quality review of the
+result still in progress — per item 1, reconstruction quality needs the
+same skepticism from the start, not just after a rendered GIF prompts the
+question.
 
 ### 3. Keep kernel choice pluggable — it's a strength, not a loose end
 
@@ -84,39 +85,5 @@ None of these make the code more real, more general, or faster to trust
 — they make a specific published comparison claim, which isn't the
 current goal.
 
-## What's already solid (see FINDINGS.md for numbers)
-
-- **One clean, general tool, not a pile of one-off scripts.**
-  `render_directional_uncertainty_sweep.py` loads any real `gsplat`
-  checkpoint, computes both spatial (quadrature) and directional
-  (epistemic) BQ variance, and renders it — auto-framed from the
-  checkpoint's own splat extent, kernel family/bandwidth exposed as
-  parameters, and gated on a mandatory held-out-PSNR quality check before
-  computing anything (refuses, or `--force` to override). This is now
-  the primary way this project validates a new result.
-- The core math is proven, not just checked: BQ posterior mean = alpha
-  compositing exactly, with a provable (not heuristic) error bound on the
-  variance (`bq_splat/PROOF_alpha_compositing_equivalence.md`).
-- The sparsity-uncertainty correlation replicates strongly across all 8
-  standard NeRF-Synthetic scenes and against a real reference `gsplat`
-  trainer, not just this project's own training loop.
-- Kernel hyperparameters can be fit from data instead of hardcoded, at
-  real checkpoint scale.
-- Training directly under the BQ likelihood (loss term, densification
-  trigger) was tried and didn't help — a real negative result, kept.
-- **The directional/coverage signal is confirmed on designed geometry
-  (`gradient_scene`), and real but not yet fully clean on real geometry.**
-  The first two real-geometry attempts hit a genuine reconstruction-
-  quality confound (thinning view density everywhere as "spread"
-  widened); redesigning the manipulation as a deliberate angular gap
-  carved out of an otherwise-dense real view pool
-  (`gap_directional_experiment.py`) removed that confound — directional
-  BQ variance tracks gap width cleanly (`rho=1.000`, `6.95x` range vs. a
-  `1.34x` position-only control), and a within-checkpoint contrast (same
-  messy checkpoint, missing direction vs. a well-covered one, `14.78` vs.
-  `6.98`) supports the signal being direction-specific, not just general
-  checkpoint noise. But every checkpoint in this result is genuinely
-  below this project's own quality bar — the averaged PSNR looked
-  acceptable, but the actual held-out renders are mostly unrecognizable
-  except near surviving training angles, caught only by looking directly
-  at them. See active items 1-2.
+For what's already solid, with numbers, see README.md's "What's been
+tested" section and each package's `results/FINDINGS.md`.

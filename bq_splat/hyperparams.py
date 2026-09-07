@@ -68,7 +68,7 @@ def pooled_log_marginal_likelihood(datasets, kernel: Kernel) -> float:
     pairs under one shared kernel -- the objective for fitting a single
     bandwidth across many scenes/regions rather than one per scene. Used to
     test whether a bandwidth fit once on a calibration set generalizes to
-    unseen scenes (see scripts/validate_trainable_kernel_heldout.py) --
+    unseen scenes (see bq_splat/validate.py --check trainable-kernel-heldout) --
     which matters for deployment cost too: a bandwidth that needs
     refitting per query is a very different computational proposition at
     GS scale than one fit once and reused.

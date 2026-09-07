@@ -5,15 +5,10 @@ real cameras — building on the toy-scale validation in
 [`bq_splat/results/FINDINGS.md`](../../bq_splat/results/FINDINGS.md).
 This is the primary results document for the project.
 
-This file is a short, **current-conclusions** summary, organized by real-
-scene results first. The complete chronological account — every bug,
-every intermediate number, the full reasoning behind each fix, and the
-full multi-step correction history behind a couple of results below — is
-preserved in [`ARCHIVE_FULL_LOG.md`](ARCHIVE_FULL_LOG.md); each section
-links its matching archive section(s). Where a result was later corrected
-or refined, this file states the current, final conclusion directly
-rather than requiring a re-read of the whole history to find out what's
-currently true.
+This is a **current-conclusions** summary, organized by real-scene results
+first. Where a result was later corrected or refined during the project,
+this file states the current, final conclusion directly rather than the
+full correction history.
 
 ## 1. Does BQ variance track real sparse/missing coverage? (the headline claim)
 
@@ -41,7 +36,7 @@ policy needs. Checked to hold across a full order of magnitude of the
 `window_radius` hyperparameter (0.2x-2x an established value, on every
 checkpoint tested) — the claim doesn't depend on a lucky parameter pick,
 though it does eventually degrade and flip sign at very large windows
-(explained below, §6). *(Archive §22, §24, §25, §30, §32.)*
+(explained below, §6).
 
 **Validated against a real reference trainer, not just this project's own
 code.** Every result above used this project's own from-scratch trainer.
@@ -49,7 +44,7 @@ Re-running the same sparsity check on a checkpoint trained by `gsplat`'s
 own official reference densification strategy (`gsplat.strategy.
 DefaultStrategy` — code this project didn't write) gives `r=-0.92`,
 matching sign and strength — direct evidence the finding isn't an
-artifact of a simplified training loop. *(Archive §28.)*
+artifact of a simplified training loop.
 
 ## 2. Is the signal calibrated, not just correlated?
 
@@ -65,7 +60,7 @@ variance and squared error is weak everywhere (`|r| < 0.21`, wrong-signed
 on one checkpoint) — much weaker than the sparsity correlations above.
 Ranking-based calibration (AUSE / sparsification curves) is more
 encouraging, meaningfully beating random ordering on most checkpoints —
-consistent with `pruning_experiment.py`'s already-positive ranking-based
+consistent with the pruning experiment's already-positive ranking-based
 result (§7 below). Held-out Gaussian NLL is **worse than a flat,
 constant-variance baseline on every checkpoint tested** — the clearest
 negative signal: the *absolute scale* of the variance isn't yet a
@@ -73,7 +68,6 @@ trustworthy per-point confidence value, even though its *relative
 ranking* is informative. These are different claims: "BQ variance tracks
 sparsity" (§1, robust) and "BQ variance is a calibrated absolute error
 bound" (not yet supported) should not be conflated in a paper claim.
-*(Archive §29.)*
 
 ## 3. Does kernel choice (RBF vs. Matérn-3/2) matter?
 
@@ -96,9 +90,8 @@ without materially changing the sparsity-correlation number itself
 throughout this project was leaving real calibration on the table even
 where it wasn't obviously *wrong*. Which kernel needs the larger
 bandwidth correction turned out to be scene-specific, not a fixed rule
-(opposite directions on lego vs. a thin-rod scene). *(Archive §8, §22,
-§26, §31; toy-scale kernel-fitting foundations in `bq_splat/results/
-FINDINGS.md`.)*
+(opposite directions on lego vs. a thin-rod scene). *(Toy-scale
+kernel-fitting foundations in `bq_splat/results/FINDINGS.md`.)*
 
 ## 4. The directional / viewing-angle-coverage story
 
@@ -118,25 +111,25 @@ BQ variance recovers the gradient exactly: strictly monotonic across all
 geometry-matched position-only control stays far flatter (`1.76x`, no
 trend) — confirming the effect is genuinely directional. A full per-pixel
 animated sweep (not just 5 point samples) confirms this visually, with
-real sub-structure the point samples missed. *(Archive §33, §36.)*
+real sub-structure the point samples missed.
 
 **On real geometry: works cleanly too, once the coverage manipulation
 is designed to not confound with overall reconstruction quality.** Two
 earlier attempts on real lego (subsampling the real 100-view pool into
-equal-count, increasing-spread conditions, `real_directional_gradient_
-experiment.py`) and on an actual photographed scene (Mip-NeRF360
-"bonsai," 292 real photos, real COLMAP-estimated poses) ran into a real,
-carefully-diagnosed confound: holding total view *count* fixed while
-widening the angular window they're drawn from also thins local view
-*density* everywhere, not just near the region being tested, so held-out
-PSNR degraded as spread widened for reasons unrelated to the directional
-signal being measured. This wasn't a training-budget artifact either —
-retraining the worst condition with 2.5x the iterations barely moved
-held-out PSNR (confirmed directly, see the archive), and a real
-background-compositing bug in the PSNR check itself was also found and
-fixed along the way (caught a good checkpoint measuring 1.8dB instead of
-its real 27dB). **The fix was a different experimental design, not more
-compute or more debugging of the old one:** `gap_directional_experiment.py`
+equal-count, increasing-spread conditions) and on an actual photographed
+scene (Mip-NeRF360 "bonsai," 292 real photos, real COLMAP-estimated
+poses) ran into a real, carefully-diagnosed confound: holding total view
+*count* fixed while widening the angular window they're drawn from also
+thins local view *density* everywhere, not just near the region being
+tested, so held-out PSNR degraded as spread widened for reasons unrelated
+to the directional signal being measured. This wasn't a training-budget
+artifact either — retraining the worst condition with 2.5x the
+iterations barely moved held-out PSNR, and a real background-compositing
+bug in the PSNR check itself was also found and fixed along the way
+(caught a good checkpoint measuring 1.8dB instead of its real 27dB).
+**The fix was a different experimental design, not more compute or more
+debugging of the old one:** the gap-based design (now
+`gs_experiment/real_directional_coverage_experiment.py --design gap`)
 starts from the full real 100-view lego pool and removes a single
 deliberate angular gap around one query direction, leaving every other
 view in the pool untouched — so density stays high everywhere except
@@ -193,32 +186,30 @@ the 5 gap conditions falls short of it, some — the widest gap especially
 evidence, not a full substitute for reconstructions clean enough to trust
 outright; a larger real view pool (lego's is capped at 100 total views)
 or a genuinely denser real capture would be needed to clear that bar
-properly. The same design hasn't been run on the photographed bonsai
-scene yet — the natural next step, and one where reconstruction quality
-will need checking with the same skepticism from the start, not after a
-GIF prompts the question. *(Archive §34, §35, §36, §37, §38 for the full
-confound-diagnosis history; the gap-based result above, with this
-follow-up, is the current, most-trustworthy picture on real geometry.)*
+properly. The same design (`--design gap --dataset bonsai`) is the
+natural next step on the photographed bonsai scene — see `ROADMAP.md`
+for status.
 
 ## 5. What didn't work: training directly under the likelihood
 
 A natural next step — training with a Gaussian-NLL loss weighted by the
 closed-form BQ variance itself, and/or using BQ variance (instead of the
 standard view-space gradient) to trigger densification — was tried
-directly rather than assumed to help. **It didn't, on either count.**
-Variance-driven densification is a real regression (worse reconstruction
-*and* fewer splats than standard gradient-based densification, not a
-favorable trade-off) for a specific, diagnosed reason: BQ variance is
-high in genuinely empty space too, and — unlike the pruning experiment
-below, which floors the signal by opacity — the densification version had
-no such floor. Adding one confirmed the mechanism but didn't fix the
+directly rather than assumed to help (`train_minimal_gsplat.py
+--nll-experiment`). **It didn't, on either count.** Variance-driven
+densification is a real regression (worse reconstruction *and* fewer
+splats than standard gradient-based densification, not a favorable
+trade-off) for a specific, diagnosed reason: BQ variance is high in
+genuinely empty space too, and — unlike the pruning experiment below,
+which floors the signal by opacity — the densification version had no
+such floor. Adding one confirmed the mechanism but didn't fix the
 regression (it overcorrected into uncontrolled growth instead), pointing
 to a more structural mismatch between BQ variance and a densification
 scheme built around gradient-magnitude signals. The NLL loss term alone
 was close to a no-op, plausibly because of how sparse a signal this
 installment's construction provided, not necessarily because the
 underlying idea is wrong. Reported as a genuine negative result, not
-softened. *(Archive §27.)*
+softened.
 
 ## 6. A real methodological lesson: kernel parameters must match the checkpoint's actual scale
 
@@ -231,8 +222,7 @@ negative and robust across 0.2x-2x a sensible window size, then degrades
 and flips sign past ~4x — a general, predictable pattern across every
 checkpoint tested, not a one-off artifact. Practical guidance: pick
 `window_radius` well below the point where a typical query's window
-captures a large fraction of the checkpoint's total splats. *(Archive
-§28, §30, §34, §35.)*
+captures a large fraction of the checkpoint's total splats.
 
 ## 7. Downstream combination experiments: pruning and next-best-view
 
@@ -241,7 +231,7 @@ opacity-based pruning heuristic (floored at a minimum opacity, since BQ
 variance is uninformatively high in empty space otherwise) beats
 opacity-only pruning at a tight splat budget (+2.3dB) and is a strict
 no-op (never worse) at looser budgets where opacity-only already retains
-everything with real content. *(Archive §15-16.)*
+everything with real content.
 
 **Next-best-view**: scoring a discrete pool of candidate next-views by BQ
 position+direction variance plus a visibility proxy (both free, no
@@ -252,7 +242,7 @@ scene didn't give BQ and the visibility proxy room to disagree
 (correlation 1.000 on this candidate pool), so it demonstrates "guided
 beats poor," not yet the more specific "the two signals combined beat
 either alone" — a scene designed so they can diverge is the natural next
-step. *(Archive §17-19.)*
+step.
 
 ## 8. Foundational engineering: the original hand-built differentiation scene
 
@@ -268,20 +258,19 @@ broke when two camera rigs shared an elevation; an uncapped local-
 neighbor count that pegged 18 CPU cores for half an hour; a scale-
 initialization bug that produced a blank reconstruction behind a
 deceptively reasonable PSNR) — each is a real, generally-useful lesson
-about training/evaluating Gaussian Splatting checkpoints, kept in the
-archive in full. With those fixed and real densification added (view-
-space-gradient-triggered clone/split, calibrated against measured
-gradient magnitudes rather than a borrowed constant), the core claim was
-demonstrated and replicated across two seeds and two kernel families,
-then survived three independent "maybe this is an artifact" checks
-(clone-position adjacency, camera-count leaking into the signal, a
-controlled declustering isolation test that directly refuted the leading
-hypothesis for the mechanism) — the mechanism itself remains genuinely
-open, a real result whose *why* isn't yet settled. This scene was later
-superseded, for headline claims, by the real-benchmark results in §1-4
-above — kept here as the foundational validation that de-risked the real-
-benchmark work, not as the current best evidence. *(Archive §1-14; the
-full "Bottom line for the go/no-go gate" summary is preserved there too.)*
+about training/evaluating Gaussian Splatting checkpoints. With those
+fixed and real densification added (view-space-gradient-triggered
+clone/split, calibrated against measured gradient magnitudes rather than
+a borrowed constant), the core claim was demonstrated and replicated
+across two seeds and two kernel families, then survived three independent
+"maybe this is an artifact" checks (clone-position adjacency, camera-count
+leaking into the signal, a controlled declustering-isolation test that
+directly refuted the leading hypothesis for the mechanism) — the
+mechanism itself remains genuinely open, a real result whose *why* isn't
+yet settled. This scene was later superseded, for headline claims, by the
+real-benchmark results in §1-4 above — kept here as the foundational
+validation that de-risked the real-benchmark work, not as the current
+best evidence.
 
 ## 9. Getting real benchmark data into the pipeline
 
@@ -294,7 +283,7 @@ shipping real color images) — both caught by checking file existence and
 pixel content directly, not assumed correct. Reconstruction quality was
 verified on genuine held-out test views (27.17dB wide / 19.80dB narrow —
 the expected sparse-view generalization gap) before trusting any
-uncertainty number built on top of either checkpoint. *(Archive §20-21.)*
+uncertainty number built on top of either checkpoint.
 
 ## Bottom line
 
@@ -316,5 +305,4 @@ geometry (§4), with a real, direction-specific within-checkpoint contrast
 as supporting evidence, though still resting on checkpoints below this
 project's own quality bar. One genuine negative result along the way
 (§5) and one real methodological lesson that generalizes across most of
-the above (§6). See `ARCHIVE_FULL_LOG.md` for the complete process,
-including everything that didn't make this summary.
+the above (§6).

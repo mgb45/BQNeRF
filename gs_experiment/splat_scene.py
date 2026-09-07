@@ -75,7 +75,7 @@ def make_mock_scene(
     splats within `narrow_zone_radius` of `narrow_zone_center` are marked
     as observed only by `narrow_cameras`, everything else by
     `wide_cameras` -- the 3D, real-camera-pose analogue of
-    scripts/validate_directional_combined.py's controlled zones.
+    bq_splat/validate.py --check directional-combined's controlled zones.
     """
     (x0, x1), (y0, y1), (z0, z1) = bounds
     positions = np.stack(
