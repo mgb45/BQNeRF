@@ -61,6 +61,63 @@ def test_occlusion_mask_flags_splat_behind_a_closer_occluder():
     assert occluded[0] == False  # the occluder itself isn't behind anything
 
 
+def _occlusion_mask_reference(positions, camera, angular_tol, depth_margin=0.05):
+    """Brute-force O(n^2) reference for occlusion_mask, kept only in this
+    test as a cross-check for the vectorized query_pairs implementation --
+    a direct, unoptimized transcription of "is any other point within
+    angular_tol in bearing and meaningfully closer," with no scipy spatial
+    indexing at all, so it can't share a bug with the real implementation."""
+    bearing_x, bearing_y, depth = project_to_camera_local(positions, camera)
+    n = positions.shape[0]
+    occluded = np.zeros(n, dtype=bool)
+    for i in range(n):
+        if np.isnan(bearing_x[i]):
+            continue
+        for j in range(n):
+            if i == j or np.isnan(bearing_x[j]):
+                continue
+            dist = np.hypot(bearing_x[i] - bearing_x[j], bearing_y[i] - bearing_y[j])
+            if dist < angular_tol and depth[j] < depth[i] - depth_margin * abs(depth[i]):
+                occluded[i] = True
+                break
+    return occluded
+
+
+def test_occlusion_mask_matches_a_brute_force_reference_on_random_scenes():
+    """Regression check for the grid/z-buffer rewrite against an
+    independent, deliberately naive O(n^2) reference (exact circular
+    angular_tol radius) across several random scenes and angular
+    tolerances, not just the two hand-placed cases above.
+
+    Not required to match exactly: the grid version's 3x3-cell-block
+    neighbor search is a provable *superset* of the true circular-radius
+    neighbor set (see occlusion_mask's docstring for the proof sketch),
+    so it can flag a point as occluded by a neighbor just past the true
+    circular radius, near a cell corner -- a false positive relative to
+    the exact reference, never a false negative. The false-positive rate
+    is real and not tiny (the 3x3-square-vs-circle area ratio is ~2.86x,
+    9/pi) -- measured up to ~0.21 at angular_tol=0.1 on this exact scene,
+    so the threshold below is set with real headroom above that, not
+    tightened to look reassuring. Checked directly: every
+    reference-occluded point must still be occluded here (the property
+    that actually matters -- occlusion_mask is only ever used to decide
+    whether to *exclude* a splat from a camera's attribution, so a missed
+    occlusion would silently corrupt attribution, while an extra one just
+    makes the proxy a bit more conservative)."""
+    camera = make_camera()
+    rng = np.random.default_rng(0)
+    for angular_tol in (0.02, 0.1, 0.5):
+        positions = np.stack(
+            [rng.uniform(3.0, 8.0, 80), rng.uniform(-3.0, 3.0, 80), rng.uniform(-3.0, 3.0, 80)], axis=1
+        )
+        expected = _occlusion_mask_reference(positions, camera, angular_tol=angular_tol)
+        got = occlusion_mask(positions, camera, angular_tol=angular_tol)
+
+        assert np.all(got[expected])  # no false negatives: every true occlusion is still flagged
+        false_positive_rate = (got & ~expected).sum() / len(positions)
+        assert false_positive_rate < 0.35
+
+
 def test_attribute_observations_and_invert_round_trip():
     camera_front = make_camera(center=(0.0, 0.0, 0.0), forward=(1.0, 0.0, 0.0))
     camera_back = make_camera(center=(0.0, 0.0, 0.0), forward=(-1.0, 0.0, 0.0))

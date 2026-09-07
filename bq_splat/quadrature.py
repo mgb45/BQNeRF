@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy import integrate
+from scipy.linalg import LinAlgError, cho_factor, cho_solve
 from scipy.stats import multivariate_normal
 
 from bq_splat.kernels import DirectionalKernel, Kernel, ProductKernel, RBFKernel
@@ -28,6 +29,39 @@ from bq_splat.kernels import DirectionalKernel, Kernel, ProductKernel, RBFKernel
 class BQResult:
     mean: float
     variance: float
+
+
+def _posterior_mean_variance(kxx: np.ndarray, values: np.ndarray, moment_vector: np.ndarray, prior_variance: float):
+    """Shared BQ posterior-mean/variance solve: `mean = moment_vector @
+    solve(kxx, values)`, `variance = prior_variance - moment_vector @
+    solve(kxx, moment_vector)`. Every BQ function in this module needs
+    both, against the *same* `kxx` -- solving with one Cholesky
+    factorization of `kxx` (symmetric positive-(semi)definite by
+    construction: a kernel Gram matrix plus jitter) for both right-hand
+    sides at once, instead of two independent `np.linalg.solve` calls
+    (each of which would redundantly re-factor `kxx` from scratch via a
+    general, non-symmetric LU), is both the numerically appropriate
+    choice for an SPD matrix and roughly 4x fewer flops (one O(n^3/3)
+    Cholesky factorization instead of two O(2n^3/3) LU factorizations).
+    A real, measured bottleneck at real-checkpoint scale, not a
+    theoretical one: this is what
+    `gs_experiment.pixel_uncertainty.LocalUncertaintyEngine`'s per-pixel
+    rendering-aware queries spend most of their time in once candidate
+    counts reach the low hundreds.
+
+    Falls back to `np.linalg.solve` (the original approach) if Cholesky
+    fails -- e.g. jitter insufficient for a particular Gram matrix to be
+    numerically SPD -- trading speed for robustness rather than raising.
+    """
+    rhs = np.column_stack([values, moment_vector])
+    try:
+        factor = cho_factor(kxx, lower=True)
+        solved = cho_solve(factor, rhs)
+    except LinAlgError:
+        solved = np.linalg.solve(kxx, rhs)
+    mean = float(moment_vector @ solved[:, 0])
+    variance = float(prior_variance - moment_vector @ solved[:, 1])
+    return mean, max(variance, 0.0)
 
 
 def bayesian_quadrature_directional(
@@ -89,13 +123,8 @@ def bayesian_quadrature_directional(
     v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
     v = v_pos * v_dir
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(v @ solved)
-
-    solved_v = np.linalg.solve(kxx, v)
-    variance = float(vv - v @ solved_v)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, v, vv)
+    return BQResult(mean=mean, variance=variance)
 
 
 def directional_posterior_variance(
@@ -123,13 +152,8 @@ def directional_posterior_variance(
 
     k_query = dir_kernel.k(directions, query_direction).reshape(-1)
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(k_query @ solved)
-
-    solved_k = np.linalg.solve(kxx, k_query)
-    variance = float(prior_variance - k_query @ solved_k)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, k_query, prior_variance)
+    return BQResult(mean=mean, variance=variance)
 
 
 def bayesian_quadrature_nd(
@@ -159,13 +183,8 @@ def bayesian_quadrature_nd(
     kxx = kxx + jitter * np.eye(n)
     v = kernel.v(nodes, bounds).reshape(-1)
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(v @ solved)
-
-    solved_v = np.linalg.solve(kxx, v)
-    variance = float(vv - v @ solved_v)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, v, vv)
+    return BQResult(mean=mean, variance=variance)
 
 
 def bayesian_quadrature(nodes, values, kernel: Kernel, a: float, b: float, rel_jitter: float = 1e-4) -> BQResult:
@@ -191,13 +210,8 @@ def bayesian_quadrature(nodes, values, kernel: Kernel, a: float, b: float, rel_j
     kxx = kxx + jitter * np.eye(n)
     v = kernel.v(nodes, a, b).reshape(-1)
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(v @ solved)
-
-    solved_v = np.linalg.solve(kxx, v)
-    variance = float(kernel.vv(a, b) - v @ solved_v)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, v, float(kernel.vv(a, b)))
+    return BQResult(mean=mean, variance=variance)
 
 
 # ---------------------------------------------------------------------------
@@ -409,13 +423,8 @@ def bayesian_quadrature_rendering_aware(
     if kxx is None:
         return BQResult(mean=0.0, variance=max(z0, 0.0))
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(z @ solved)
-
-    solved_z = np.linalg.solve(kxx, z)
-    variance = float(z0 - z @ solved_z)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, z, z0)
+    return BQResult(mean=mean, variance=variance)
 
 
 def renderer_centered_residual_variance(
@@ -445,7 +454,10 @@ def renderer_centered_residual_variance(
     if kxx is None:
         return max(z0, 0.0)
 
-    solved_z = np.linalg.solve(kxx, z)
+    try:
+        solved_z = cho_solve(cho_factor(kxx, lower=True), z)
+    except LinAlgError:
+        solved_z = np.linalg.solve(kxx, z)
     variance = float(z0 - z @ solved_z)
     return max(variance, 0.0)
 
@@ -530,10 +542,5 @@ def bayesian_quadrature_rendering_aware_directional(
     v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
     z = z_pos * v_dir
 
-    solved = np.linalg.solve(kxx, values)
-    mean = float(z @ solved)
-
-    solved_z = np.linalg.solve(kxx, z)
-    variance = float(z0 - z @ solved_z)
-
-    return BQResult(mean=mean, variance=max(variance, 0.0))
+    mean, variance = _posterior_mean_variance(kxx, values, z, float(z0))
+    return BQResult(mean=mean, variance=variance)

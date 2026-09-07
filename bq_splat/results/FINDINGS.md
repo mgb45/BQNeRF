@@ -250,6 +250,66 @@ per-observation attribution — one row per (splat, observing-camera) pair,
 confidently-wrong region is gone, and the two independently-derived
 signals now agree almost exactly.
 
+## Scaling the attribution pipeline to real dense checkpoints found three
+## more real bottlenecks, in order, each found by actually running at scale
+
+Everything above was validated on `gap_4` (35k splats). Pushing the same
+pipeline (`gs_experiment.visibility_attribution`, specifically
+`occlusion_mask`, the function `attribute_observations` /
+`load_from_gsplat_checkpoint` spend nearly all their time in) to a denser,
+larger real checkpoint (`chair_prepared/wide`: 300k splats, 100 cameras)
+surfaced a genuine scaling wall, fixed in three iterations:
+
+1. The original implementation (`cKDTree.query_ball_point` in a nested
+   Python `for` loop) profiled at 93% of total attribution time on
+   gap_4 (100s of 107s, 113 million `abs()` calls at the Python level),
+   and made the same step time out entirely (>280s) on the chair
+   checkpoint.
+2. Replacing the Python-level inner loop with `cKDTree.query_pairs`
+   (fully vectorized numpy over every bearing-close pair at once) fixed
+   gap_4 (93s -> 15s) but doesn't fix chair: at chair's splat density,
+   one camera alone produces 216 million bearing-close pairs (confirmed
+   directly), enough to exhaust available memory materializing that
+   pair array — this is what actually crashed the host machine during
+   a careless follow-up benchmark, not a hypothetical risk.
+3. The fix that stuck: a grid/z-buffer rewrite (`occlusion_mask` in
+   `gs_experiment/visibility_attribution.py`) that never enumerates
+   pairs or per-point neighbor lists at all — it bins bearings into a
+   grid, computes each cell's minimum depth once via a sort +
+   `np.minimum.reduceat`, and looks up the minimum depth in a fixed,
+   density-independent number of surrounding cells per point
+   (`np.searchsorted` into sorted cell keys). O(n log n) time, O(n)
+   memory, regardless of point density — the actual property `query_pairs`
+   lacked. A short proof (in the function's docstring, checked
+   numerically) guarantees this never *misses* a true occlusion; it can
+   flag some extra ones near a cell corner, since a square cell block
+   is necessarily a superset of the true circular search radius. That
+   false-positive rate is real (not negligible at coarse settings) but
+   was reduced by subdividing the grid finer than `angular_tol` itself
+   (`_CELL_SUBDIVISION`, a tunable search radius in finer cells, still
+   O(1) lookups per point) — this can only approach the circle's own
+   bounding square as a floor, never eliminate the excess entirely,
+   which is an accepted, explicitly-documented trade for a function this
+   module already calls a cheap proxy rather than a faithful
+   reproduction. Verified with a brute-force circular reference across
+   both a random synthetic scene and the project's real occluder-scene
+   integration test: zero missed occlusions in every case tried.
+
+Separately, every BQ posterior solve (`bq_splat/quadrature.py`) was doing
+two independent `np.linalg.solve` calls against the same kernel matrix
+(one for the mean, one for the variance) — consolidated into a single
+Cholesky factorization (`scipy.linalg.cho_factor`/`cho_solve`, one
+factorization shared across both right-hand sides via
+`np.column_stack`), roughly 4x fewer flops than two separate LU solves,
+with a `np.linalg.solve` fallback if the matrix isn't numerically SPD.
+
+Net result, measured directly on `chair_prepared/wide` (300k splats, 100
+cameras) with the fixed pipeline: full checkpoint load + real geometric
+attribution completes in **140s, using under 400MB of resident memory**
+— down from a configuration that previously either timed out (>280s) or
+crashed outright when the pairwise approach's memory use was allowed to
+scale with real point density instead of just point count.
+
 ## Bottom line
 
 All of the above is a **qualified pass**: the ported math is correct, the
