@@ -3,11 +3,15 @@ observed each splat, for real data where (unlike the mock scene, which
 assigns this by fiat for controlled experiments) there's no ground-truth
 record of which training views constrained which splat.
 
-Deliberately a cheap proxy, not a faithful reproduction of what the
-splatting/training pipeline actually did (that would mean rendering every
-training view and recording each splat's alpha-weighted contribution --
-real work, deferred until there's an actual renderer to hook into). This
-gives two purely-geometric filters instead:
+Originally a cheap proxy for the real work this docstring used to say was
+"deferred until there's an actual renderer to hook into": rendering every
+training view and recording each splat's alpha-weighted contribution.
+That renderer hook now exists (gs_experiment/gsplat_rendering_weights.py,
+via gsplat's own differentiable projection) for a single query ray/pixel;
+`attribute_observations` below still uses the cheaper geometric filters,
+since attributing *every* splat to *every* camera via the real renderer
+for a whole scene is a much larger cost than this module's original
+per-query use case needs:
 
   1. Frustum test: is the splat within the camera's field of view and in
      front of it.
@@ -15,8 +19,13 @@ gives two purely-geometric filters instead:
      camera's local angular coordinates (bearing, not full pixel
      projection) and flag a splat as occluded if another splat sits at
      a similar bearing but meaningfully closer to the camera.
+  3. ray_transmittance_weights: a continuous, depth-ordered analogue of
+     (2) for one specific ray -- real per-splat opacity turned into a
+     genuine alpha-compositing transmittance weight, still via bearing
+     proximity rather than the real anisotropic 2D footprint (contrast
+     with gsplat_rendering_weights.gsplat_alpha_compositing_weights).
 
-Both are pure numpy/scipy, no torch/gsplat dependency.
+All of the above are pure numpy/scipy, no torch/gsplat dependency.
 """
 
 from __future__ import annotations
@@ -24,17 +33,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
-from gs_experiment.camera import CameraPose
-
-
-def camera_local_frame(camera: CameraPose):
-    """Right-handed (right, up, forward) basis for `camera`."""
-    forward = camera.forward / np.linalg.norm(camera.forward)
-    up = camera.up / np.linalg.norm(camera.up)
-    right = np.cross(forward, up)
-    right = right / np.linalg.norm(right)
-    up = np.cross(right, forward)  # re-orthogonalize
-    return right, up, forward
+from gs_experiment.camera import CameraPose, camera_local_frame
 
 
 def project_to_camera_local(positions: np.ndarray, camera: CameraPose):
@@ -101,6 +100,54 @@ def occlusion_mask(positions: np.ndarray, camera: CameraPose, angular_tol: float
                 break
 
     return occluded
+
+
+def ray_transmittance_weights(
+    positions: np.ndarray, opacities: np.ndarray, camera: CameraPose, reference_bearing, angular_tol: float = 0.05
+) -> np.ndarray:
+    """Real, depth-ordered alpha-compositing transmittance weight
+    `w_i = T_i * alpha_i` for each of `positions`, along the single ray at
+    `reference_bearing` (a (bearing_x, bearing_y) pair, in `camera`'s local
+    angular coordinates -- see project_to_camera_local) -- the continuous,
+    occlusion-aware analogue of `occlusion_mask`'s binary yes/no flag.
+    `alpha_i` is real per-splat opacity used directly as the discrete alpha
+    in the standard alpha-compositing formula
+    (`PROOF_alpha_compositing_equivalence.md` Theorem A: `T_i = prod_{j
+    closer, same ray} (1 - alpha_j)`), not a synthetic Gaussian bump --
+    this is what `gs_experiment/pixel_uncertainty.py`'s
+    `rendering_aware_variance` (opacity-averaged, occlusion-blind) is
+    missing, and what its own docstring names as the next step.
+
+    Splats more than `angular_tol` from `reference_bearing`, behind the
+    camera, or with undefined bearing (see project_to_camera_local) get
+    weight 0 regardless of depth or opacity -- they aren't plausibly on
+    this ray at all. Splats behind a closer, sufficiently opaque splat on
+    the same ray get a small weight via the accumulated transmittance
+    product, exactly as real alpha compositing would down-weight them --
+    not a hard cutoff the way occlusion_mask's boolean flag is.
+    """
+    positions = np.asarray(positions, dtype=float)
+    opacities = np.asarray(opacities, dtype=float)
+    n = positions.shape[0]
+    weights = np.zeros(n)
+    if n == 0:
+        return weights
+
+    bearing_x, bearing_y, depth = project_to_camera_local(positions, camera)
+    ref_x, ref_y = reference_bearing
+    angular_dist = np.sqrt((bearing_x - ref_x) ** 2 + (bearing_y - ref_y) ** 2)
+    on_ray = (angular_dist < angular_tol) & ~np.isnan(bearing_x) & (depth > 0)
+    on_ray_idx = np.where(on_ray)[0]
+    if on_ray_idx.size == 0:
+        return weights
+
+    depth_order = on_ray_idx[np.argsort(depth[on_ray_idx])]
+    transmittance = 1.0
+    for i in depth_order:
+        alpha = float(np.clip(opacities[i], 0.0, 1.0))
+        weights[i] = transmittance * alpha
+        transmittance *= 1.0 - alpha
+    return weights
 
 
 def attribute_observations(positions: np.ndarray, cameras: list, fov_deg: float = 60.0, angular_tol: float = 0.05, depth_margin: float = 0.05):

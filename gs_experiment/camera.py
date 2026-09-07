@@ -104,3 +104,49 @@ def directions_from_positions_to_camera(positions: np.ndarray, camera: CameraPos
     to_camera = camera.center[None, :] - positions
     norms = np.linalg.norm(to_camera, axis=1, keepdims=True)
     return to_camera / norms
+
+
+def camera_local_frame(camera: CameraPose):
+    """Right-handed (right, up, forward) basis for `camera`."""
+    forward = camera.forward / np.linalg.norm(camera.forward)
+    up = camera.up / np.linalg.norm(camera.up)
+    right = np.cross(forward, up)
+    right = right / np.linalg.norm(right)
+    up = np.cross(right, forward)  # re-orthogonalize
+    return right, up, forward
+
+
+def viewmat_from_camera_pose(camera: CameraPose) -> np.ndarray:
+    """OpenCV-convention (x right, y down, z forward into the scene)
+    world-to-camera matrix, built directly from a CameraPose's
+    center/forward/up -- the same target convention
+    gs_experiment.nerf_transforms.opencv_viewmat_from_c2w produces from a
+    NeRF-synthetic c2w, but usable for *any* CameraPose, including ones
+    that never went through a transforms.json (turntable_camera,
+    make_mock_scene, ...). Needed at the gsplat rasterization boundary --
+    see gs_experiment/gsplat_rendering_weights.py.
+    """
+    right, up, forward = camera_local_frame(camera)
+    down = -up
+    rotation = np.stack([right, down, forward], axis=0)  # rows: camera's local axes, in world coordinates
+    translation = -rotation @ camera.center
+    viewmat = np.eye(4)
+    viewmat[:3, :3] = rotation
+    viewmat[:3, 3] = translation
+    return viewmat
+
+
+def project_point_to_pixel(point: np.ndarray, viewmat: np.ndarray, K: np.ndarray) -> np.ndarray:
+    """Plain pinhole projection of one world-space `point` (3,) into pixel
+    coordinates (x, y), given an OpenCV-convention world-to-camera
+    `viewmat` (4,4, see viewmat_from_camera_pose) and intrinsics `K` (3,3,
+    see gs_experiment.nerf_transforms.fov_x_to_intrinsics). Raises if the
+    point is behind the camera (non-positive camera-space z) -- callers
+    that need pixel coordinates for a specific query point are expected to
+    have already checked visibility (e.g. via in_frustum)."""
+    point = np.asarray(point, dtype=float)
+    point_cam = viewmat[:3, :3] @ point + viewmat[:3, 3]
+    if point_cam[2] <= 0:
+        raise ValueError(f"point is behind the camera (camera-space z={point_cam[2]:.4g})")
+    pixel_h = K @ (point_cam / point_cam[2])
+    return pixel_h[:2]

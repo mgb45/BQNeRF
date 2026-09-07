@@ -17,7 +17,15 @@ numpy/scipy.
   posterior mean/variance of the integral given point evaluations, plus
   the `_nd` (2D image-plane) and `_directional` generalizations. Uses a
   *relative* jitter (scaled to the Gram matrix's own diagonal) rather than
-  a fixed constant, for numerical conditioning.
+  a fixed constant, for numerical conditioning. Also
+  `bayesian_quadrature_rendering_aware` / `renderer_centered_residual_variance`:
+  the rendering-aware construction (see `render_weight.py` below) --
+  `k_q(xi, xi') = a_q(xi) k_base(xi, xi') a_q(xi')` for a query-specific
+  renderer weight `a_q`, in place of `_nd`'s uniform-box integration
+  domain.
+- `render_weight.py` — `GaussianRenderWeight`: `a_q = T_q sigma G_q`
+  modeled as an unnormalized Gaussian bump (amplitude, center,
+  covariance), for the closed-form rendering-aware quadrature above.
 - `reference.py` — the naive piecewise-constant ("alpha compositing style")
   Riemann-sum estimator, and a numerically-exact ground-truth integral, both
   used as baselines.
@@ -48,6 +56,7 @@ python -m bq_splat.validate --check alpha-compositing          # BQ posterior me
 python -m bq_splat.validate --check directional-isolation      # directional kernel, isolated
 python -m bq_splat.validate --check directional-combined       # position+direction vs. position-only
 python -m bq_splat.validate --check scaling                    # GS-scale computational feasibility
+python -m bq_splat.validate --check rendering-aware             # rendering-aware BQ vs. box-style BQ
 ```
 
 `--check accuracy` prints an accuracy/calibration summary and writes two
@@ -58,7 +67,13 @@ placement against local BQ variance. `--check scaling` prints
 neighbor-lookup and local-solve timing at up to 10^6 synthetic splats,
 with no plot output. `--check directional-isolation`/`directional-combined`
 write plots showing directional-coverage effects on posterior variance,
-alone and combined with the spatial signal.
+alone and combined with the spatial signal. `--check rendering-aware`
+builds a genuine ray/pixel scene with a real transmittance-weighted
+rendering functional and shows that an occluded splat with a wrong color
+barely moves the new rendering-aware BQ mean while it substantially moves
+the old box-style BQ mean fed the same raw colors -- see
+`PROOF_alpha_compositing_equivalence.md` section 7 for why the old
+approach has this gap.
 
 ## Findings so far
 

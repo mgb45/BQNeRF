@@ -20,15 +20,52 @@ current-conclusions summary (real scenes first).
   entry point for querying BQ variance against a real checkpoint. Builds
   a KD-tree once, caches the kernel's `vv` term per window size (the two
   exact optimizations `bq_splat` validated for GS-scale cost), and caps
-  local-neighbor count for tractability.
+  local-neighbor count for tractability. `spatial_only_variance`/
+  `directional_variance` integrate uniformly over an arbitrary box window
+  (`PROOF_alpha_compositing_equivalence.md` section 7 names this gap).
+  `rendering_aware_variance` is the renderer-aware replacement (see
+  `bq_splat/render_weight.py`): a real per-query `a_q` built from actual
+  per-splat opacity and a Gaussian footprint tied to the query radius, so
+  a low-opacity splat contributes less to both mean and variance by
+  construction, but the amplitude is occlusion-blind (a flat neighborhood-
+  mean opacity). `rendering_aware_variance_along_ray` closes that: real,
+  depth-ordered alpha-compositing transmittance weights along the specific
+  ray from a given camera through the query point
+  (`visibility_attribution.ray_transmittance_weights`), so a splat behind
+  a closer, opaque splat *on that ray* gets a small weight from real
+  accumulated transmittance rather than a uniform average -- but still via
+  an isotropic bearing threshold, not each splat's real projected shape.
+  `rendering_aware_variance_via_gsplat` is the most faithful version: real
+  gsplat GPU projection (`gsplat_rendering_weights.py`) gives each local
+  splat its actual anisotropic 2D footprint and real per-pixel alpha for a
+  given camera + intrinsics, in place of the isotropic-bearing proxy.
+  Needs `scales`/`rotations` on the engine and a GPU + gsplat env (see
+  `../requirements-gsplat.txt`); still not a live differentiable
+  rasterizer in the full sense (no antialiasing/sub-pixel footprint
+  integration, no gradient path -- runs under `torch.no_grad()`) -- see
+  that method's docstring for exactly what is and isn't modeled.
 - **`splat_scene.py`** — `load_from_gsplat_checkpoint` (reads a real
   `.ply` + `transforms.json`), `splat_observations` (expands a scene into
   the (position, direction, value) rows the directional kernel needs).
 - **`camera.py`** — camera pose representation, turntable pose
-  generation, and per-splat viewing-direction geometry.
+  generation, and per-splat viewing-direction geometry, including
+  `viewmat_from_camera_pose`/`project_point_to_pixel` (the pure-numpy
+  camera-to-gsplat-rasterization-boundary conversion `gsplat_rendering_weights.py`
+  uses).
+- **`gsplat_rendering_weights.py`** — `gsplat_alpha_compositing_weights`:
+  real per-pixel alpha-compositing weights via gsplat's own differentiable
+  EWA-splatting projection (`gsplat.fully_fused_projection`) -- needs
+  torch + a CUDA-enabled gsplat build and a GPU; kept out of
+  `pixel_uncertainty.py`'s top-level imports (lazily imported by
+  `rendering_aware_variance_via_gsplat`) so that module and the default
+  `pytest tests/` suite stay importable without torch/gsplat installed.
 - **`visibility_attribution.py`** — frustum + soft-z-buffer occlusion
   proxy for "which cameras plausibly saw this splat" (real training
-  pipelines don't record this).
+  pipelines don't record this). `ray_transmittance_weights` is the
+  continuous analogue for one specific ray: real per-splat opacity as
+  alpha, depth-ordered into a genuine alpha-compositing transmittance
+  weight per splat, instead of `occlusion_mask`'s binary yes/no --
+  what `pixel_uncertainty.rendering_aware_variance_along_ray` uses.
 - **`visibility_baseline.py`** — a simple, deliberately non-BQ visibility
   proxy (mean resultant length of observation directions), standing in
   for a dedicated visibility field in the combination experiments.

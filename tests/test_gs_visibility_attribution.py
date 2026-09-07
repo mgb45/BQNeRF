@@ -7,6 +7,7 @@ from gs_experiment.visibility_attribution import (
     invert_to_observed_camera_idx,
     occlusion_mask,
     project_to_camera_local,
+    ray_transmittance_weights,
 )
 
 
@@ -79,3 +80,50 @@ def test_attribute_observations_respects_occlusion_end_to_end():
     per_camera = attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.1)
     assert 0 in per_camera[0]
     assert 1 not in per_camera[0]
+
+
+def test_ray_transmittance_weights_zeroes_splats_off_the_reference_bearing():
+    camera = make_camera()
+    positions = np.array([[5.0, 0.0, 0.0], [5.0, 3.0, 0.0]])  # on-ray, off-ray
+    opacities = np.array([0.8, 0.9])
+    weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
+    assert weights[0] > 0.0
+    assert weights[1] == 0.0
+
+
+def test_ray_transmittance_weights_zeroes_splats_behind_the_camera():
+    camera = make_camera()
+    positions = np.array([[-5.0, 0.0, 0.0]])  # behind the camera, same nominal bearing
+    opacities = np.array([1.0])
+    weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
+    assert weights[0] == 0.0
+
+
+def test_ray_transmittance_weights_recovers_standard_alpha_compositing_along_one_ray():
+    """Two on-ray splats, near then far: matches
+    PROOF_alpha_compositing_equivalence.md Theorem A's discrete formula
+    directly -- w_0 = alpha_0, w_1 = (1 - alpha_0) * alpha_1."""
+    camera = make_camera()
+    positions = np.array([[2.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    alpha0, alpha1 = 0.6, 0.7
+    opacities = np.array([alpha0, alpha1])
+    weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
+    assert abs(weights[0] - alpha0) < 1e-9
+    assert abs(weights[1] - (1 - alpha0) * alpha1) < 1e-9
+
+
+def test_ray_transmittance_weights_fully_opaque_occluder_zeroes_out_whatever_is_behind_it():
+    camera = make_camera()
+    positions = np.array([[2.0, 0.0, 0.0], [5.0, 0.0, 0.0]])  # fully opaque occluder, then a target
+    opacities = np.array([1.0, 0.9])
+    weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
+    assert abs(weights[0] - 1.0) < 1e-9
+    assert weights[1] == 0.0
+
+
+def test_ray_transmittance_weights_all_zero_returns_all_zero_not_an_error():
+    camera = make_camera()
+    positions = np.array([[5.0, 10.0, 0.0]])  # off-ray
+    opacities = np.array([0.9])
+    weights = ray_transmittance_weights(positions, opacities, camera, reference_bearing=(0.0, 0.0), angular_tol=0.1)
+    assert np.all(weights == 0.0)

@@ -1,10 +1,15 @@
 import numpy as np
+import pytest
 
 from gs_experiment.camera import (
+    CameraPose,
+    camera_local_frame,
     directions_from_positions_to_camera,
+    project_point_to_pixel,
     turntable_arc,
     turntable_camera,
     turntable_ring,
+    viewmat_from_camera_pose,
 )
 
 
@@ -47,3 +52,44 @@ def test_directions_from_positions_to_camera_are_unit_vectors_pointing_at_camera
 
     expected0 = cam.center / np.linalg.norm(cam.center)
     np.testing.assert_allclose(dirs[0], expected0, atol=1e-9)
+
+
+def test_camera_local_frame_is_orthonormal():
+    cam = turntable_camera(5.0, 20.0, 70.0)
+    right, up, forward = camera_local_frame(cam)
+    for v in (right, up, forward):
+        assert abs(np.linalg.norm(v) - 1.0) < 1e-9
+    assert abs(np.dot(right, up)) < 1e-9
+    assert abs(np.dot(right, forward)) < 1e-9
+    assert abs(np.dot(up, forward)) < 1e-9
+
+
+def test_viewmat_from_camera_pose_is_a_proper_rotation_plus_translation():
+    cam = turntable_camera(5.0, 20.0, 70.0)
+    viewmat = viewmat_from_camera_pose(cam)
+    rotation = viewmat[:3, :3]
+    np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-9)
+    assert abs(np.linalg.det(rotation) - 1.0) < 1e-9  # a proper rotation, not a reflection
+
+
+def test_viewmat_from_camera_pose_maps_camera_center_to_the_origin():
+    cam = turntable_camera(5.0, 20.0, 70.0)
+    viewmat = viewmat_from_camera_pose(cam)
+    center_in_camera_space = viewmat[:3, :3] @ cam.center + viewmat[:3, 3]
+    np.testing.assert_allclose(center_in_camera_space, np.zeros(3), atol=1e-9)
+
+
+def test_project_point_to_pixel_dead_ahead_point_lands_at_the_principal_point():
+    cam = CameraPose(center=np.array([0.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    viewmat = viewmat_from_camera_pose(cam)
+    K = np.array([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
+    pixel = project_point_to_pixel(np.array([5.0, 0.0, 0.0]), viewmat, K)
+    np.testing.assert_allclose(pixel, [50.0, 50.0], atol=1e-9)
+
+
+def test_project_point_to_pixel_raises_for_a_point_behind_the_camera():
+    cam = CameraPose(center=np.array([0.0, 0.0, 0.0]), forward=np.array([1.0, 0.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
+    viewmat = viewmat_from_camera_pose(cam)
+    K = np.array([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
+    with pytest.raises(ValueError):
+        project_point_to_pixel(np.array([-5.0, 0.0, 0.0]), viewmat, K)

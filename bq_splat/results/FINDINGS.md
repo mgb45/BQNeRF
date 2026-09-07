@@ -99,6 +99,78 @@ no difference (0.97x) while position+direction variance correctly reports
 result is what `gs_experiment/`'s real-checkpoint directional-gradient
 work later builds on and stress-tests on real geometry.
 
+## Rendering-aware BQ fixes a real gap the earlier sections above didn't
+## close: the quadrature domain/weight wasn't renderer-aware
+
+`PROOF_alpha_compositing_equivalence.md` section 7 flags this precisely:
+everything validated above (and `gs_experiment/pixel_uncertainty.py`'s
+`LocalUncertaintyEngine`, which every real-checkpoint result in
+`gs_experiment/results/FINDINGS.md` is built on) integrates the base
+kernel uniformly over an arbitrary box window — the renderer
+(transmittance, opacity, footprint, visibility) never enters the
+integration functional itself. `bq_splat/render_weight.py`'s
+`GaussianRenderWeight` and `bayesian_quadrature_rendering_aware`
+(`bq_splat/quadrature.py`) close this: the kernel becomes query-specific,
+`k_q(xi, xi') = a_q(xi) k_base(xi, xi') a_q(xi')`, with `a_q = T_q sigma
+G_q` a real per-query rendering weight instead of a uniform indicator over
+a box. Closed-form for an isotropic RBF `k_base` and Gaussian `a_q` (via
+the standard Gaussian-product identity), cross-checked against numerical
+integration to `~1e-6` (1D) / Monte Carlo to `~5%` (2D, where nested
+`nquad` becomes impractically slow) in `tests/test_render_weight.py`.
+
+`python -m bq_splat.validate --check rendering-aware` builds a genuine
+ray/pixel scene — a real transmittance-weighted `a_q(t) = T(t)sigma(t)`
+derived from an explicit density (a narrow bump, a hard surface), splats
+scattered across the whole ray depth including behind the surface — and
+shows the fix operating end to end: adding one occluded splat with a
+deliberately wrong color shifts the old box-style BQ mean by `~1.49`
+(`~30%` of the true value `0.048`) but the rendering-aware BQ mean by only
+`~0.0001` (`~0.2%`) — a ~13,500x smaller shift — because `a_q` at that
+splat's depth is correctly near zero. See
+`bq_splat/results/rendering_aware.png`.
+
+**Connecting this back to `gs_experiment`**: a real per-query `a_q` built
+from actual splat data, not just the toy ray-depth demonstration above.
+Two steps are wired in, in increasing order of realism:
+`LocalUncertaintyEngine.rendering_aware_variance` (real per-splat opacity
+as `a_q`'s amplitude, a Gaussian footprint tied to the query radius, but
+occlusion-blind — a flat neighborhood-mean opacity) and
+`rendering_aware_variance_along_ray` (real, depth-ordered alpha-
+compositing transmittance weights along the specific ray from a given
+camera through the query point —
+`gs_experiment.visibility_attribution.ray_transmittance_weights`, the
+continuous analogue of `occlusion_mask`'s binary flag, using real
+per-splat opacity as the discrete alpha in Theorem A's own formula): a
+fully-opaque occluder in front of a target on the same ray now pulls the
+posterior mean essentially exactly onto the occluder's color
+(`tests/test_gs_pixel_uncertainty.py`'s
+`test_rendering_aware_variance_along_ray_weights_toward_the_occluder_not_the_occluded_target`),
+while the occlusion-blind version lands far from it.
+
+A third step, `rendering_aware_variance_via_gsplat`
+(`gs_experiment/gsplat_rendering_weights.py`), closes what the previous
+paragraph flagged as still open: it uses gsplat's own differentiable
+EWA-splatting projection (`gsplat.fully_fused_projection`, real GPU
+computation, validated end to end on an RTX 3090 in
+`tests/test_gsplat_rendering_weights.py` and
+`tests/test_gs_pixel_uncertainty_gsplat.py`) to get each splat's *real*
+anisotropic 2D footprint (from its actual scale/rotation) and real camera
+intrinsics, evaluates the exact per-pixel alpha formula gsplat's own CUDA
+rasterizer uses (`alpha_i(pixel) = opacity_i * exp(-sigma_i)`, confirmed
+to reproduce `opacity_i` exactly at a splat's own projected center), and
+runs the same depth-ordered transmittance recursion on top. A fully
+opaque, large-footprint occluder again pulls the posterior mean onto its
+own color, now via the real anisotropic footprint rather than an
+isotropic bearing threshold. **What's still not claimed**: no
+antialiasing/sub-pixel footprint integration, no gradient path (runs
+under `torch.no_grad()` — an evaluation-time query, not a training
+step), and no claim of pixel-exact equivalence to a full production
+rasterizer's tile-based compositing order. Requires the documented
+gcc-11/nvcc-12.3 toolchain (`requirements-gsplat.txt`) to JIT-compile
+gsplat's CUDA kernels — a real, previously-undocumented-here reproduction
+of that exact "unsupported GNU version" gotcha was hit and resolved while
+building this.
+
 ## Bottom line
 
 All of the above is a **qualified pass**: the ported math is correct, the
@@ -106,8 +178,10 @@ raw-accuracy gap is understood (a fixable bandwidth-mismatch issue, not a
 fundamental limitation) and no longer the claim being defended, posterior
 variance is reasonably calibrated and responds to under-resolved regions
 in the expected way, the computational cost concern that motivated a
-possible GPU rewrite was resolved on CPU alone, and the directional
-extension is mathematically real at toy scale. None of this is evidence
-yet that any of it is a *better or cheaper* way to get these signals than
-existing methods at real GS scale — that comparison is what
-`gs_experiment/` was built to test.
+possible GPU rewrite was resolved on CPU alone, the directional extension
+is mathematically real at toy scale, and the box-quadrature gap flagged in
+`PROOF_alpha_compositing_equivalence.md` section 7 now has a working,
+validated fix (rendering-aware BQ, above) rather than remaining an open
+item. None of this is evidence yet that any of it is a *better or
+cheaper* way to get these signals than existing methods at real GS scale
+— that comparison is what `gs_experiment/` was built to test.

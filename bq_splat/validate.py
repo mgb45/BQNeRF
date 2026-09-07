@@ -15,6 +15,7 @@ Run: .venv/bin/python bq_splat/validate.py --check <name>
   directional-isolation       (was scripts/validate_directional_isolation.py)
   directional-combined        (was scripts/validate_directional_combined.py)
   scaling                     (was scripts/benchmark_local_bq_scaling.py)
+  rendering-aware              (new: rendering-aware BQ vs. box-style BQ)
 """
 
 from __future__ import annotations
@@ -42,9 +43,11 @@ from bq_splat.quadrature import (
     bayesian_quadrature,
     bayesian_quadrature_directional,
     bayesian_quadrature_nd,
+    bayesian_quadrature_rendering_aware,
     directional_posterior_variance,
 )
 from bq_splat.reference import riemann_estimate, true_integral
+from bq_splat.render_weight import GaussianRenderWeight
 from bq_splat.toy_scene import (
     gap_nodes,
     gap_nodes_2d,
@@ -1113,6 +1116,177 @@ def check_scaling():
 
 
 # =============================================================================
+# --check rendering-aware  (new: rendering-aware Bayesian quadrature)
+#
+# Validates the rendering-aware BQ construction (bq_splat/render_weight.py,
+# bayesian_quadrature_rendering_aware in bq_splat/quadrature.py) against the
+# thing it replaces: bayesian_quadrature fed raw splat colors over a domain
+# that doesn't know which part of it the renderer actually cares about --
+# structurally the same mistake gs_experiment/pixel_uncertainty.py's
+# LocalUncertaintyEngine makes with a generic 3D spatial window (see
+# bq_splat/PROOF_alpha_compositing_equivalence.md section 7).
+#
+# Builds a genuine ray/pixel rendering functional a_q(t) = T(t) sigma(t) from
+# an explicit density sigma(t) (a narrow bump -- a "hard" surface), not an
+# arbitrary made-up weight, then moment-matches it to a GaussianRenderWeight
+# for the closed-form path (a_q need not be exactly Gaussian in general --
+# this is a cheap, honest approximation, not claimed exact). Splats scatter
+# across the whole ray depth, including behind the surface (where a_q ~ 0,
+# i.e. occluded); one such splat is given a deliberately wrong/extreme color
+# to make the fix visible: the true rendered value and the rendering-aware BQ
+# estimate barely move when it's added, while the old box-style estimate (fed
+# the same raw colors) shifts noticeably, since it has no way to see that
+# splat is irrelevant to this particular query.
+#
+# Output: bq_splat/results/rendering_aware.png
+# =============================================================================
+
+
+def rendering_aware_build_ray(domain=(0.0, 10.0), t_surface=4.0, density_amp=8.0, density_width=0.15, grid_res=4000):
+    """A real transmittance-weighted rendering functional a_q(t) = T(t)
+    sigma(t), derived from an explicit density sigma(t) (one narrow Gaussian
+    bump -- a hard surface at t_surface), not an arbitrary made-up weight.
+    T(t) = exp(-integral_a^t sigma(s) ds), computed by cumulative trapezoidal
+    integration on a fine grid."""
+    a, b = domain
+    grid = np.linspace(a, b, grid_res)
+
+    def density(t):
+        t = np.asarray(t, dtype=float)
+        return density_amp * np.exp(-0.5 * ((t - t_surface) / density_width) ** 2)
+
+    dens_grid = density(grid)
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (dens_grid[1:] + dens_grid[:-1]) * np.diff(grid))])
+    transmittance_grid = np.exp(-cum)
+    a_q_grid = transmittance_grid * dens_grid
+
+    def a_q(t):
+        return np.interp(t, grid, a_q_grid)
+
+    return grid, a_q_grid, a_q
+
+
+def rendering_aware_moment_match(grid, a_q_grid) -> GaussianRenderWeight:
+    """Moment-match a_q (an arbitrary nonnegative bump T(t)*sigma(t)) to a
+    GaussianRenderWeight: same total-mass location/spread as the real a_q,
+    peak value as the amplitude."""
+    mass = np.trapezoid(a_q_grid, grid)
+    mean = np.trapezoid(grid * a_q_grid, grid) / mass
+    var = np.trapezoid((grid - mean) ** 2 * a_q_grid, grid) / mass
+    amplitude = float(np.max(a_q_grid))
+    return GaussianRenderWeight(amplitude=amplitude, center=[mean], covariance=[[max(var, 1e-6)]])
+
+
+def _mean_of(x):
+    return x.mean if isinstance(x, BQResult) else float(x)
+
+
+def _variance_suffix(x):
+    return f" variance={x.variance:.5f}" if isinstance(x, BQResult) else ""
+
+
+def rendering_aware_run(seed=0, domain=(0.0, 10.0), t_surface=4.0, n_nodes=40, sigma_rbf=0.3, occluder_t=8.0, occluder_color=5.0):
+    rng = np.random.default_rng(seed)
+    a, b = domain
+    grid, a_q_grid, a_q = rendering_aware_build_ray(domain=domain, t_surface=t_surface)
+
+    scene = make_mixture_scene(rng, domain=domain, n_bumps=5, min_width=0.3, max_width=0.8)
+    c_true = scene.g_true
+
+    render_weight = rendering_aware_moment_match(grid, a_q_grid)
+
+    true_val, _ = integrate.quad(
+        lambda t: float(a_q(np.array([t]))[0] * c_true(np.array([t]))[0]),
+        a, b, points=[t_surface], limit=400, epsabs=1e-6, epsrel=1e-6,
+    )
+
+    nodes = uniform_nodes(rng, domain, n_nodes)
+    colors = c_true(nodes)
+
+    def estimates(nodes, colors):
+        old_result = bayesian_quadrature(nodes, colors, RBFKernel(sigma=sigma_rbf), a, b)
+        new_result = bayesian_quadrature_rendering_aware(
+            nodes.reshape(-1, 1), colors, render_weight, sigma_rbf=sigma_rbf
+        )
+        riemann = riemann_estimate(nodes, a_q(nodes) * colors, a, b)
+        return old_result, new_result, riemann
+
+    old_before, new_before, riemann_before = estimates(nodes, colors)
+
+    nodes_with_occ = np.append(nodes, occluder_t)
+    colors_with_occ = np.append(colors, occluder_color)
+    old_after, new_after, riemann_after = estimates(nodes_with_occ, colors_with_occ)
+
+    return dict(
+        grid=grid, a_q_grid=a_q_grid, c_true=c_true, nodes=nodes, colors=colors,
+        occluder_t=occluder_t, occluder_color=occluder_color, true_val=true_val,
+        old_before=old_before, new_before=new_before, riemann_before=riemann_before,
+        old_after=old_after, new_after=new_after, riemann_after=riemann_after,
+    )
+
+
+def check_rendering_aware():
+    result = rendering_aware_run()
+    true_val = result["true_val"]
+
+    print("=== Rendering-aware BQ vs. box-style BQ, ray/pixel domain with an occluded splat ===")
+    print(f"true rendered value C_q = integral a_q(t) c(t) dt: {true_val:.5f}\n")
+
+    def report(label, before, after):
+        print(f"[{label}]")
+        print(f"  before adding occluded splat: mean={_mean_of(before):.5f}{_variance_suffix(before)}")
+        print(f"  after adding occluded splat:  mean={_mean_of(after):.5f}{_variance_suffix(after)}")
+        print(f"  shift from one occluded (a_q~0) splat with a wrong color: {abs(_mean_of(after) - _mean_of(before)):.5f}\n")
+
+    report("old box-style BQ (bayesian_quadrature, fed raw colors)", result["old_before"], result["old_after"])
+    report("rendering-aware BQ (bayesian_quadrature_rendering_aware)", result["new_before"], result["new_after"])
+    report("Riemann / alpha-compositing baseline (correctly a_q-weighted)", result["riemann_before"], result["riemann_after"])
+
+    grid, a_q_grid, c_true = result["grid"], result["a_q_grid"], result["c_true"]
+    nodes, colors = result["nodes"], result["colors"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax = axes[0]
+    ax.plot(grid, c_true(grid), color="tab:blue", label="true color field c(t)")
+    ax2 = ax.twinx()
+    ax2.plot(grid, a_q_grid, color="tab:red", label="rendering weight a_q(t) = T(t) sigma(t)")
+    ax.scatter(nodes, colors, s=18, color="black", zorder=5, label="splat observations (color)")
+    ax.scatter(
+        [result["occluder_t"]], [result["occluder_color"]], s=80, color="tab:orange", marker="*", zorder=6,
+        label="occluded splat, wrong color",
+    )
+    ax.set_xlabel("ray depth t")
+    ax.set_ylabel("color", color="tab:blue")
+    ax2.set_ylabel("a_q(t)", color="tab:red")
+    ax.set_title("ray profile: color field, rendering weight, splat observations")
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=7)
+
+    ax = axes[1]
+    labels = ["true", "riemann\n(alpha-comp.)", "old box BQ", "rendering-aware BQ"]
+    before_vals = [true_val, result["riemann_before"], result["old_before"].mean, result["new_before"].mean]
+    after_vals = [true_val, result["riemann_after"], result["old_after"].mean, result["new_after"].mean]
+    x = np.arange(len(labels))
+    width = 0.35
+    ax.bar(x - width / 2, before_vals, width, label="without occluded splat", color="tab:gray")
+    ax.bar(x + width / 2, after_vals, width, label="with occluded splat (wrong color)", color="tab:orange")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.axhline(true_val, color="black", linestyle="--", linewidth=1, label="true value")
+    ax.set_title("estimate shift from one occluded, wrong-colored splat")
+    ax.legend(fontsize=7)
+
+    fig.suptitle("Rendering-aware BQ vs. box-style BQ: does an occluded splat corrupt the estimate?")
+    fig.tight_layout()
+    out = RESULTS_DIR / "rendering_aware.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out}")
+
+
+# =============================================================================
 # CLI dispatch
 # =============================================================================
 
@@ -1125,6 +1299,7 @@ CHECKS = {
     "directional-isolation": check_directional_isolation,
     "directional-combined": check_directional_combined,
     "scaling": check_scaling,
+    "rendering-aware": check_rendering_aware,
 }
 
 
