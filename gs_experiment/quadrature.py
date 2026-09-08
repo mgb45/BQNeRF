@@ -9,8 +9,7 @@ weight_i * color_i (which already bake in an implicit bin width). Treating
 an already-integrated quantity as a further point evaluation to integrate
 again silently double-counts the bin width — this repo's own git history
 has a "fixed bug in bq quadrature, was doing double quad" commit, which is
-exactly this trap. See bq_splat/reference.py and bq_splat/toy_scene.py for
-how nodes/values are generated to avoid it.
+exactly this trap.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from scipy import integrate
 from scipy.linalg import LinAlgError, cho_factor, cho_solve
 from scipy.stats import multivariate_normal
 
-from bq_splat.kernels import DirectionalKernel, Kernel, ProductKernel, RBFKernel
+from gs_experiment.kernels import DirectionalKernel, ProductKernel, RBFKernel
 
 
 @dataclass
@@ -64,164 +63,13 @@ def _posterior_mean_variance(kxx: np.ndarray, values: np.ndarray, moment_vector:
     return mean, max(variance, 0.0)
 
 
-def bayesian_quadrature_directional(
-    positions,
-    directions,
-    values,
-    pos_kernel,
-    dir_kernel: DirectionalKernel,
-    pos_bounds,
-    query_direction,
-    rel_jitter: float = 1e-4,
-    precomputed_pos_vv: float | None = None,
-) -> BQResult:
-    """BQ over a joint (position, direction) domain, where position is
-    integrated over (as in bayesian_quadrature_nd -- a genuine quadrature
-    integral, e.g. a pixel footprint) but direction is evaluated at one
-    query direction, not integrated -- a rendered pixel looks in one
-    specific outgoing direction, it doesn't average over a range of them.
-    See DirectionalKernel's docstring for why this asymmetry is the correct
-    generalization, not an approximation of a "properly" symmetric one.
-
-    `positions`/`directions`/`values` are parallel arrays: `values[i]` is an
-    observation at `positions[i]` from `directions[i]` (e.g. one training
-    view's contribution to one splat). `pos_kernel` must use the
-    ProductKernel-style interface -- `v(x, bounds)`/`vv(bounds)` with
-    `bounds` a list of (a, b) pairs, even in 1D (wrap a plain Kernel like
-    `ProductKernel([RBFKernel(sigma)])`) -- rather than plain Kernel's
-    `v(x, a, b)`/`vv(a, b)`, so callers don't need to special-case
-    dimensionality. `dir_kernel` is a DirectionalKernel (no v/vv, evaluated
-    pointwise).
-
-    K_ij = pos_kernel.k(x_i, x_j) * dir_kernel.k(w_i, w_j)
-    v_i   = pos_kernel.v(x_i, pos_bounds) * dir_kernel.k(w_i, w_query)
-    vv    = pos_kernel.vv(pos_bounds) * dir_kernel.k(w_query, w_query)
-          = pos_kernel.vv(pos_bounds)               (self-similarity is 1)
-
-    `precomputed_pos_vv`: pass `pos_kernel.vv(pos_bounds)` in directly if
-    the caller already has it cached -- exact, not approximate, for a
-    stationary kernel evaluated on a fixed-size, translated window (see
-    bq_splat/results/FINDINGS.md section 8; gs_experiment/pixel_uncertainty.py
-    is the first real caller of this).
-    """
-    positions = np.asarray(positions, dtype=float)
-    if positions.ndim == 1:
-        positions = positions.reshape(-1, 1)
-    directions = np.asarray(directions, dtype=float)
-    values = np.asarray(values, dtype=float).reshape(-1)
-    n = positions.shape[0]
-
-    vv = float(precomputed_pos_vv) if precomputed_pos_vv is not None else float(pos_kernel.vv(pos_bounds))
-    if n == 0:
-        return BQResult(mean=0.0, variance=vv)
-
-    kxx = pos_kernel.k(positions, positions) * dir_kernel.k(directions, directions)
-    jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
-
-    v_pos = np.asarray(pos_kernel.v(positions, pos_bounds)).reshape(-1)
-    v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
-    v = v_pos * v_dir
-
-    mean, variance = _posterior_mean_variance(kxx, values, v, vv)
-    return BQResult(mean=mean, variance=variance)
-
-
-def directional_posterior_variance(
-    directions, values, dir_kernel: DirectionalKernel, query_direction, rel_jitter: float = 1e-4
-) -> BQResult:
-    """Pure-directional special case of bayesian_quadrature_directional,
-    for a single fixed spatial location (position integration dropped
-    entirely rather than degenerated into it) -- standard GP regression
-    posterior mean/variance at one query direction, given observations from
-    other directions. Used to validate DirectionalKernel's behavior in
-    isolation, without conflating it with the position-integration
-    machinery bayesian_quadrature_directional also does.
-    """
-    directions = np.asarray(directions, dtype=float)
-    values = np.asarray(values, dtype=float).reshape(-1)
-    n = directions.shape[0]
-
-    prior_variance = 1.0  # dir_kernel.k(q, q) == 1 always
-    if n == 0:
-        return BQResult(mean=0.0, variance=prior_variance)
-
-    kxx = dir_kernel.k(directions, directions)
-    jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
-
-    k_query = dir_kernel.k(directions, query_direction).reshape(-1)
-
-    mean, variance = _posterior_mean_variance(kxx, values, k_query, prior_variance)
-    return BQResult(mean=mean, variance=variance)
-
-
-def bayesian_quadrature_nd(
-    nodes, values, kernel: ProductKernel, bounds, rel_jitter: float = 1e-4, precomputed_vv: float | None = None
-) -> BQResult:
-    """Same as `bayesian_quadrature`, generalized to a D-dimensional domain
-    via a `ProductKernel` and a per-axis `bounds` list of (a_d, b_d) pairs.
-    Kept as a separate function (rather than folding the 1D case into this
-    one) so the already-tested 1D `bayesian_quadrature` path is untouched.
-
-    `precomputed_vv`: pass `kernel.vv(bounds)` in directly if the caller
-    already has it cached -- exact, not approximate, for a stationary
-    kernel evaluated on a fixed-size, translated window (see
-    bq_splat/results/FINDINGS.md section 8).
-    """
-    nodes = np.asarray(nodes, dtype=float)
-    if nodes.ndim == 1:
-        nodes = nodes.reshape(-1, 1)
-    values = np.asarray(values, dtype=float).reshape(-1)
-    n = nodes.shape[0]
-    vv = float(precomputed_vv) if precomputed_vv is not None else float(kernel.vv(bounds))
-    if n == 0:
-        return BQResult(mean=0.0, variance=vv)
-
-    kxx = kernel.k(nodes, nodes)
-    jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
-    v = kernel.v(nodes, bounds).reshape(-1)
-
-    mean, variance = _posterior_mean_variance(kxx, values, v, vv)
-    return BQResult(mean=mean, variance=variance)
-
-
-def bayesian_quadrature(nodes, values, kernel: Kernel, a: float, b: float, rel_jitter: float = 1e-4) -> BQResult:
-    """Posterior mean/variance of integral_a^b g(t) dt given g(nodes) = values.
-
-    `rel_jitter` scales the Gram matrix diagonal (jitter = rel_jitter *
-    mean(diag(K))) rather than adding a fixed absolute constant. Node
-    placements here can be irregular enough to produce near-duplicate nodes
-    (unlike the original repo's regularly-spaced ray samples), which drives
-    the Gram matrix condition number past 1e18 with a fixed-scale jitter of
-    1e-8 -- confirmed empirically for n=40 random uniform nodes at sigma=0.35.
-    Splats can be similarly near-collocated in a real GS scene, so this is a
-    real stability requirement, not just a toy-script wrinkle.
-    """
-    nodes = np.asarray(nodes, dtype=float).reshape(-1)
-    values = np.asarray(values, dtype=float).reshape(-1)
-    n = nodes.shape[0]
-    if n == 0:
-        return BQResult(mean=0.0, variance=float(kernel.vv(a, b)))
-
-    kxx = kernel.k(nodes.reshape(-1, 1), nodes.reshape(1, -1))
-    jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
-    v = kernel.v(nodes, a, b).reshape(-1)
-
-    mean, variance = _posterior_mean_variance(kxx, values, v, float(kernel.vv(a, b)))
-    return BQResult(mean=mean, variance=variance)
-
-
 # ---------------------------------------------------------------------------
 # Rendering-aware Bayesian quadrature: k_q(xi, xi') = a_q(xi) k_base(xi, xi')
 # a_q(xi'), where a_q = T_q * sigma * G_q is a renderer/query-specific weight
-# (bq_splat/render_weight.py) and k_base is a prior over the *radiance field*
+# (gs_experiment/render_weight.py) and k_base is a prior over the *radiance field*
 # c(xi), not over the rendering integrand a_q * c directly (the distinction
-# that fixes what bayesian_quadrature_nd's uniform-box v/vv gets wrong -- see
-# bq_splat/PROOF_alpha_compositing_equivalence.md section 7 and
-# bq_splat/README.md).
+# that fixes what the uniform-box quadrature domain this module used to use
+# got wrong; retired, see git history).
 #
 # Two quantities matter: z_{q,i} = integral a_q(xi) k_base(xi, x_i) dxi (the
 # renderer-aware moment vector -- how much this query's rendering integral
@@ -236,8 +84,8 @@ def bayesian_quadrature(nodes, values, kernel: Kernel, a: float, b: float, rel_j
 # docstring for the derivation. A numerical (scipy.integrate.nquad) fallback
 # is kept alongside for a general ProductKernel k_base (e.g. Matern) or a
 # non-Gaussian a_q, and as the ground-truth cross-check for the closed form
-# (tests/test_render_weight.py) -- the same "closed form where cheap,
-# numerically cross-checked" discipline bq_splat/kernels.py already follows.
+# (tests/gs_experiment/test_render_weight.py) -- the same "closed form where cheap,
+# numerically cross-checked" discipline gs_experiment/kernels.py already follows.
 # ---------------------------------------------------------------------------
 
 
@@ -259,7 +107,7 @@ def rendering_aware_moment_vector(nodes, render_weight, sigma_rbf: float) -> np.
                 = A * N(mu_q; x_i, Sigma_q + sigma_rbf^2 I).
 
     Exact, not a numerical approximation -- cross-checked against
-    numerical_rendering_moment_vector in tests/test_render_weight.py.
+    numerical_rendering_moment_vector in tests/gs_experiment/test_render_weight.py.
     """
     nodes = np.atleast_2d(np.asarray(nodes, dtype=float))
     d = render_weight.dim
@@ -285,7 +133,7 @@ def rendering_aware_prior_variance(render_weight, sigma_rbf: float) -> float:
 
     with A as in rendering_aware_moment_vector. Exact, not a numerical
     approximation -- cross-checked against numerical_rendering_prior_variance
-    in tests/test_render_weight.py.
+    in tests/gs_experiment/test_render_weight.py.
     """
     d = render_weight.dim
     cov_sum = 2 * render_weight.covariance + (sigma_rbf**2) * np.eye(d)
@@ -306,7 +154,7 @@ def numerical_rendering_moment_vector(nodes, render_weight, base_kernel, domain)
     is all of R^D.
 
     Used both as a real fallback for non-RBF/non-Gaussian cases and as the
-    ground-truth cross-check for the closed form (tests/test_render_weight.py).
+    ground-truth cross-check for the closed form (tests/gs_experiment/test_render_weight.py).
     """
     nodes = np.atleast_2d(np.asarray(nodes, dtype=float))
     out = np.empty(nodes.shape[0])
@@ -328,7 +176,7 @@ def numerical_rendering_prior_variance(render_weight, base_kernel, domain) -> fl
     scipy.integrate.nquad over `domain` x `domain`. See
     numerical_rendering_moment_vector for the `base_kernel`/`domain`
     contract; this is its double-integral analogue, and the ground-truth
-    cross-check for rendering_aware_prior_variance in tests/test_render_weight.py
+    cross-check for rendering_aware_prior_variance in tests/gs_experiment/test_render_weight.py
     for D=1 (a tractable 2D nquad integral).
 
     Scales badly past D=1: this integrates over `2*D` dimensions total (D
@@ -337,7 +185,7 @@ def numerical_rendering_prior_variance(render_weight, base_kernel, domain) -> fl
     not complete in 100s even over a tight, few-sigma domain) -- an
     importance-sampled Monte Carlo estimate (sample xi, xi' directly from
     a_q's own Gaussian shape, average k_base(xi, xi')) is the practical
-    fallback for D>=2, used in tests/test_render_weight.py's D=2 cross-check
+    fallback for D>=2, used in tests/gs_experiment/test_render_weight.py's D=2 cross-check
     instead of this function.
     """
     d = render_weight.dim
@@ -437,9 +285,9 @@ def renderer_centered_residual_variance(
     mode: str = "closed_form",
 ) -> float:
     """Formulation 2 ("renderer-centred probabilistic quadrature"): keeps
-    ordinary alpha compositing (e.g. bq_splat.reference.riemann_estimate) as
-    the predictive mean, and uses only this module's rendering-aware
-    variance to model the unresolved integration error around it --
+    ordinary alpha compositing as the predictive mean, and uses only this
+    module's rendering-aware variance to model the unresolved integration
+    error around it --
 
         C_q = C_hat_q^3DGS + eps_q,     eps_q ~ N(0, z_{q,0} - z_q^T K^-1 z_q)
 
@@ -480,20 +328,18 @@ def bayesian_quadrature_rendering_aware_directional(
     position+direction base kernel, `k_base(xi, xi') = k_pos(x, x') *
     k_dir(d, d')`, so that `k_q(xi, xi') = a_q(x) k_base(xi, xi') a_q(x')`
     carries both the renderer-specific spatial envelope
-    (`bayesian_quadrature_rendering_aware`'s `render_weight`) *and* the
-    directional/epistemic term (`bayesian_quadrature_directional`'s
-    `dir_kernel`) at once, instead of the two living as separate,
-    unconnected code paths. `a_q` itself is still position-only (T_q sigma
-    G_q are about *where* along a ray/footprint mass concentrates, not
-    which direction a splat happens to have been observed from) -- the
-    directional dependence enters purely through `k_dir`, exactly as the
-    prompt's `k_dir(d,d') = exp[kappa(d^T d' - 1)]` factor does.
+    (`bayesian_quadrature_rendering_aware`'s `render_weight`) *and* a
+    directional/epistemic term (`dir_kernel`) at once, instead of the two
+    living as separate, unconnected code paths. `a_q` itself is still
+    position-only (T_q sigma G_q are about *where* along a ray/footprint
+    mass concentrates, not which direction a splat happens to have been
+    observed from) -- the directional dependence enters purely through
+    `k_dir`, exactly as the prompt's `k_dir(d,d') = exp[kappa(d^T d' - 1)]`
+    factor does.
 
-    Mirrors bayesian_quadrature_directional's own generalization of
-    bayesian_quadrature_nd (see that function's docstring): position is
-    integrated over via `render_weight`'s spatial envelope, direction is
-    evaluated at one `query_direction`, not integrated -- a rendered pixel
-    looks in one specific outgoing direction. Because
+    Position is integrated over via `render_weight`'s spatial envelope,
+    direction is evaluated at one `query_direction`, not integrated -- a
+    rendered pixel looks in one specific outgoing direction. Because
     `dir_kernel.k(d, d) == 1` always (DirectionalKernel's docstring),
     `z_{q,0}` is *exactly* the same spatial-only prior variance
     `rendering_aware_prior_variance`/`bayesian_quadrature_rendering_aware`
@@ -505,11 +351,9 @@ def bayesian_quadrature_rendering_aware_directional(
         z_{q,0}  = integral integral a_q(xi) a_q(xi') k_pos(xi, xi') dxi dxi'
 
     `positions`/`directions`/`values` are parallel arrays, one row per
-    (splat, observing-direction) pair -- the same input shape
-    bayesian_quadrature_directional expects (see that function's
-    docstring for why: a splat needs to be observed from *multiple*
-    directions during training for this term to carry any signal at all;
-    one row per splat with a single direction each cannot).
+    (splat, observing-direction) pair -- a splat needs to be observed from
+    *multiple* directions during training for this term to carry any
+    signal at all; one row per splat with a single direction each cannot.
     """
     positions = np.atleast_2d(np.asarray(positions, dtype=float))
     directions = np.asarray(directions, dtype=float)

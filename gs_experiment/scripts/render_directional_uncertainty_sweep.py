@@ -26,9 +26,9 @@ computed on a checkpoint nobody checked could actually reconstruct the
 scene isn't trustworthy in either direction (see ROADMAP.md item 2 and
 FINDINGS.md's bonsai/lego confound writeups).
 
-Kernel family (`--kernel-family rbf|matern`) and bandwidth are exposed,
-not hardcoded -- kernel flexibility is a strength of the method, not a
-gap to close (ROADMAP.md item 4).
+Bandwidth is exposed, not hardcoded. `--kernel-family` is RBF-only for now
+(`rendering_aware_variance_via_gsplat`'s closed form is RBF-only, see
+gs_experiment/render_weight.py) -- non-RBF kernel-family support is future work.
 
 `--mode` selects what gets rendered:
   - `directional` (default): the turntable sweep above, spatial +
@@ -57,7 +57,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import matplotlib
 
@@ -67,18 +67,14 @@ import numpy as np
 import torch
 from PIL import Image
 
-from bq_splat.kernels import DirectionalKernel
+from gs_experiment.kernels import DirectionalKernel
 from gs_experiment.camera import directions_from_positions_to_camera, translate_cameras, turntable_ring
 from gs_experiment.nerf_transforms import camera_pose_from_c2w, fov_x_to_intrinsics, load_transforms
-from gs_experiment.pixel_uncertainty import (
-    LocalUncertaintyEngine,
-    make_default_3d_matern_kernel,
-    make_default_3d_position_kernel,
-)
+from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
 from gs_experiment.ply_io import read_3dgs_ply
 from gs_experiment.splat_scene import load_from_gsplat_checkpoint, splat_observations
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -96,7 +92,7 @@ def check_quality_gate(
     a bug caught exactly this way rather than trusted as a real result).
     Raises SystemExit below min_psnr unless force=True.
     """
-    from gs_experiment.render_reconstruction import render_views
+    from gs_experiment.scripts.render_reconstruction import render_views
 
     if eval_dir is None:
         candidate = Path(scene_dir).parent / "eval"
@@ -213,7 +209,9 @@ def run(
 
     ck = read_3dgs_ply(f"{scene_dir}/splats.ply")
     scene = load_from_gsplat_checkpoint(scene_dir, attribution_angular_tol=attribution_angular_tol)
-    obs_positions, obs_directions, obs_values = splat_observations(scene)
+    obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations = splat_observations(
+        scene, include_render_attrs=True
+    )
     bounds = tuple((obs_positions[:, d].min() - 1.0, obs_positions[:, d].max() + 1.0) for d in range(3))
 
     # Auto-frame from the checkpoint's own splat extent unless the caller
@@ -231,31 +229,17 @@ def run(
         radius = max(2.5 * scene_radius, 1e-3)
         print(f"auto-framing: scene extent ~{scene_radius:.2f} -> camera radius {radius:.2f}, center {center}")
 
-    if kernel_family == "rbf":
-        pos_kernel = make_default_3d_position_kernel(sigma=bandwidth)
-    elif kernel_family == "matern":
-        pos_kernel = make_default_3d_matern_kernel(rho=bandwidth)
-    else:
-        raise ValueError(f"unknown kernel_family {kernel_family!r}, expected 'rbf' or 'matern'")
+    if kernel_family != "rbf":
+        raise ValueError(
+            f"unknown kernel_family {kernel_family!r}, expected 'rbf' -- rendering_aware_variance_via_gsplat's closed "
+            "form is RBF-only for now (gs_experiment/render_weight.py); non-RBF kernel-family support is future work"
+        )
+    pos_kernel = make_default_3d_position_kernel(sigma=bandwidth)
     dir_kernel = DirectionalKernel(kappa=kappa)
     engine = LocalUncertaintyEngine(
         positions=obs_positions, values=obs_values, pos_kernel=pos_kernel, scene_bounds=bounds,
         directions=obs_directions, dir_kernel=dir_kernel, max_neighbors=max_neighbors,
-    )
-
-    t0 = time.time()
-    dummy_dir = np.array([0.0, 0.0, 1.0])
-    for p in obs_positions[:30]:
-        if mode == "directional":
-            engine.directional_variance(p, dummy_dir, window_radius)
-        engine.spatial_only_variance(p, window_radius)
-    per_query_s = (time.time() - t0) / 30
-    total_queries = depth_width * depth_height * n_frames
-    solve_desc = "both BQ solves" if mode == "directional" else "spatial-only BQ solve"
-    print(
-        f"measured {per_query_s * 1000:.2f} ms/pixel ({solve_desc}, {kernel_family} kernel, "
-        f"max_neighbors={max_neighbors}); {depth_width}x{depth_height} x {n_frames} frames = {total_queries} pixels "
-        f"-> est. {total_queries * per_query_s / 60:.1f} min total"
+        opacities=obs_opacities, scales=obs_scales, rotations=obs_rotations,
     )
 
     all_positions = torch.tensor(ck["positions"], dtype=torch.float32, device=device)
@@ -269,6 +253,22 @@ def run(
     K_depth = fov_x_to_intrinsics(np.deg2rad(fov_deg), depth_width, depth_height)
 
     cameras = translate_cameras(turntable_ring(radius=radius, n_views=n_frames, phi_deg=phi_deg), center)
+
+    warmup_projection = engine.build_gsplat_projection(cameras[0], K_depth, depth_width, depth_height, device=device)
+    t0 = time.time()
+    dummy_dir = np.array([0.0, 0.0, 1.0])
+    for p in obs_positions[:30]:
+        if mode == "directional":
+            engine.rendering_aware_variance_via_gsplat_directional(p, dummy_dir, warmup_projection, window_radius, device=device)
+        engine.rendering_aware_variance_via_gsplat(p, warmup_projection, window_radius, device=device)
+    per_query_s = (time.time() - t0) / 30
+    total_queries = depth_width * depth_height * n_frames
+    solve_desc = "both BQ solves" if mode == "directional" else "spatial-only BQ solve"
+    print(
+        f"measured {per_query_s * 1000:.2f} ms/pixel ({solve_desc}, {kernel_family} kernel, "
+        f"max_neighbors={max_neighbors}); {depth_width}x{depth_height} x {n_frames} frames = {total_queries} pixels "
+        f"-> est. {total_queries * per_query_s / 60:.1f} min total"
+    )
 
     frames_dir = RESULTS_DIR / f"{output_name}_frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -301,6 +301,7 @@ def run(
             valid = alpha_map > alpha_threshold
 
             world_points = unproject_depth_grid(depth_map, K_depth, c2w_cv)
+            projection = engine.build_gsplat_projection(cam, K_depth, depth_width, depth_height, device=device)
 
             dir_field = np.full((depth_height, depth_width), np.nan) if mode == "directional" else None
             spatial_field = np.full((depth_height, depth_width), np.nan)
@@ -311,8 +312,10 @@ def run(
                 if mode == "directional":
                     to_camera = cam_center - point
                     query_direction = to_camera / np.linalg.norm(to_camera)
-                    dir_field[y, x] = engine.directional_variance(point, query_direction, window_radius).variance
-                spatial_field[y, x] = engine.spatial_only_variance(point, window_radius).variance
+                    dir_field[y, x] = engine.rendering_aware_variance_via_gsplat_directional(
+                        point, query_direction, projection, window_radius, device=device
+                    ).variance
+                spatial_field[y, x] = engine.rendering_aware_variance_via_gsplat(point, projection, window_radius, device=device).variance
 
             def upsample(field):
                 field_img = Image.fromarray(np.nan_to_num(field, nan=0.0).astype(np.float32), mode="F")
@@ -399,10 +402,12 @@ def run_view_projection(
     (`directions_from_positions_to_camera`), not a single fixed direction
     reused across the whole scene. Supersedes the old
     render_uncertainty_views.py."""
-    from gs_experiment.render_reconstruction import render_views
+    from gs_experiment.scripts.render_reconstruction import render_views
 
     scene = load_from_gsplat_checkpoint(scene_dir, attribution_angular_tol=attribution_angular_tol)
-    positions, directions, values = splat_observations(scene)
+    positions, directions, values, obs_opacities, obs_scales, obs_rotations = splat_observations(
+        scene, include_render_attrs=True
+    )
 
     pos_margin = 1.0
     bounds = tuple(
@@ -411,15 +416,18 @@ def run_view_projection(
     pos_kernel = make_default_3d_position_kernel(sigma=bandwidth)
     dir_kernel = DirectionalKernel(kappa=kappa)
     # deduplicated positions for position-only queries, camera-expanded
-    # rows for directional -- see differentiation_experiment.run's
-    # comment for why these need to differ (splat_observations'
-    # per-camera row expansion is correct input for the directional
-    # kernel but silently leaks observation-count into "position-only,
-    # blind to direction" if reused there unchanged).
-    spatial_engine = LocalUncertaintyEngine(positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds)
+    # rows for directional -- splat_observations' per-camera row expansion
+    # is correct input for the directional kernel but silently leaks
+    # observation-count into "position-only, blind to direction" if reused
+    # there unchanged.
+    spatial_engine = LocalUncertaintyEngine(
+        positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds,
+        opacities=scene.opacities,
+    )
     directional_engine = LocalUncertaintyEngine(
         positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
         directions=directions, dir_kernel=dir_kernel,
+        opacities=obs_opacities, scales=obs_scales, rotations=obs_rotations,
     )
 
     rgb_results, checkpoint = render_views(scene_dir, view_indices, device=device)
@@ -451,9 +459,17 @@ def run_view_projection(
         query_positions = splat_positions[near_idx]
         query_dirs = directions_from_positions_to_camera(query_positions, cam_pose)
 
-        pos_var = np.array([spatial_engine.spatial_only_variance(p, window_radius).variance for p in query_positions])
+        projection = directional_engine.build_gsplat_projection(cam_pose, K, width, height, device=device)
+        pos_var = np.array(
+            [spatial_engine.rendering_aware_variance(p, window_radius).variance for p in query_positions]
+        )
         dir_var = np.array(
-            [directional_engine.directional_variance(p, d, window_radius).variance for p, d in zip(query_positions, query_dirs)]
+            [
+                directional_engine.rendering_aware_variance_via_gsplat_directional(
+                    p, d, projection, window_radius, device=device
+                ).variance
+                for p, d in zip(query_positions, query_dirs)
+            ]
         )
         pixels, in_front = project_to_pixels(query_positions, viewmat, K)
         in_view = in_front & (pixels[:, 0] >= 0) & (pixels[:, 0] < width) & (pixels[:, 1] >= 0) & (pixels[:, 1] < height)
@@ -503,8 +519,8 @@ def main():
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--depth-width", type=int, default=112)
     parser.add_argument("--depth-height", type=int, default=42)
-    parser.add_argument("--kernel-family", choices=["rbf", "matern"], default="rbf")
-    parser.add_argument("--bandwidth", type=float, default=0.9, help="sigma (rbf) or rho (matern)")
+    parser.add_argument("--kernel-family", choices=["rbf"], default="rbf")
+    parser.add_argument("--bandwidth", type=float, default=0.9, help="RBF sigma")
     parser.add_argument("--kappa", type=float, default=4.0)
     parser.add_argument("--window-radius", type=float, default=1.6)
     parser.add_argument("--max-neighbors", type=int, default=150)

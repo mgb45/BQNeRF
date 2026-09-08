@@ -1,31 +1,36 @@
-"""Consolidated CLI for evaluating a trained gsplat checkpoint's BQ
-position-only variance against the various real-data checks accumulated
-over ROADMAP.md items 4-7. Each `--check` mode below is a mechanical
-merge of a former one-off experiment script (result already recorded in
+"""Consolidated CLI for evaluating a trained gsplat checkpoint's rendering-
+aware BQ variance against the various real-data checks accumulated over
+ROADMAP.md items 4-7. Each `--check` mode below is a mechanical merge of a
+former one-off experiment script (result already recorded in
 gs_experiment/results/FINDINGS.md) -- same math, same defaults, same
 report format, just one dispatcher instead of seven files:
 
-  sparsity          local splat density vs. BQ position-only variance,
+  sparsity          local splat density vs. rendering-aware BQ variance,
                      correlation on one real checkpoint
                      (was sparsity_correlation_experiment.py)
   calibration        leave-one-out calibration: does BQ variance track
                      actual squared error (Pearson r, AUSE, Gaussian NLL)
                      (was calibration_experiment.py)
-  kernel-ablation     RBF vs. Matern-3/2, both fitted-bandwidth, on the
-                     sparsity + calibration checks across three fixed
-                     real checkpoints (was kernel_family_ablation.py)
-  window-ablation     sensitivity of the sparsity-correlation claim to
-                     the window_radius hyperparameter, swept 0.2x-8x
-                     (was window_radius_ablation.py)
-  visibility-trend    BQ variance vs. training-view coverage, across five
-                     lego checkpoints at 100/50/25/12 views
-                     (was visibility_trend_experiment.py)
+  kernel-ablation     sparsity + calibration checks across three fixed
+                     real checkpoints, at each checkpoint's own fitted RBF
+                     bandwidth (was kernel_family_ablation.py; narrowed to
+                     RBF-only when this project moved off box-quadrature --
+                     rendering_aware_variance's closed form is RBF-only for
+                     now, see gs_experiment/render_weight.py -- so this no
+                     longer compares kernel families. Re-adding a Matern
+                     comparison is future work once the rendering-aware
+                     kernel supports non-RBF base kernels)
   wide-vs-narrow      thin-vs-thick real structure, and wide-vs-narrow
                      cross-checkpoint, on NeRF-Synthetic lego
                      (was real_benchmark_experiment.py)
   multi-scene         drives download/prepare/train/evaluate (sparsity +
                      calibration together) across named NeRF-Synthetic
                      scenes (was multi_scene_experiment.py)
+
+`window-ablation` and `visibility-trend` (window_radius sensitivity;
+BQ-variance-vs-view-count trend) were retired: both already have a
+concluded, summarized result in FINDINGS.md and weren't part of the active
+workflow (see git history to resurrect either).
 
 Needs torch + gsplat only insofar as the checkpoints being evaluated were
 already trained (and, for `multi-scene`, to train any not yet on disk);
@@ -34,8 +39,6 @@ every other mode is pure numpy/scipy against an already-trained checkpoint.
 Run: .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py sparsity <ply_path>
      .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py calibration <ply_path> --sigma 0.05 --window-radius 0.15
      .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py kernel-ablation
-     .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py window-ablation
-     .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py visibility-trend <lego_prepared_dir>
      .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py wide-vs-narrow <lego_prepared_dir>
      .venv-gsplat/bin/python gs_experiment/evaluate_checkpoint.py multi-scene --scenes chair,drums,ficus
 """
@@ -47,7 +50,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import matplotlib
 
@@ -56,16 +59,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-from gs_experiment.pixel_uncertainty import (
-    LocalUncertaintyEngine,
-    make_default_3d_matern_kernel,
-    make_default_3d_position_kernel,
-)
+from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
 from gs_experiment.ply_io import read_3dgs_ply
-from gs_experiment.prepare_nerf_synthetic import run as prepare_scene
-from gs_experiment.train_minimal_gsplat import train
+from gs_experiment.scripts.prepare_nerf_synthetic import run as prepare_scene
+from gs_experiment.scripts.train_minimal_gsplat import train
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -96,7 +95,9 @@ def run_sparsity_correlation(
 
     bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
-    engine = LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds)
+    engine = LocalUncertaintyEngine(
+        positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds, opacities=ck["opacities"][keep]
+    )
 
     rng = np.random.default_rng(seed)
     query_idx = rng.choice(len(positions), size=min(n_samples, len(positions)), replace=False)
@@ -112,7 +113,7 @@ def run_sparsity_correlation(
     local_counts = np.array(
         [engine.tree.query_ball_point(p, window_radius, return_length=True) for p in query_points]
     )
-    bq_variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in query_points])
+    bq_variances = np.array([engine.rendering_aware_variance(p, window_radius).variance for p in query_points])
 
     log_count = np.log1p(local_counts)
     pearson_r, pearson_p = pearsonr(log_count, bq_variances)
@@ -158,7 +159,7 @@ def run_sparsity_correlation(
 def leave_one_out_predictions(engine: LocalUncertaintyEngine, query_idx, window_radius: float):
     means, variances, actuals = [], [], []
     for i in query_idx:
-        result = engine.spatial_only_variance(engine.positions[i], window_radius, exclude_idx=i)
+        result = engine.rendering_aware_variance(engine.positions[i], window_radius, exclude_idx=i)
         means.append(result.mean)
         variances.append(result.variance)
         actuals.append(engine.values[i])
@@ -215,6 +216,7 @@ def run_calibration(
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
     engine = LocalUncertaintyEngine(
         positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds, max_neighbors=max_neighbors, seed=seed,
+        opacities=ck["opacities"][keep],
     )
 
     rng = np.random.default_rng(seed)
@@ -260,44 +262,39 @@ def run_calibration(
 # =====================================================================
 # --check kernel-ablation   (was kernel_family_ablation.py)
 #
-# Does the kernel family (RBF vs. Matern-3/2) matter for the sparsity-
-# correlation and calibration checks above, when both kernels use a
-# properly *fitted* bandwidth (not an arbitrary shared numeric value)?
-# Reuses the bandwidths fit on three real checkpoints (lego wide, and both
-# thin-rod trainers).
+# Confirms the sparsity-correlation and calibration checks above behave
+# sensibly, at each checkpoint's own fitted RBF bandwidth, across three
+# fixed real checkpoints (lego wide, and both thin-rod trainers). Used to
+# compare RBF vs. Matern-3/2 here; narrowed to RBF-only when this project
+# moved off box-quadrature -- rendering_aware_variance's closed form is
+# RBF-only for now (gs_experiment/render_weight.py), so a kernel-family
+# comparison isn't meaningful until the rendering-aware kernel supports a
+# non-RBF base kernel too (future work, see ROADMAP.md).
 # =====================================================================
 
-# (path, window_radius, {"rbf": fitted_bandwidth, "matern32": fitted_bandwidth})
 KERNEL_ABLATION_CHECKPOINTS = [
-    dict(
-        label="lego_wide", path="gs_experiment/local_runs/lego_prepared/wide/splats.ply", window_radius=0.08,
-        bandwidths={"rbf": 0.0624, "matern32": 0.0234},
-    ),
+    dict(label="lego_wide", path="gs_experiment/local_runs/lego_prepared/wide/splats.ply", window_radius=0.08, bandwidth=0.0624),
     dict(
         label="thinrod_fromscratch", path="gs_experiment/local_runs/nbv_out/nll_experiment/baseline/splats.ply", window_radius=0.15,
-        bandwidths={"rbf": 0.1135, "matern32": 0.0597},
+        bandwidth=0.1135,
     ),
     dict(
         label="thinrod_referencestrategy", path="gs_experiment/local_runs/nbv_out/reference_strategy/splats.ply", window_radius=0.15,
-        # matern32's fit here generalized *worse* to held-out windows than
-        # the hardcoded 0.05 (fitted=-1032.01 vs hardcoded=-560.36 pooled
-        # log marginal likelihood) -- a real overfitting signal, so this
-        # checkpoint's matern32 entry uses the hardcoded value instead of
-        # trusting an overfit one, noted explicitly rather than silently
-        # picking whichever number was on hand.
-        bandwidths={"rbf": 0.1226, "matern32": 0.05},
+        bandwidth=0.1226,
     ),
 ]
 
 
-def build_engine(path: str, kernel_family: str, bandwidth: float, min_opacity: float = 0.1):
+def build_engine(path: str, bandwidth: float, min_opacity: float = 0.1):
     ck = read_3dgs_ply(path)
     keep = ck["opacities"] > min_opacity
     positions = ck["positions"][keep]
     colors = ck["sh_coeffs"][keep, :, 0].mean(axis=1)
     bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
-    kernel = make_default_3d_position_kernel(bandwidth) if kernel_family == "rbf" else make_default_3d_matern_kernel(bandwidth)
-    return LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=kernel, scene_bounds=bounds)
+    kernel = make_default_3d_position_kernel(bandwidth)
+    return LocalUncertaintyEngine(
+        positions=positions, values=colors, pos_kernel=kernel, scene_bounds=bounds, opacities=ck["opacities"][keep]
+    )
 
 
 def sparsity_correlation(engine, window_radius, n_samples=150, seed=0):
@@ -305,7 +302,7 @@ def sparsity_correlation(engine, window_radius, n_samples=150, seed=0):
     query_idx = rng.choice(len(engine.positions), size=min(n_samples, len(engine.positions)), replace=False)
     query_points = engine.positions[query_idx]
     local_counts = np.array([engine.tree.query_ball_point(p, window_radius, return_length=True) for p in query_points])
-    bq_variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in query_points])
+    bq_variances = np.array([engine.rendering_aware_variance(p, window_radius).variance for p in query_points])
     r, p = pearsonr(np.log1p(local_counts), bq_variances)
     return r, p
 
@@ -315,7 +312,7 @@ def calibration(engine, window_radius, n_samples=300, seed=0):
     query_idx = rng.choice(len(engine.positions), size=min(n_samples, len(engine.positions)), replace=False)
     means, variances, actuals = [], [], []
     for i in query_idx:
-        result = engine.spatial_only_variance(engine.positions[i], window_radius, exclude_idx=i)
+        result = engine.rendering_aware_variance(engine.positions[i], window_radius, exclude_idx=i)
         means.append(result.mean)
         variances.append(max(result.variance, 1e-8))
         actuals.append(engine.values[i])
@@ -328,182 +325,12 @@ def calibration(engine, window_radius, n_samples=300, seed=0):
 
 
 def run_kernel_ablation():
-    print(f"{'checkpoint':<28}{'kernel':<10}{'bandwidth':>10}{'sparsity r':>13}{'calib r':>10}{'NLL(bq)':>12}{'NLL(const)':>12}")
-    rows = []
+    print(f"{'checkpoint':<28}{'bandwidth':>10}{'sparsity r':>13}{'calib r':>10}{'NLL(bq)':>12}{'NLL(const)':>12}")
     for ckpt in KERNEL_ABLATION_CHECKPOINTS:
-        for kernel_family in ("rbf", "matern32"):
-            bandwidth = ckpt["bandwidths"][kernel_family]
-            engine = build_engine(ckpt["path"], kernel_family, bandwidth)
-            sp_r, sp_p = sparsity_correlation(engine, ckpt["window_radius"])
-            cal_r, cal_p, nll_bq, nll_const = calibration(engine, ckpt["window_radius"])
-            print(f"{ckpt['label']:<28}{kernel_family:<10}{bandwidth:>10.4f}{sp_r:>13.3f}{cal_r:>10.3f}{nll_bq:>12.3f}{nll_const:>12.3f}")
-            rows.append(dict(label=ckpt["label"], kernel=kernel_family, bandwidth=bandwidth, sparsity_r=sp_r, calib_r=cal_r, nll_bq=nll_bq, nll_const=nll_const))
-
-    print("\n=== per-checkpoint RBF vs. Matern deltas ===")
-    for ckpt in KERNEL_ABLATION_CHECKPOINTS:
-        label = ckpt["label"]
-        rbf_row = next(r for r in rows if r["label"] == label and r["kernel"] == "rbf")
-        mat_row = next(r for r in rows if r["label"] == label and r["kernel"] == "matern32")
-        print(
-            f"{label}: sparsity_r rbf={rbf_row['sparsity_r']:.3f} matern={mat_row['sparsity_r']:.3f} "
-            f"(delta {mat_row['sparsity_r']-rbf_row['sparsity_r']:+.3f})   "
-            f"calib_r rbf={rbf_row['calib_r']:.3f} matern={mat_row['calib_r']:.3f} "
-            f"(delta {mat_row['calib_r']-rbf_row['calib_r']:+.3f})"
-        )
-
-
-# =====================================================================
-# --check window-ablation   (was window_radius_ablation.py)
-#
-# How sensitive is the sparsity-correlation claim to the window_radius
-# hyperparameter? Fixes sigma at each checkpoint's already-established
-# value and sweeps window_radius across 0.2x-8x that value, on the same
-# three real checkpoints used by kernel-ablation.
-# =====================================================================
-
-WINDOW_ABLATION_CHECKPOINTS = [
-    dict(label="lego_wide", path="gs_experiment/local_runs/lego_prepared/wide/splats.ply", sigma=0.05, base_window=0.08),
-    dict(label="thinrod_fromscratch", path="gs_experiment/local_runs/nbv_out/nll_experiment/baseline/splats.ply", sigma=0.05, base_window=0.15),
-    dict(label="thinrod_referencestrategy", path="gs_experiment/local_runs/nbv_out/reference_strategy/splats.ply", sigma=0.05, base_window=0.15),
-]
-
-MULTIPLIERS = [0.2, 0.5, 1.0, 2.0, 4.0, 8.0]
-
-
-def sweep_one_checkpoint(path: str, sigma: float, base_window: float, n_samples: int = 150, min_opacity: float = 0.1, seed: int = 0):
-    ck = read_3dgs_ply(path)
-    keep = ck["opacities"] > min_opacity
-    positions = ck["positions"][keep]
-    colors = ck["sh_coeffs"][keep, :, 0].mean(axis=1)
-
-    bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
-    pos_kernel = make_default_3d_position_kernel(sigma=sigma)
-    engine = LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds)
-
-    rng = np.random.default_rng(seed)
-    query_idx = rng.choice(len(positions), size=min(n_samples, len(positions)), replace=False)
-    query_points = positions[query_idx]
-
-    rows = []
-    for mult in MULTIPLIERS:
-        window_radius = base_window * mult
-        local_counts = np.array(
-            [engine.tree.query_ball_point(p, window_radius, return_length=True) for p in query_points]
-        )
-        bq_variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in query_points])
-        r, p = pearsonr(np.log1p(local_counts), bq_variances)
-        rows.append(dict(mult=mult, window_radius=window_radius, r=r, p=p, median_count=float(np.median(local_counts))))
-    return len(positions), rows
-
-
-def run_window_ablation():
-    fig, ax = plt.subplots(figsize=(7, 5))
-    summary_rows = []
-
-    for ckpt in WINDOW_ABLATION_CHECKPOINTS:
-        n_splats, rows = sweep_one_checkpoint(ckpt["path"], ckpt["sigma"], ckpt["base_window"])
-        print(f"\n=== {ckpt['label']} ({n_splats} splats, sigma={ckpt['sigma']}, base_window={ckpt['base_window']}) ===")
-        print(f"{'mult':>6}{'window_radius':>16}{'median_count':>14}{'r':>10}{'p':>12}")
-        for row in rows:
-            print(f"{row['mult']:>6.1f}{row['window_radius']:>16.3f}{row['median_count']:>14.1f}{row['r']:>10.3f}{row['p']:>12.2e}")
-            summary_rows.append(dict(label=ckpt["label"], **row))
-
-        mults = [row["mult"] for row in rows]
-        rs = [row["r"] for row in rows]
-        ax.plot(mults, rs, marker="o", label=ckpt["label"])
-
-    ax.axhline(0.0, color="gray", linewidth=1, linestyle=":")
-    ax.axvline(1.0, color="gray", linewidth=1, linestyle=":", label="each checkpoint's established window_radius")
-    ax.set_xscale("log")
-    ax.set_xlabel("window_radius / established value (log scale)")
-    ax.set_ylabel("Pearson r(log(1+local count), BQ variance)")
-    ax.set_title("Sensitivity of the sparsity-correlation claim to window_radius")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    out = RESULTS_DIR / "window_radius_ablation.png"
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"\nSaved {out}")
-
-    print("\n=== summary: does the correlation survive at 0.2x-8x the established window_radius? ===")
-    for ckpt in WINDOW_ABLATION_CHECKPOINTS:
-        label = ckpt["label"]
-        label_rows = [r for r in summary_rows if r["label"] == label]
-        signs = set(np.sign(r["r"]) for r in label_rows if r["p"] < 0.05)
-        strong = [r for r in label_rows if r["p"] < 0.05 and abs(r["r"]) > 0.3]
-        print(
-            f"{label}: significant-r sign(s) across the sweep = {signs}; "
-            f"{len(strong)}/{len(label_rows)} multipliers give |r|>0.3 and p<0.05"
-        )
-
-
-# =====================================================================
-# --check visibility-trend   (was visibility_trend_experiment.py)
-#
-# Does BQ position-only variance grow as training-view coverage shrinks?
-# Five independently-trained checkpoints of the same real object
-# (wide/rand50/rand25/rand12 at 100/50/25/12 training views, plus the
-# original angularly-clustered "narrow" 12-view checkpoint), each
-# evaluated at the same fixed set of real-world query points.
-# =====================================================================
-
-CONDITIONS = [("wide", 100), ("rand50", 50), ("rand25", 25), ("rand12", 12), ("narrow", 12)]
-
-
-def load_engine(ply_path: str, sigma: float, min_opacity: float = 0.1):
-    ck = read_3dgs_ply(ply_path)
-    keep = ck["opacities"] > min_opacity
-    positions = ck["positions"][keep]
-    colors = ck["sh_coeffs"][keep, :, 0].mean(axis=1)
-    bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
-    pos_kernel = make_default_3d_position_kernel(sigma=sigma)
-    engine = LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds)
-    return engine, positions
-
-
-def run_visibility_trend(lego_dir: str, n_query_points: int = 150, sigma: float = 0.05, window_radius: float = 0.08, seed: int = 0):
-    rng = np.random.default_rng(seed)
-
-    # fixed query points, defined once in world space from the wide
-    # (most complete) checkpoint's own splat positions -- every other
-    # checkpoint is queried at these exact same xyz locations, since all
-    # four share one coordinate system (the same original transforms.json).
-    wide_ply = os.path.join(lego_dir, "wide", "splats.ply")
-    _, wide_positions = load_engine(wide_ply, sigma)
-    query_idx = rng.choice(len(wide_positions), size=n_query_points, replace=False)
-    query_points = wide_positions[query_idx]
-
-    means, medians = {}, {}
-    for label, n_views in CONDITIONS:
-        ply_path = os.path.join(lego_dir, label, "splats.ply")
-        engine, _ = load_engine(ply_path, sigma)
-        variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in query_points])
-        means[label] = variances.mean()
-        medians[label] = np.median(variances)
-        print(f"{label} ({n_views} views): mean BQ variance = {variances.mean():.6f}  median = {np.median(variances):.6f}")
-
-    # two separate questions, deliberately not conflated into one trend:
-    random_labels = ["wide", "rand50", "rand25", "rand12"]  # count varies, angular spread stays full
-    random_means = [means[l] for l in random_labels]
-    monotonic = all(random_means[i] <= random_means[i + 1] for i in range(len(random_means) - 1))
-    print(f"\n[count, full angular spread held fixed] monotonically non-decreasing as views drop 100->12: {monotonic}")
-    print(f"  ratio (rand12/wide): {means['rand12'] / means['wide']:.2f}x")
-    print(f"\n[clustering, count held fixed at 12] random-12 vs. angularly-clustered narrow-12:")
-    print(f"  ratio (narrow/rand12): {means['narrow'] / means['rand12']:.2f}x")
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    labels_ordered = [c[0] for c in CONDITIONS]
-    x = np.arange(len(labels_ordered))
-    ax.bar(x, [means[l] for l in labels_ordered], color=["#4c72b0"] * 4 + ["#c44e52"])
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{l}\n({dict(CONDITIONS)[l]} views)" for l in labels_ordered])
-    ax.set_ylabel("mean BQ position-only variance\n(same fixed query points, all conditions)")
-    ax.set_title(f"BQ variance: view count vs. angular clustering\n({lego_dir})", fontsize=10)
-    fig.tight_layout()
-    out = RESULTS_DIR / "visibility_trend.png"
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"\nSaved {out}")
+        engine = build_engine(ckpt["path"], ckpt["bandwidth"])
+        sp_r, sp_p = sparsity_correlation(engine, ckpt["window_radius"])
+        cal_r, cal_p, nll_bq, nll_const = calibration(engine, ckpt["window_radius"])
+        print(f"{ckpt['label']:<28}{ckpt['bandwidth']:>10.4f}{sp_r:>13.3f}{cal_r:>10.3f}{nll_bq:>12.3f}{nll_const:>12.3f}")
 
 
 # =====================================================================
@@ -526,7 +353,9 @@ def load_checkpoint_engine(ply_path: str, sigma: float, min_opacity: float = 0.1
 
     bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
-    engine = LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds)
+    engine = LocalUncertaintyEngine(
+        positions=positions, values=colors, pos_kernel=pos_kernel, scene_bounds=bounds, opacities=ck["opacities"][keep]
+    )
 
     median_scale = np.median(scales, axis=1)  # one feature-size proxy per splat
     return engine, positions, median_scale
@@ -560,7 +389,7 @@ def run_wide_vs_narrow(lego_dir: str, n_samples: int = 60, quantile: float = 0.2
     thick_points = sample_query_points(wide_pos, wide_scale, n_samples, quantile, rng, low=False)
 
     def mean_variance(engine, points):
-        variances = [engine.spatial_only_variance(p, window_radius).variance for p in points]
+        variances = [engine.rendering_aware_variance(p, window_radius).variance for p in points]
         return float(np.mean(variances)), variances
 
     print("\n=== 1. within the wide checkpoint: thin vs. thick real structure ===")
@@ -593,9 +422,14 @@ RAW_ROOT = "gs_experiment/local_runs/nerf_synthetic_raw"
 PREPARED_ROOT = "gs_experiment/local_runs"
 
 TRAIN_KWARGS = dict(
-    n_splats=2000, bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)), sh_degree=1, n_iters=2500, seed=0,
-    init_scale=0.05, opacity_reg_weight=0.01, densify=True, densify_interval=300, densify_start=300,
-    max_splats=15000, log_every=500,
+    # Publication-scale 3DGS budget (Kerbl et al. 2023's own schedule:
+    # 30k iterations, densify 500->15k every 100 steps, ~100x position
+    # LR decay), not the quick statistical-check budget this dict used
+    # to hold -- see FINDINGS.md/ROADMAP.md on why a lighter budget isn't
+    # trustworthy for the visual (render-and-look) pipeline.
+    n_splats=5000, bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)), sh_degree=3, n_iters=30000, seed=0,
+    init_scale=0.05, opacity_reg_weight=0.01, densify=True, densify_interval=100, densify_start=500,
+    densify_end=15000, max_splats=300000, log_every=2000, position_lr_final=2e-5,
 )
 MULTI_SCENE_SIGMA = 0.05
 MULTI_SCENE_WINDOW_RADIUS = 0.08
@@ -633,7 +467,7 @@ def prepare_and_train(scene: str, skip_download: bool = False, skip_prepare: boo
 def evaluate(scene: str, ply_path: str, n_samples: int = 150, seed: int = 0):
     from scipy.spatial import cKDTree
 
-    engine = build_engine(ply_path, "rbf", MULTI_SCENE_SIGMA)
+    engine = build_engine(ply_path, MULTI_SCENE_SIGMA)
     n_splats = len(engine.positions)
 
     import numpy as np
@@ -642,7 +476,7 @@ def evaluate(scene: str, ply_path: str, n_samples: int = 150, seed: int = 0):
     query_idx = rng.choice(n_splats, size=min(n_samples, n_splats), replace=False)
     query_points = engine.positions[query_idx]
     local_counts = np.array([engine.tree.query_ball_point(p, MULTI_SCENE_WINDOW_RADIUS, return_length=True) for p in query_points])
-    bq_variances = np.array([engine.spatial_only_variance(p, MULTI_SCENE_WINDOW_RADIUS).variance for p in query_points])
+    bq_variances = np.array([engine.rendering_aware_variance(p, MULTI_SCENE_WINDOW_RADIUS).variance for p in query_points])
     sparsity_r, sparsity_p = pearsonr(np.log1p(local_counts), bq_variances)
 
     calib_r, calib_p, nll_bq, nll_const = calibration(engine, MULTI_SCENE_WINDOW_RADIUS, n_samples=n_samples, seed=seed)
@@ -695,15 +529,7 @@ def main():
     p_calibration.add_argument("--window-radius", type=float, default=0.15)
     p_calibration.add_argument("--label", default="")
 
-    sub.add_parser("kernel-ablation", help="RBF vs. Matern-3/2, fitted bandwidths, on three fixed real checkpoints")
-
-    sub.add_parser("window-ablation", help="sweep window_radius 0.2x-8x on three fixed real checkpoints")
-
-    p_visibility = sub.add_parser("visibility-trend", help="BQ variance vs. training-view coverage across five lego checkpoints")
-    p_visibility.add_argument("lego_dir")
-    p_visibility.add_argument("--n-query-points", type=int, default=150)
-    p_visibility.add_argument("--sigma", type=float, default=0.05)
-    p_visibility.add_argument("--window-radius", type=float, default=0.08)
+    sub.add_parser("kernel-ablation", help="sparsity + calibration at each checkpoint's fitted RBF bandwidth, on three fixed real checkpoints")
 
     p_wide_narrow = sub.add_parser("wide-vs-narrow", help="thin-vs-thick and wide-vs-narrow real-benchmark checks on lego")
     p_wide_narrow.add_argument("lego_dir")
@@ -726,10 +552,6 @@ def main():
         run_calibration(args.ply_path, n_samples=args.n_samples, sigma=args.sigma, window_radius=args.window_radius, label=args.label)
     elif args.check == "kernel-ablation":
         run_kernel_ablation()
-    elif args.check == "window-ablation":
-        run_window_ablation()
-    elif args.check == "visibility-trend":
-        run_visibility_trend(args.lego_dir, n_query_points=args.n_query_points, sigma=args.sigma, window_radius=args.window_radius)
     elif args.check == "wide-vs-narrow":
         run_wide_vs_narrow(args.lego_dir, n_samples=args.n_samples, quantile=args.quantile, sigma=args.sigma, window_radius=args.window_radius)
     elif args.check == "multi-scene":

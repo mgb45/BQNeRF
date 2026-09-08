@@ -1,6 +1,6 @@
 import numpy as np
 
-from gs_experiment.prepare_nerf_synthetic import select_gap_subset, select_gradient_subset
+from gs_experiment.scripts.prepare_nerf_synthetic import select_gap_subset, select_gradient_subset
 
 
 def _fake_frames_on_ring(n, radius=5.0):

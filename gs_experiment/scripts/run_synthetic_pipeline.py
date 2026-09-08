@@ -26,14 +26,14 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 
-from gs_experiment.evaluate_checkpoint import prepare_and_train
+from gs_experiment.scripts.evaluate_checkpoint import prepare_and_train
 from gs_experiment.nerf_transforms import load_transforms
-from gs_experiment.render_directional_uncertainty_sweep import check_quality_gate
-from gs_experiment.render_reconstruction import RESULTS_DIR, compute_uncertainty_maps, plot_comparisons, render_views
+from gs_experiment.scripts.render_directional_uncertainty_sweep import check_quality_gate
+from gs_experiment.scripts.render_reconstruction import RESULTS_DIR, compute_uncertainty_maps, plot_comparisons, render_views
 
 # NeRF-Synthetic scenes are trained against a white background
 # (prepare_nerf_synthetic.py's default); sigma/window_radius match the

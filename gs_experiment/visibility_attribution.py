@@ -266,38 +266,76 @@ class CameraSplatIndex:
     3D Euclidean distance. Indexing by real bearing instead (this class)
     and ranking any overflow by bearing distance (not randomly) fixes
     both the correctness gap and the near-total candidate waste.
+
+    `directions`, if built with it, enables a second overflow-ranking mode
+    in `query` (`query_direction=...`): pure bearing-distance ranking is
+    the right choice for a position-only query, but for a *directional*
+    query it under-serves the actual k_pos*k_dir kernel being computed --
+    `positions` here is typically the camera-*expanded* observation array
+    (one row per (splat, observing-camera) pair), so a single physical
+    splat contributes many rows that all share the exact same bearing
+    (bearing depends only on position, never on which camera observed it).
+    Those rows are then exact ties under bearing-distance ranking, and
+    which of them survive an overflowing `max_candidates` cut becomes an
+    arbitrary artifact of `query_ball_point`'s internal ordering -- in
+    particular, *not* preferentially the rows whose direction actually
+    matches the query direction, even though that is exactly what the
+    kernel's own k_dir factor most rewards. Confirmed directly (real
+    lego-gap-checkpoint checkpoints, 5 conditions): the resulting
+    directional-variance-vs-gap-width trend lost its monotonicity (from a
+    clean rho=1.000 to rho=0.600) purely from this tie-breaking artifact
+    -- reproduced identically across a 10x range of angular_tol, ruling
+    out that parameter as the cause. Passing `query_direction` breaks
+    overflow ties by directional alignment (`direction . query_direction`,
+    descending) among candidates already inside the bearing gate, so the
+    scarce max_candidates budget preserves the rows the kernel actually
+    weights most, instead of an arbitrary bearing-tie subset.
     """
 
     indices: np.ndarray  # into the original positions/opacities arrays -- in front of the camera only
     bearings: np.ndarray  # (M, 2)
     depths: np.ndarray  # (M,)
     camera: CameraPose
+    directions: Optional[np.ndarray] = None  # (M, 3), parallel to indices/bearings/depths -- optional
     _tree: Optional[cKDTree] = field(default=None, repr=False)
 
     def __post_init__(self):
         self._tree = cKDTree(self.bearings) if len(self.indices) > 0 else None
 
     @classmethod
-    def build(cls, positions: np.ndarray, camera: CameraPose) -> "CameraSplatIndex":
+    def build(cls, positions: np.ndarray, camera: CameraPose, directions: Optional[np.ndarray] = None) -> "CameraSplatIndex":
         bearing_x, bearing_y, depth = project_to_camera_local(positions, camera)
         valid = (depth > 0) & ~np.isnan(bearing_x)
         idx = np.where(valid)[0]
-        return cls(indices=idx, bearings=np.stack([bearing_x[idx], bearing_y[idx]], axis=1), depths=depth[idx], camera=camera)
+        return cls(
+            indices=idx, bearings=np.stack([bearing_x[idx], bearing_y[idx]], axis=1), depths=depth[idx], camera=camera,
+            directions=directions[idx] if directions is not None else None,
+        )
 
-    def query(self, reference_bearing, angular_tol: float, max_candidates: Optional[int] = None) -> np.ndarray:
+    def query(
+        self, reference_bearing, angular_tol: float, max_candidates: Optional[int] = None, query_direction=None,
+    ) -> np.ndarray:
         """Indices (into the original positions/opacities arrays) of
         splats within `angular_tol` of `reference_bearing`. If more than
-        `max_candidates` qualify, keeps the ones *nearest in bearing* --
-        a real relevance ranking, not a random, potentially-irrelevant
-        subsample."""
+        `max_candidates` qualify: ranked by bearing distance (nearest
+        first) by default -- a real relevance ranking, not a random,
+        potentially-irrelevant subsample -- or, if `query_direction` is
+        given (and this index was built with `directions`), ranked by
+        directional alignment with `query_direction` instead (see this
+        class's docstring for why the directional case needs a different
+        tie-break than pure bearing distance)."""
         if self._tree is None:
             return np.empty(0, dtype=int)
         local = np.array(self._tree.query_ball_point(reference_bearing, angular_tol), dtype=int)
         if local.size == 0:
             return np.empty(0, dtype=int)
         if max_candidates is not None and local.size > max_candidates:
-            dists = np.linalg.norm(self.bearings[local] - np.asarray(reference_bearing), axis=1)
-            local = local[np.argsort(dists)[:max_candidates]]
+            if query_direction is not None and self.directions is not None:
+                alignment = self.directions[local] @ np.asarray(query_direction)
+                local = local[np.argsort(-alignment)[:max_candidates]]
+            else:
+                dists = np.linalg.norm(self.bearings[local] - np.asarray(reference_bearing), axis=1)
+                local = local[np.argsort(dists)[:max_candidates]]
         return self.indices[local]
 
 

@@ -13,7 +13,7 @@ pytest.importorskip("gsplat")
 if not torch.cuda.is_available():
     pytest.skip("gsplat's CUDA kernels need a real GPU", allow_module_level=True)
 
-from bq_splat.kernels import DirectionalKernel  # noqa: E402
+from gs_experiment.kernels import DirectionalKernel  # noqa: E402
 from gs_experiment.camera import CameraPose  # noqa: E402
 from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel  # noqa: E402
 

@@ -1,13 +1,13 @@
 import numpy as np
 
-from bq_splat.hyperparams import (
+from gs_experiment.hyperparams import (
     fit_kernel_param,
     fit_kernel_param_pooled,
     fit_kernel_param_pooled_nd,
     log_marginal_likelihood,
     log_marginal_likelihood_nd,
 )
-from bq_splat.kernels import MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.kernels import MaternKernel, ProductKernel, RBFKernel
 
 
 def test_lml_prefers_true_generating_bandwidth_over_far_off_ones():

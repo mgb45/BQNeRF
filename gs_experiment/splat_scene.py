@@ -10,11 +10,10 @@ rendering) -- deferred until this is wired to a live gsplat renderer,
 since that projection/ray-intersection logic is exactly what gsplat's own
 rasterizer already provides and shouldn't be reimplemented here.
 
-Also worth restating (see bq_splat/README.md and the design discussion this
-package follows from): `scales`/`rotations` are kept as metadata for
+Also worth restating: `scales`/`rotations` are kept as metadata for
 standard rendering, but are NOT fed into the BQ kernel's bandwidth. The
-validated BQ machinery (bq_splat) uses one shared or pooled-fit bandwidth
-(see bq_splat/results/FINDINGS.md sections 5, 7), not per-splat
+validated BQ machinery uses one shared or pooled-fit bandwidth
+(see gs_experiment/results/FINDINGS.md), not per-splat
 heterogeneous covariances -- using each splat's own learned covariance as
 its own kernel bandwidth is a real, mathematically plausible extension
 (closer to the original derivation's "splats as weighted kernel nodes"
@@ -74,8 +73,9 @@ def make_mock_scene(
     real gsplat checkpoint or GPU. Splats scatter uniformly in `bounds`;
     splats within `narrow_zone_radius` of `narrow_zone_center` are marked
     as observed only by `narrow_cameras`, everything else by
-    `wide_cameras` -- the 3D, real-camera-pose analogue of
-    bq_splat/validate.py --check directional-combined's controlled zones.
+    `wide_cameras` -- two zones with identical spatial splat density but
+    different angular coverage, isolating the directional signal from the
+    spatial one.
     """
     (x0, x1), (y0, y1), (z0, z1) = bounds
     positions = np.stack(
@@ -110,10 +110,11 @@ def make_mock_scene(
     )
 
 
-def splat_observations(scene: SplatScene):
+def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
     """Expand a SplatScene into parallel (position, direction, value)
     arrays -- one row per (splat, observing-camera) pair -- the input
-    format bayesian_quadrature_directional expects.
+    format the directional kernel (DirectionalKernel, combined with a
+    position kernel in gs_experiment.quadrature) expects.
 
     `value` is genuinely view-dependent (`eval_sh(scene.sh_coeffs[i],
     direction, scene.sh_degree)`) when `scene.sh_coeffs` is set; otherwise
@@ -121,20 +122,51 @@ def splat_observations(scene: SplatScene):
     splat, same as before SH support existed. The flat-color path is a
     known simplification (the same value regardless of viewing direction),
     kept only for scenes that don't set sh_coeffs.
+
+    `include_render_attrs=True` additionally returns `opacities`/`scales`/
+    `rotations` arrays, each splat's own value repeated once per observing
+    camera (same indexing as `positions`/`directions`/`values` above) --
+    for callers that need to construct a `LocalUncertaintyEngine` with
+    `opacities=`/`scales=`/`rotations=` set from this expanded, directional
+    form (rendering_aware_variance_along_ray_directional and friends need
+    real per-candidate opacity/covariance, not just position/direction/
+    value). Default stays `False` so every existing 3-tuple-unpacking
+    caller is unaffected.
+
+    Vectorized per camera, not per (splat, camera) pair: an earlier version
+    called `directions_from_positions_to_camera`/`eval_sh` once per row in a
+    nested Python loop (both already accept batched array input, so this
+    bought nothing) -- profiled at >120s of a 277s real-checkpoint uncertainty-
+    map call, 3.4M single-row calls, before this fix. Grouping rows by camera
+    (typically ~100 groups, not ~3.4M rows) and writing into a pre-sized
+    output array via boolean-mask assignment preserves the exact original
+    splat-major row order (mask assignment lands each camera's rows back at
+    their original flat positions, regardless of which order the groups are
+    processed in) -- same output, not an approximation.
     """
-    positions, directions, values = [], [], []
-    for i, cam_idx in enumerate(scene.observed_camera_idx):
-        for c in cam_idx:
-            camera = scene.cameras[c]
-            direction = directions_from_positions_to_camera(scene.positions[i : i + 1], camera)[0]
-            positions.append(scene.positions[i])
-            directions.append(direction)
-            if scene.sh_coeffs is not None:
-                color = eval_sh(scene.sh_coeffs[i], direction, scene.sh_degree)
-                values.append(float(np.mean(color)))  # collapse channels to one scalar, matching the flat-color path
-            else:
-                values.append(scene.colors[i])
-    return np.array(positions), np.array(directions), np.array(values)
+    n_per_splat = np.array([len(idx) for idx in scene.observed_camera_idx], dtype=np.int64)
+    n_splats = len(scene.observed_camera_idx)
+    splat_idx_flat = np.repeat(np.arange(n_splats), n_per_splat)
+    cam_idx_flat = np.concatenate(scene.observed_camera_idx) if n_splats > 0 else np.array([], dtype=np.int64)
+
+    positions_flat = scene.positions[splat_idx_flat]
+    directions_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float)
+    for c in np.unique(cam_idx_flat):
+        rows = cam_idx_flat == c
+        directions_flat[rows] = directions_from_positions_to_camera(positions_flat[rows], scene.cameras[c])
+
+    if scene.sh_coeffs is not None:
+        colors = eval_sh(scene.sh_coeffs[splat_idx_flat], directions_flat, scene.sh_degree)
+        values_flat = colors.mean(axis=-1)  # collapse channels to one scalar, matching the flat-color path
+    else:
+        values_flat = scene.colors[splat_idx_flat]
+
+    if include_render_attrs:
+        return (
+            positions_flat, directions_flat, values_flat,
+            scene.opacities[splat_idx_flat], scene.scales[splat_idx_flat], scene.rotations[splat_idx_flat],
+        )
+    return positions_flat, directions_flat, values_flat
 
 
 def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_target_splats: int = 40, n_cameras_per_side: int = 6):
@@ -209,14 +241,15 @@ def load_from_gsplat_checkpoint(
     fov_deg: Optional[float] = None,
     attribution_angular_tol: float = 0.05,
     attribution_depth_margin: float = 0.05,
+    use_gpu_attribution: bool = False,
 ) -> SplatScene:
     """Real loader: reads `<scene_dir>/<ply_filename>` (a standard 3DGS
     .ply checkpoint, see gs_experiment.ply_io) for
     positions/scales/rotations/opacities/SH colors, and
     `<scene_dir>/transforms.json` (see gs_experiment.nerf_transforms, the
-    same NeRF-synthetic-style schema gs_experiment.blender_render writes)
+    same NeRF-synthetic-style schema this project's data always uses)
     for training camera poses -- the two files
-    gs_experiment.train_minimal_gsplat's trainer produces together.
+    gs_experiment.scripts.train_minimal_gsplat's trainer produces together.
 
     `fov_deg` defaults to the shared `camera_angle_x` recorded in
     transforms.json (converted to degrees); pass it explicitly only if a
@@ -231,6 +264,17 @@ def load_from_gsplat_checkpoint(
     frustum + soft-z-buffer occlusion
     (gs_experiment.visibility_attribution.attribute_observations), not an
     assignment rule.
+
+    `use_gpu_attribution=True` uses `gpu_visibility_attribution.
+    batched_attribute_observations` instead -- the same attribution,
+    verified to match exactly (tests/gs_experiment/test_gpu_visibility_attribution.py;
+    also checked directly against attribute_observations on a real 80k-splat/
+    100-camera checkpoint: identical index sets on every camera), just
+    ~100x faster on a real checkpoint by batching every camera's occlusion
+    z-buffer into one GPU pass instead of a 100-iteration Python loop. Needs
+    torch (lazily imported here, not at module level, so this module and the
+    default `pytest tests/` suite stay importable without it); default stays
+    `False` so this function's behavior is unchanged for every existing caller.
     """
     from gs_experiment.nerf_transforms import camera_pose_from_c2w, load_transforms
     from gs_experiment.ply_io import read_3dgs_ply
@@ -246,9 +290,16 @@ def load_from_gsplat_checkpoint(
         fov_deg = np.degrees(camera_angle_x)
 
     positions = checkpoint["positions"]
-    per_camera = attribute_observations(
-        positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
-    )
+    if use_gpu_attribution:
+        from gs_experiment.gpu_visibility_attribution import batched_attribute_observations
+
+        per_camera = batched_attribute_observations(
+            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
+        )
+    else:
+        per_camera = attribute_observations(
+            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
+        )
     observed_camera_idx = invert_to_observed_camera_idx(per_camera, positions.shape[0])
 
     sh_coeffs = checkpoint["sh_coeffs"]

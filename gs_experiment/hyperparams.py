@@ -1,14 +1,13 @@
 """Fitting the kernel's bandwidth parameter (RBF sigma / Matern rho) to data
 by maximizing the GP log marginal likelihood -- the standard way to "train"
 a GP kernel hyperparameter (Rasmussen & Williams, GPML, ch. 5), and the
-natural next step after finding (bq_splat/results/FINDINGS.md) that a single
-hardcoded bandwidth loses to a naive Riemann sum: the original models/nerf.py
-hardcodes `sig=0.25` and never adapts it, and bq_splat's own toy sweep used
+natural next step after finding (gs_experiment/results/FINDINGS.md) that a single
+hardcoded bandwidth loses to a naive Riemann sum: an early toy sweep used
 one fixed sigma/rho across scenes whose true bump widths ranged from 0.05 to
 0.6. This module tests whether fitting the bandwidth per scene closes that
 gap.
 
-No torch/autodiff here -- `bq_splat` stays pure numpy/scipy at this stage
+No torch/autodiff here -- this module stays pure numpy/scipy at this stage
 (see ROADMAP.md). If/when this idea moves into the gsplat-integrated code,
 the same quantity becomes a literal torch.nn.Parameter optimized jointly
 with the rest of the pipeline; here it's a 1D scalar fit via scipy, which is
@@ -23,7 +22,7 @@ from typing import Callable
 import numpy as np
 from scipy import optimize
 
-from bq_splat.kernels import Kernel, ProductKernel
+from gs_experiment.kernels import Kernel, ProductKernel
 
 
 def log_marginal_likelihood(nodes, values, kernel: Kernel, rel_jitter: float = 1e-4) -> float:
@@ -32,7 +31,7 @@ def log_marginal_likelihood(nodes, values, kernel: Kernel, rel_jitter: float = 1
 
     Uses a Cholesky factorization for both the quadratic form and the log
     determinant, and the same relative-jitter convention as
-    bq_splat.quadrature.bayesian_quadrature (see that module's docstring for
+    gs_experiment.quadrature.bayesian_quadrature (see that module's docstring for
     why a fixed jitter isn't safe with irregular node spacing).
     """
     nodes = np.asarray(nodes, dtype=float).reshape(-1)
@@ -68,8 +67,7 @@ def pooled_log_marginal_likelihood(datasets, kernel: Kernel) -> float:
     pairs under one shared kernel -- the objective for fitting a single
     bandwidth across many scenes/regions rather than one per scene. Used to
     test whether a bandwidth fit once on a calibration set generalizes to
-    unseen scenes (see bq_splat/validate.py --check trainable-kernel-heldout) --
-    which matters for deployment cost too: a bandwidth that needs
+    unseen scenes -- which matters for deployment cost too: a bandwidth that needs
     refitting per query is a very different computational proposition at
     GS scale than one fit once and reused.
     """
@@ -144,9 +142,9 @@ def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter:
     fit a bandwidth per *toy* scene, never against real splat data.
 
     Kept as a separate function rather than making `log_marginal_likelihood`
-    branch on kernel type, mirroring how `bayesian_quadrature_nd` was kept
-    separate from `bayesian_quadrature` (bq_splat/quadrature.py) so the
-    already-tested 1D path stays untouched.
+    branch on kernel type, the same separation-over-branching precedent
+    `gs_experiment/quadrature.py` follows elsewhere, so the already-tested 1D
+    path stays untouched.
 
     `nodes`: (N, D), used directly with `kernel.k(nodes, nodes)` -- unlike
     the 1D functions above, no `.reshape(-1, 1)` convention, since

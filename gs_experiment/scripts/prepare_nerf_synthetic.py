@@ -38,7 +38,7 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 from PIL import Image
@@ -98,8 +98,8 @@ def select_narrow_subset(frames, n_narrow: int, reference_idx: int = 0) -> np.nd
 def select_gradient_subset(frames, n_per_zone: int, window_fraction: float, reference_idx: int = 0) -> np.ndarray:
     """Generalizes `select_narrow_subset` from one fixed cluster to one
     level of a coverage *gradient*, on a real dataset's fixed, pre-baked
-    camera poses (unlike `scene_spec.gradient_scene`, which can place
-    cameras anywhere -- a real benchmark's views are what they are).
+    camera poses (a real benchmark's views are what they are, unlike a
+    hand-built scene that can place cameras anywhere).
 
     Same real-3D-position cosine-similarity ranking as `select_narrow_
     subset`, but rather than always taking the top `n_per_zone` most

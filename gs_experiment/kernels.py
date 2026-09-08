@@ -133,10 +133,11 @@ class DirectionalKernel:
 
     Self-similarity k(w, w) = exp(kappa * (1 - 1)) = 1 always — this is
     what makes the mixed integrate-position/evaluate-direction Bayesian
-    quadrature in bayesian_quadrature_directional work out cleanly (see
-    that function's docstring): the *prior* variance term doesn't depend on
-    which direction is queried, only the *posterior reduction* does, via
-    the k(w_i, w_query) terms in the mean-embedding-like vector.
+    quadrature in bayesian_quadrature_rendering_aware_directional work out
+    cleanly (see that function's docstring): the *prior* variance term
+    doesn't depend on which direction is queried, only the *posterior
+    reduction* does, via the k(w_i, w_query) terms in the
+    mean-embedding-like vector.
 
     Unlike Kernel (RBFKernel, MaternKernel), this has no v/vv — it's never
     integrated over, only evaluated pointwise at a query direction, since a

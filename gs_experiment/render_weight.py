@@ -5,7 +5,7 @@ integrand f_q(xi) = a_q(xi) c(xi) is then also a GP, with kernel
 
     k_q(xi, xi') = a_q(xi) k_base(xi, xi') a_q(xi').
 
-This module defines a_q itself, kept separate from k_base (bq_splat/kernels.py)
+This module defines a_q itself, kept separate from k_base (gs_experiment/kernels.py)
 since a_q is renderer/query-specific (depends on transmittance, opacity,
 footprint, visibility for one particular pixel/ray) while k_base is a
 property of the underlying radiance field's assumed smoothness, shared
@@ -23,7 +23,7 @@ jointly).
 
 A real trap with the peak-amplitude convention, found the hard way while
 generating real-checkpoint demo renders (see
-bq_splat/results/FINDINGS.md): a_q's *total integrated mass*,
+gs_experiment/results/FINDINGS.md): a_q's *total integrated mass*,
 `integral a_q(xi) dxi = amplitude * (2 pi)^(D/2) * |covariance|^(1/2)`,
 scales with the *volume* of `covariance` -- so fixing `amplitude` (e.g. to
 a real opacity) and letting `covariance` be a real splat's actual (tiny)

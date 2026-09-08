@@ -170,27 +170,29 @@ def _ssim(pred: torch.Tensor, gt: torch.Tensor, window_size: int = 11) -> torch.
 
 def _splat_positions_and_colors(params: dict):
     """Detached numpy snapshot of current splat state, in the (positions,
-    scalar-color) form LocalUncertaintyEngine needs -- shared by both
-    ROADMAP.md item 3 mechanisms below (the NLL loss term and
+    scalar-color, opacity) form LocalUncertaintyEngine needs -- shared by
+    both ROADMAP.md item 3 mechanisms below (the NLL loss term and
     variance-driven densification), since both need to build a fresh
     engine from whatever the splat population looks like *right now*
     (positions and count both change at every densify cycle)."""
     positions_np = params["positions"].detach().cpu().numpy()
     colors_np = params["sh"].detach().cpu().numpy()[:, :, 0].mean(axis=1)
-    return positions_np, colors_np
+    opacities_np = torch.sigmoid(params["opacity_logits"]).detach().cpu().numpy()
+    return positions_np, colors_np, opacities_np
 
 
 def _build_uncertainty_engine(params: dict, sigma: float, max_neighbors: int) -> LocalUncertaintyEngine:
-    positions_np, colors_np = _splat_positions_and_colors(params)
+    positions_np, colors_np, opacities_np = _splat_positions_and_colors(params)
     bounds = tuple((positions_np[:, d].min() - 0.3, positions_np[:, d].max() + 0.3) for d in range(3))
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
     return LocalUncertaintyEngine(
         positions=positions_np, values=colors_np, pos_kernel=pos_kernel, scene_bounds=bounds, max_neighbors=max_neighbors,
+        opacities=opacities_np,
     )
 
 
 def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: float, max_neighbors: int, device: str) -> torch.Tensor:
-    """BQ position-only variance at every current splat's own position --
+    """Rendering-aware BQ variance at every current splat's own position --
     the closed-form, "uncertainty-driven" analogue of the standard 3DGS
     view-space-gradient densification signal (`avg_grad` in `train`):
     where the gradient signal asks "does the optimizer keep wanting to
@@ -201,9 +203,9 @@ def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: flo
     from the training graph entirely -- used only to pick *which* splats
     to split/clone, not backpropagated through.
     """
-    positions_np, _ = _splat_positions_and_colors(params)
+    positions_np, _, _ = _splat_positions_and_colors(params)
     engine = _build_uncertainty_engine(params, sigma, max_neighbors)
-    variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in positions_np])
+    variances = np.array([engine.rendering_aware_variance(p, window_radius).variance for p in positions_np])
     return torch.tensor(variances, dtype=torch.float32, device=device)
 
 
@@ -282,7 +284,7 @@ def compute_nll_loss_term(
 
         engine = _build_uncertainty_engine(params, sigma, max_neighbors)
         ys, xs = np.where(valid)
-        variances = np.array([engine.spatial_only_variance(world_points[y, x], window_radius).variance for y, x in zip(ys, xs)])
+        variances = np.array([engine.rendering_aware_variance(world_points[y, x], window_radius).variance for y, x in zip(ys, xs)])
 
         rows = np.clip(((ys.astype(np.float64) + 0.5) * height / grid_res).astype(int), 0, height - 1)
         cols = np.clip(((xs.astype(np.float64) + 0.5) * width / grid_res).astype(int), 0, width - 1)
@@ -504,8 +506,7 @@ def train(
     - `bq_sigma`/`bq_window_radius`/`bq_max_neighbors`: shared by both
       mechanisms above, not independently tunable per-mechanism in this
       first installment -- defaults match the thin-rod/cylinder scene
-      family's established convention (`designed_scene_experiments.py`'s
-      `nbv` and `differentiation` modes), not the lego-scale
+      family's established convention, not the lego-scale
       `sigma=0.05`/`window_radius=0.08` used elsewhere in
       `gs_experiment/` -- pick values matching the actual scene's spatial
       scale, not these defaults blindly, for a different scene family.
@@ -604,11 +605,10 @@ def train(
         # photometric signal to counteract it stay non-negligible --
         # meaningfully reducing (not eliminating) the "junk splat"
         # contamination of local BQ neighborhoods
-        # (bq_splat/results/FINDINGS.md-style empirical finding: without
-        # this, ~90% of splats in a differentiation-scene run sat at
-        # their initial ~0.27 opacity, scattered across the whole
-        # bounding volume, dominating local-neighborhood statistics in
-        # regions with no real geometry).
+        # (empirical finding from an earlier hand-built-scene run: without
+        # this, ~90% of splats sat at their initial ~0.27 opacity,
+        # scattered across the whole bounding volume, dominating
+        # local-neighborhood statistics in regions with no real geometry).
         l1 = torch.nn.functional.l1_loss(pred, gt)
         if ssim_weight > 0:
             photo_loss = (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - _ssim(pred, gt))
@@ -658,10 +658,11 @@ def train(
                     if bq_densify_min_opacity > 0.0:
                         # BQ variance is high in genuinely empty space too
                         # (correct, but not useful for deciding where to
-                        # grow) -- the same problem designed_scene_experiments.py's
-                        # pruning mode found and fixed with an opacity floor
-                        # (min_opacity_for_bq). First attempt zeroed the
-                        # signal for low-opacity splats but still included
+                        # grow) -- the same problem a real pruning
+                        # experiment found and fixed with an opacity floor
+                        # (min_opacity_for_bq, see FINDINGS.md section 7).
+                        # First attempt zeroed the signal for low-opacity
+                        # splats but still included
                         # them in `has_data` -- with most of a freshly
                         # initialized/split population below the floor,
                         # that dragged the percentile itself down to ~0,
@@ -863,7 +864,7 @@ def mean_psnr(scene_dir: str, n_views: int) -> float:
     """Mean per-view PSNR of `scene_dir`'s own checkpoint against its own
     ground-truth images -- shared by every variant `run_nll_experiment`
     trains, so results are directly comparable at a matched splat budget."""
-    from gs_experiment.render_reconstruction import render_views
+    from gs_experiment.scripts.render_reconstruction import render_views
 
     results, _ = render_views(scene_dir, list(range(n_views)))
     psnrs = [-10.0 * np.log10(max(float(np.mean((gt - recon) ** 2)), 1e-10)) for _, gt, recon in results]
@@ -986,7 +987,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "scene_dir",
-        help="directory with transforms.json + images/ (gs_experiment.blender_render output); "
+        help="directory with transforms.json + images/; "
         "in --nll-experiment mode, the nbv_dir containing baseline/ and baseline_eval/",
     )
     parser.add_argument("out_path", nargs="?", default=None, help="output .ply path; omit in --nll-experiment mode")

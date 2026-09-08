@@ -1,5 +1,5 @@
 """Render ground-truth vs. gsplat-reconstruction comparisons for a
-trained checkpoint (gs_experiment.train_minimal_gsplat's output), plus
+trained checkpoint (gs_experiment.scripts.train_minimal_gsplat's output), plus
 error maps and (by default) real per-pixel BQ uncertainty maps -- so a
 reader can see, side by side on the exact same held-out/test views used
 to judge quality, both where the reconstruction is actually wrong and
@@ -23,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import matplotlib
 
@@ -36,7 +36,7 @@ from PIL import Image
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
 from gs_experiment.ply_io import read_3dgs_ply
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -144,15 +144,29 @@ def compute_uncertainty_maps(
     Returns a list of (spatial_map, directional_map) aligned with
     `view_indices`, each (height, width) with NaN outside the region
     gsplat itself reports as covered (alpha <= alpha_threshold).
+    `directional_map` is `variance / prior_variance` (see
+    gpu_uncertainty.compute_directional_variance_batched's docstring), a
+    bounded [0,1] ratio, not raw posterior variance -- its absolute scale
+    is comparable across scenes/checkpoints/figures, unlike the raw
+    variance, whose magnitude is dominated by `sigma` (an 18x sigma
+    difference between two scripts once produced a ~12,000x difference in
+    raw variance on the *same* checkpoint -- not a real signal). `spatial_map`
+    is still raw (position-only) variance -- not used in the current figures.
     """
     import gsplat
 
-    from bq_splat.kernels import DirectionalKernel
+    from gs_experiment.gpu_uncertainty import compute_directional_variance_batched
+    from gs_experiment.kernels import DirectionalKernel
+    from gs_experiment.nerf_transforms import camera_pose_from_c2w
     from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
     from gs_experiment.splat_scene import load_from_gsplat_checkpoint, splat_observations
 
-    scene = load_from_gsplat_checkpoint(checkpoint_dir or scene_dir, attribution_angular_tol=attribution_angular_tol)
-    obs_positions, obs_directions, obs_values = splat_observations(scene)
+    scene = load_from_gsplat_checkpoint(
+        checkpoint_dir or scene_dir, attribution_angular_tol=attribution_angular_tol, use_gpu_attribution=True
+    )
+    obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations = splat_observations(
+        scene, include_render_attrs=True
+    )
     bounds = tuple((obs_positions[:, d].min() - 1.0, obs_positions[:, d].max() + 1.0) for d in range(3))
 
     pos_kernel = make_default_3d_position_kernel(sigma=sigma)
@@ -161,15 +175,16 @@ def compute_uncertainty_maps(
     # expanded observation rows for the directional one -- reusing the
     # expanded rows for the position-only query would silently leak
     # observation-count into a signal meant to be blind to direction (see
-    # render_directional_uncertainty_sweep.py's run_view_projection /
-    # designed_scene_experiments.py's differentiation mode for the same distinction).
+    # render_directional_uncertainty_sweep.py's run_view_projection for
+    # the same distinction).
     spatial_engine = LocalUncertaintyEngine(
         positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds,
-        max_neighbors=max_neighbors,
+        max_neighbors=max_neighbors, opacities=scene.opacities,
     )
     directional_engine = LocalUncertaintyEngine(
         positions=obs_positions, values=obs_values, pos_kernel=pos_kernel, scene_bounds=bounds,
         directions=obs_directions, dir_kernel=dir_kernel, max_neighbors=max_neighbors,
+        opacities=obs_opacities, scales=obs_scales, rotations=obs_rotations,
     )
 
     K_full = fov_x_to_intrinsics(camera_angle_x, width, height)
@@ -212,15 +227,37 @@ def compute_uncertainty_maps(
             valid = alpha_map > alpha_threshold
 
             world_points = unproject_depth_grid(depth_map, K_depth, c2w_cv)
+            camera = camera_pose_from_c2w(c2w)
+            camera_index = directional_engine.build_bearing_index(camera)
 
             spatial_field = np.full((depth_height, depth_width), np.nan)
             dir_field = np.full((depth_height, depth_width), np.nan)
-            for y, x in zip(*np.where(valid)):
-                point = world_points[y, x]
-                to_camera = cam_center - point
-                query_direction = to_camera / np.linalg.norm(to_camera)
-                spatial_field[y, x] = spatial_engine.spatial_only_variance(point, window_radius).variance
-                dir_field[y, x] = directional_engine.directional_variance(point, query_direction, window_radius).variance
+            ys, xs = np.where(valid)
+            points = world_points[ys, xs]
+            to_camera = cam_center[None, :] - points
+            query_directions = to_camera / np.linalg.norm(to_camera, axis=1, keepdims=True)
+
+            for y, x, point in zip(ys, xs, points):
+                spatial_field[y, x] = spatial_engine.rendering_aware_variance(point, window_radius).variance
+            # Batched over every valid pixel in this view at once (one GPU pass instead of one
+            # Python call per pixel) -- see gpu_uncertainty.py's module docstring: this is the
+            # same closed-form math rendering_aware_variance_along_ray_directional computes per
+            # call, verified to agree with it to ~1e-10 on real data
+            # (tests/gs_experiment/test_gpu_uncertainty.py), not an approximation.
+            if len(ys) > 0:
+                # dir_field is variance/prior_variance (in [0,1]: 0 = fully informed by real
+                # data, 1 = no relevant observations at all), not raw posterior variance.
+                # The raw variance's absolute scale is dominated by sigma_rbf (differs by
+                # orders of magnitude for a small sigma change, on the *same* checkpoint --
+                # not a real cross-scene/cross-condition difference), so it isn't comparable
+                # across panels/scenes/figures; this ratio is much less sensitive to sigma
+                # (numerator and denominator scale together) and is bounded, so a reader can
+                # compare it directly across panels without a per-panel autoscaled colorbar.
+                variance, prior_variance = compute_directional_variance_batched(
+                    directional_engine, camera_index, points, query_directions,
+                    angular_tol=0.05, sigma_rbf=sigma, kappa=kappa, max_candidates=500, device=device,
+                )
+                dir_field[ys, xs] = variance / np.maximum(prior_variance, 1e-300)
 
             maps.append((upsample(spatial_field, valid), upsample(dir_field, valid)))
 

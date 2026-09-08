@@ -2,9 +2,8 @@ import numpy as np
 import pytest
 from scipy import integrate
 
-from bq_splat.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
-from bq_splat.quadrature import (
-    bayesian_quadrature_nd,
+from gs_experiment.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.quadrature import (
     bayesian_quadrature_rendering_aware,
     bayesian_quadrature_rendering_aware_directional,
     numerical_rendering_moment_vector,
@@ -13,7 +12,7 @@ from bq_splat.quadrature import (
     rendering_aware_moment_vector,
     rendering_aware_prior_variance,
 )
-from bq_splat.render_weight import GaussianRenderWeight
+from gs_experiment.render_weight import GaussianRenderWeight
 
 
 def test_render_weight_peaks_at_amplitude_at_its_own_center():
@@ -174,7 +173,11 @@ def test_rendering_aware_ignores_a_node_outside_the_footprint_but_old_box_quadra
     pixel's footprint) should barely move the rendering-aware mean,
     regardless of whether it happens to sit inside whatever generic window
     the old box-quadrature approach was given. The old approach has no
-    concept of a_q, so the same node moves its mean by a lot."""
+    concept of a_q, so the same node moves its mean by a lot -- reproduced
+    here directly from ProductKernel's own k/v/vv (the retired
+    bayesian_quadrature_nd was a thin GP-posterior-mean wrapper around
+    exactly these three calls, one Gram-matrix solve; a single node makes
+    that solve a trivial 1x1 division)."""
     sigma_rbf = 0.3
     node = np.array([[3.0]])
     value = np.array([10.0])
@@ -184,7 +187,9 @@ def test_rendering_aware_ignores_a_node_outside_the_footprint_but_old_box_quadra
 
     old_kernel = ProductKernel([RBFKernel(sigma_rbf)])
     old_bounds = [(-5.0, 5.0)]
-    old_mean = bayesian_quadrature_nd(node, value, old_kernel, old_bounds).mean
+    kxx = float(old_kernel.k(node, node)[0, 0])
+    v = float(old_kernel.v(node, old_bounds)[0])
+    old_mean = (v / kxx) * value[0]
 
     assert abs(new_mean) < 1e-3
     assert abs(old_mean) > 1.0

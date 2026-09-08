@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from scipy import integrate
 
-from bq_splat.kernels import MaternKernel, RBFKernel
+from gs_experiment.kernels import MaternKernel, RBFKernel
 
 
 def test_rbf_matches_nerf_py_closed_form():

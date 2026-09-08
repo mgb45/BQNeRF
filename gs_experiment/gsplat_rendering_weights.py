@@ -172,6 +172,7 @@ class GsplatCameraProjection:
     K: np.ndarray
     width: int
     height: int
+    directions: Optional[np.ndarray] = None  # (M, 3), parallel to indices -- optional, see query_pixel
     _tree: Optional[cKDTree] = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -189,6 +190,7 @@ class GsplatCameraProjection:
         width: int,
         height: int,
         device: str = "cuda",
+        directions: Optional[np.ndarray] = None,
     ) -> "GsplatCameraProjection":
         means = torch.as_tensor(positions, dtype=torch.float32, device=device)
         quats = torch.as_tensor(rotations, dtype=torch.float32, device=device)
@@ -214,18 +216,32 @@ class GsplatCameraProjection:
             K=np.asarray(K, dtype=float),
             width=width,
             height=height,
+            directions=directions[valid] if directions is not None else None,
         )
 
-    def query_pixel(self, pixel_xy, pixel_radius: float = 64.0, max_candidates: Optional[int] = 2000):
+    def query_pixel(self, pixel_xy, pixel_radius: float = 64.0, max_candidates: Optional[int] = 2000, query_direction=None):
         """Real, depth-ordered alpha-compositing transmittance weight
         `w_i = T_i * alpha_i(pixel)` for splats within `pixel_radius`
         screen-space pixels of `pixel_xy` -- the same analytic per-pixel
         alpha formula `gsplat_alpha_compositing_weights` uses (see that
         function's docstring), evaluated here in plain numpy against this
         cached projection instead of a fresh CUDA call. If more than
-        `max_candidates` splats project within `pixel_radius`, keeps the
-        ones nearest in pixel space -- a real relevance ranking, not a
-        random subsample.
+        `max_candidates` splats project within `pixel_radius`: ranked by
+        pixel distance (nearest first) by default -- a real relevance
+        ranking, not a random subsample -- or, if `query_direction` is
+        given (and this projection was built with `directions`), ranked
+        by directional alignment with `query_direction` instead. The
+        directional case matters whenever `positions`/`directions` are a
+        camera-*expanded* observation array (one row per (splat,
+        observing-camera) pair, as `splat_observations` produces): every
+        row for one physical splat projects to the *exact same* pixel
+        under the current query camera, so pure pixel-distance ranking
+        can't tell them apart, and an overflowing `max_candidates` cut
+        would keep an arbitrary subset of that splat's observation
+        directions rather than preferentially the one(s) closest to the
+        actual query direction -- the same argument, and the same fix, as
+        `gs_experiment.visibility_attribution.CameraSplatIndex.query`'s
+        docstring documents (found and fixed there first).
 
         Returns `(original_indices, weights)`: indices into the arrays
         `build` was called with, and their composited weights (zeros for
@@ -238,8 +254,12 @@ class GsplatCameraProjection:
         if local.size == 0:
             return np.empty(0, dtype=int), np.empty(0)
         if max_candidates is not None and local.size > max_candidates:
-            dists = np.linalg.norm(self.means2d[local] - pixel_xy, axis=1)
-            local = local[np.argsort(dists)[:max_candidates]]
+            if query_direction is not None and self.directions is not None:
+                alignment = self.directions[local] @ np.asarray(query_direction)
+                local = local[np.argsort(-alignment)[:max_candidates]]
+            else:
+                dists = np.linalg.norm(self.means2d[local] - pixel_xy, axis=1)
+                local = local[np.argsort(dists)[:max_candidates]]
 
         d = pixel_xy[None, :] - self.means2d[local]
         c00, c01, c11 = self.conics[local, 0], self.conics[local, 1], self.conics[local, 2]

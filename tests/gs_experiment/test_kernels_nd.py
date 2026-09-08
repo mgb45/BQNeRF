@@ -1,8 +1,7 @@
 import numpy as np
 from scipy import integrate
 
-from bq_splat.kernels import MaternKernel, ProductKernel, RBFKernel
-from bq_splat.quadrature import bayesian_quadrature_nd
+from gs_experiment.kernels import MaternKernel, ProductKernel, RBFKernel
 
 
 def test_product_rbf_v_matches_numerical_2d_integration():
@@ -75,19 +74,6 @@ def test_product_kernel_gram_and_v_factorize_as_expected():
     np.testing.assert_allclose(v_2d, v_x * v_y, atol=1e-12)
 
     assert abs(kernel_2d.vv(bounds) - kernel_x.vv(*bounds[0]) * kernel_y.vv(*bounds[1])) < 1e-12
-
-
-def test_bq_nd_runs_and_gives_finite_sane_result():
-    rng = np.random.default_rng(0)
-    a, b = 0.0, 10.0
-    kernel_2d = ProductKernel([RBFKernel(sigma=0.4), RBFKernel(sigma=0.4)])
-    bounds = [(a, b), (a, b)]
-    nodes = rng.uniform(a, b, size=(20, 2))
-    values = np.sin(nodes[:, 0]) + np.cos(nodes[:, 1])
-
-    result = bayesian_quadrature_nd(nodes, values, kernel_2d, bounds)
-    assert np.isfinite(result.mean)
-    assert result.variance >= 0.0
 
 
 def test_matern_product_kernel_gram_is_positive_semidefinite():

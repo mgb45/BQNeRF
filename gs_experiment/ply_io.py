@@ -3,7 +3,7 @@
 gsplat-based trainers both use for saved splats), via plyfile. Kept as
 its own module (numpy + plyfile only, no torch) so
 gs_experiment.splat_scene's loader can use it without depending on the
-trainer, and gs_experiment.train_minimal_gsplat's writer can use it
+trainer, and gs_experiment.scripts.train_minimal_gsplat's writer can use it
 without the loader depending on torch.
 
 Property order and semantics match the reference implementation:

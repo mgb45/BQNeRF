@@ -53,7 +53,7 @@ width (trading effect size for quality) or a denser real dataset.
 
 ### 2. Extend the gap-based directional design to a genuinely photographed scene
 
-The same design (`real_directional_coverage_experiment.py --design gap
+The same design (`gs_experiment/scripts/real_directional_coverage_experiment.py
 --dataset bonsai`: remove a deliberate angular gap from a dense real view
 pool, leave everything else untouched) has been run once on the actual
 photographed Mip-NeRF360 "bonsai" scene, with a quality review of the

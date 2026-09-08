@@ -1,36 +1,26 @@
-"""Per-query-point local BQ uncertainty over a real (or mock) splat scene,
-in 3D world space. Directly reuses bq_splat's validated kernel/quadrature
-machinery and the two exact optimizations found in
-bq_splat/validate.py --check scaling (bq_splat/results/FINDINGS.md
-section 8): a KD-tree for neighbor lookup instead of brute force, and
-caching the kernel's `vv` term per window size instead of recomputing it
-per query (exact for a stationary kernel on a fixed-size, translated
-window, not an approximation).
+"""Per-query-point local, rendering-aware BQ uncertainty over a real (or
+mock) splat scene, in 3D world space. Directly reuses this project's
+validated kernel/quadrature machinery (`kernels.py`/`quadrature.py`),
+plus a KD-tree-based neighbor lookup (see `gs_experiment/results/FINDINGS.md`).
 
-Neighbor-finding uses a ball query (efficient via scipy's cKDTree); the
-integration domain for `v`/`vv` is then the axis-aligned bounding box of
-that same nominal radius, matching what benchmark_local_bq_scaling.py
-already validated (ball query for speed, box for the actual quadrature
-domain) rather than a novel choice made here.
+`LocalUncertaintyEngine.rendering_aware_variance` and its `_along_ray`/
+`_via_gsplat` variants build a query-specific renderer weight
+(`render_weight.py`'s GaussianRenderWeight: transmittance x opacity x
+footprint) instead of integrating the base kernel uniformly over an
+arbitrary box.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-from bq_splat.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
-from bq_splat.quadrature import (
-    BQResult,
-    bayesian_quadrature_directional,
-    bayesian_quadrature_nd,
-    bayesian_quadrature_rendering_aware,
-    bayesian_quadrature_rendering_aware_directional,
-)
-from bq_splat.render_weight import GaussianRenderWeight
+from gs_experiment.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.quadrature import BQResult, bayesian_quadrature_rendering_aware, bayesian_quadrature_rendering_aware_directional
+from gs_experiment.render_weight import GaussianRenderWeight
 from gs_experiment.camera import CameraPose, project_point_to_pixel, viewmat_from_camera_pose
 from gs_experiment.visibility_attribution import CameraSplatIndex, project_to_camera_local, ray_transmittance_weights
 
@@ -39,15 +29,16 @@ if TYPE_CHECKING:  # gs_experiment.gsplat_rendering_weights needs torch/gsplat -
 
 
 def make_default_3d_position_kernel(sigma: float) -> ProductKernel:
-    """3D generalization of the 2D ProductKernel used throughout bq_splat --
-    no new kernel code needed, ProductKernel already supports arbitrary D."""
+    """3D generalization of the 2D ProductKernel used elsewhere in this
+    project -- no new kernel code needed, ProductKernel already supports
+    arbitrary D."""
     return ProductKernel([RBFKernel(sigma=sigma), RBFKernel(sigma=sigma), RBFKernel(sigma=sigma)])
 
 
 def make_default_3d_matern_kernel(rho: float) -> ProductKernel:
     """Matern-3/2 analogue of make_default_3d_position_kernel, for the
     RBF-vs-Matern kernel-choice comparison ROADMAP.md flags as unresolved
-    (bq_splat/results/FINDINGS.md sections 5-7 validated it only at toy
+    (gs_experiment/results/FINDINGS.md sections 5-7 validated it only at toy
     scale, never against a real trained GS checkpoint). `rho` plays the
     same "bandwidth" role sigma does for RBF, not an identical physical
     quantity -- passing the same numeric value to both is a like-for-like
@@ -91,14 +82,6 @@ def quat_scale_to_covariance(quats: np.ndarray, scales: np.ndarray) -> np.ndarra
     return np.einsum("nik,nk,njk->nij", rotation, scales_sq, rotation)
 
 
-def box_bounds(center: np.ndarray, radius: float, scene_bounds) -> list:
-    bounds = []
-    for d in range(len(center)):
-        lo, hi = scene_bounds[d]
-        bounds.append((max(lo, center[d] - radius), min(hi, center[d] + radius)))
-    return bounds
-
-
 @dataclass
 class LocalUncertaintyEngine:
     """Holds the spatial index and a vv-cache across many queries against
@@ -129,7 +112,7 @@ class LocalUncertaintyEngine:
     # window, and the BQ solve below is at least O(n^2)-O(n^3) in neighbor
     # count -- one such query pegged ~18 CPU cores for half an hour before
     # being killed). benchmark_local_bq_scaling.py
-    # (bq_splat/results/FINDINGS.md section 8) validated the solve cost as
+    # (gs_experiment/results/FINDINGS.md section 8) validated the solve cost as
     # negligible up to "hundreds" of local neighbors, never thousands+, so
     # capping there rather than letting window contents grow unbounded
     # with real-data density is restoring the validated regime, not an ad
@@ -148,7 +131,6 @@ class LocalUncertaintyEngine:
         if self.rotations is not None:
             self.rotations = np.asarray(self.rotations, dtype=float)
         self.tree = cKDTree(self.positions)
-        self._vv_cache: Dict[tuple, float] = {}
         self._covariance_cache: Optional[np.ndarray] = None
         self._rng = np.random.default_rng(self.seed)
 
@@ -181,16 +163,6 @@ class LocalUncertaintyEngine:
                 self._covariance_cache = quat_scale_to_covariance(self.rotations, self.scales)
         return self._covariance_cache
 
-    def _cached_vv(self, bounds) -> float:
-        # Interior queries share one window size (2*radius per axis); edge
-        # queries clipped by scene_bounds get their own (smaller) shape --
-        # still cached, just under a different key, per benchmark_local_bq_
-        # scaling.py's caveat about clipped windows near boundaries.
-        key = tuple(round(hi - lo, 9) for lo, hi in bounds)
-        if key not in self._vv_cache:
-            self._vv_cache[key] = float(self.pos_kernel.vv(bounds))
-        return self._vv_cache[key]
-
     def local_neighbors(self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None) -> np.ndarray:
         idx = np.array(self.tree.query_ball_point(query_point, radius), dtype=int)
         if exclude_idx is not None:
@@ -207,42 +179,17 @@ class LocalUncertaintyEngine:
             idx = self._rng.choice(idx, size=self.max_neighbors, replace=False)
         return idx
 
-    def spatial_only_variance(self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None) -> BQResult:
-        idx = self.local_neighbors(query_point, radius, exclude_idx=exclude_idx)
-        bounds = box_bounds(query_point, radius, self.scene_bounds)
-        vv = self._cached_vv(bounds)
-        local_positions = self.positions[idx]
-        local_values = self.values[idx]
-        return bayesian_quadrature_nd(local_positions, local_values, self.pos_kernel, bounds, precomputed_vv=vv)
-
-    def directional_variance(self, query_point: np.ndarray, query_direction: np.ndarray, radius: float) -> BQResult:
-        if self.directions is None or self.dir_kernel is None:
-            raise ValueError("directions/dir_kernel not set on this engine -- construct with both to use this method")
-        idx = self.local_neighbors(query_point, radius)
-        bounds = box_bounds(query_point, radius, self.scene_bounds)
-        vv = self._cached_vv(bounds)
-        local_positions = self.positions[idx]
-        local_directions = self.directions[idx]
-        local_values = self.values[idx]
-        return bayesian_quadrature_directional(
-            local_positions, local_directions, local_values, self.pos_kernel, self.dir_kernel, bounds, query_direction,
-            precomputed_pos_vv=vv,
-        )
-
     def rendering_aware_variance(
         self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None, sigma_rbf: Optional[float] = None
     ) -> BQResult:
-        """spatial_only_variance's renderer-aware replacement: instead of
-        integrating pos_kernel uniformly over an arbitrary box (see that
-        method, and bq_splat/PROOF_alpha_compositing_equivalence.md section 7
-        for why that's the thing this project's own docs already flag as
-        unfinished), this builds a real per-query a_q
-        (bq_splat/render_weight.py) from data this engine already has --
+        """A renderer-aware local BQ variance: instead of integrating
+        pos_kernel uniformly over an arbitrary box, this builds a real per-query a_q
+        (gs_experiment/render_weight.py) from data this engine already has --
         real per-splat opacity as a_q's amplitude, and a Gaussian footprint
-        tied to `radius` -- and calls bayesian_quadrature_rendering_aware
-        instead of bayesian_quadrature_nd. A splat with low local opacity
-        now contributes less to both mean and variance by construction,
-        rather than by virtue of sitting outside an ad hoc box.
+        tied to `radius` -- and calls bayesian_quadrature_rendering_aware.
+        A splat with low local opacity now contributes less to both mean
+        and variance by construction, rather than by virtue of sitting
+        outside an ad hoc box.
 
         What this does NOT model: genuine depth-ordered transmittance
         through occluders along one specific camera ray -- amplitude is a
@@ -283,18 +230,22 @@ class LocalUncertaintyEngine:
         # call: mean_opacity is a real, bounded quantity (a compositing
         # weight budget), and pinning it as a_q's *mass* (rather than its
         # peak height) is what keeps it comparable across different
-        # `radius` choices -- see bq_splat/render_weight.py's docstring.
+        # `radius` choices -- see gs_experiment/render_weight.py's docstring.
         render_weight = GaussianRenderWeight.from_total_mass(total_mass=mean_opacity, center=query_point, covariance=covariance)
 
         return bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
 
     def build_bearing_index(self, camera: CameraPose) -> CameraSplatIndex:
         """Build once per camera, reuse across every
-        rendering_aware_variance_along_ray call against that camera -- see
-        CameraSplatIndex's docstring for why a fresh 3D-ball-query candidate
-        set per call is both wrong and wasteful on a real, dense checkpoint.
+        rendering_aware_variance_along_ray[_directional] call against that
+        camera -- see CameraSplatIndex's docstring for why a fresh
+        3D-ball-query candidate set per call is both wrong and wasteful on
+        a real, dense checkpoint. Passes `self.directions` through (a
+        no-op when unset) so a directional query can rank overflow
+        candidates by directional alignment instead of bearing-distance
+        ties -- see CameraSplatIndex's docstring for why that matters.
         """
-        return CameraSplatIndex.build(self.positions, camera)
+        return CameraSplatIndex.build(self.positions, camera, directions=self.directions)
 
     def rendering_aware_variance_along_ray(
         self,
@@ -366,8 +317,7 @@ class LocalUncertaintyEngine:
         be set -- one direction per row of `self.positions`, i.e. this
         engine must be built from observation-expanded arrays (one row
         per (splat, observing-camera) pair, as `splat_observations`
-        produces), the same requirement `directional_variance` already
-        has: a splat needs to have been observed from *multiple*
+        produces): a splat needs to have been observed from *multiple*
         directions for this term to carry any signal.
 
         Without this, `rendering_aware_variance_along_ray` only answers
@@ -383,7 +333,7 @@ class LocalUncertaintyEngine:
         query_point = np.asarray(query_point, dtype=float)
         sigma_rbf = self._require_rbf_sigma("rendering_aware_variance_along_ray_directional", sigma_rbf)
         idx, local_positions, local_values, render_weight = self._along_ray_local_data(
-            query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates
+            query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates, query_direction=query_direction
         )
         local_directions = self.directions[idx]
         return bayesian_quadrature_rendering_aware_directional(
@@ -408,18 +358,26 @@ class LocalUncertaintyEngine:
         exclude_idx: Optional[int],
         angular_tol: float,
         max_candidates: Optional[int],
+        query_direction: Optional[np.ndarray] = None,
     ):
         """Shared candidate-gathering + render_weight construction for
         rendering_aware_variance_along_ray and its directional variant --
         they differ only in which quadrature function they call with the
-        result (and whether they also need local_directions)."""
+        result (and whether they also need local_directions).
+
+        `query_direction`, passed only by the directional variant: ranks
+        any overflow past `max_candidates` by directional alignment
+        instead of bearing-distance ties -- see CameraSplatIndex.query's
+        docstring for why the directional case needs that (bearing alone
+        can't distinguish between a single physical splat's many
+        observation-direction rows, which all share one bearing)."""
         if self.opacities is None:
             raise ValueError("opacities not set on this engine -- construct with opacities= to use this method")
 
         d = query_point.shape[0]
         ref_bearing_x, ref_bearing_y, _ = project_to_camera_local(query_point.reshape(1, -1), camera_index.camera)
         reference_bearing = (float(ref_bearing_x[0]), float(ref_bearing_y[0]))
-        idx = camera_index.query(reference_bearing, angular_tol, max_candidates=max_candidates)
+        idx = camera_index.query(reference_bearing, angular_tol, max_candidates=max_candidates, query_direction=query_direction)
         if exclude_idx is not None:
             idx = idx[idx != exclude_idx]
 
@@ -483,7 +441,7 @@ class LocalUncertaintyEngine:
         alpha-compositing weights, a real, bounded (<= 1) quantity, unlike
         a peak-amplitude convention whose *mass* would otherwise depend on
         the arbitrary volume of whatever covariance moment-matching
-        happens to produce (see bq_splat/render_weight.py's docstring --
+        happens to produce (see gs_experiment/render_weight.py's docstring --
         this is what made rendering_aware_variance_via_gsplat's variance
         hit ~1e-100 on a real checkpoint before this fix).
         """
@@ -518,7 +476,8 @@ class LocalUncertaintyEngine:
         from gs_experiment.gsplat_rendering_weights import GsplatCameraProjection
 
         return GsplatCameraProjection.build(
-            self.positions, self.opacities, self.scales, self.rotations, camera, K, width, height, device=device
+            self.positions, self.opacities, self.scales, self.rotations, camera, K, width, height, device=device,
+            directions=self.directions,
         )
 
     def rendering_aware_variance_via_gsplat(
@@ -559,7 +518,7 @@ class LocalUncertaintyEngine:
         pixel-space ones (see GsplatCameraProjection.query_pixel), so
         capping doesn't reintroduce the relevance problem -- but the BQ
         solve below is at least O(n^2)-O(n^3) in candidate count
-        (bq_splat/results/FINDINGS.md section 8's already-validated
+        (gs_experiment/results/FINDINGS.md section 8's already-validated
         "negligible up to hundreds, not thousands" regime), and a dense
         real checkpoint can easily project thousands of splats within a
         generous `pixel_radius` (confirmed: ~200ms/query at 2000
@@ -594,15 +553,14 @@ class LocalUncertaintyEngine:
         `self.directions`/`self.dir_kernel` must be set -- one direction
         per row of `self.positions` (observation-expanded arrays, one row
         per (splat, observing-camera) pair), the same requirement
-        `directional_variance` and `rendering_aware_variance_along_ray_directional`
-        already have.
+        `rendering_aware_variance_along_ray_directional` already has.
         """
         if self.directions is None or self.dir_kernel is None:
             raise ValueError("directions/dir_kernel not set on this engine -- construct with both to use this method")
         query_point = np.asarray(query_point, dtype=float)
         sigma_rbf = self._require_rbf_sigma("rendering_aware_variance_via_gsplat_directional", sigma_rbf)
         idx, local_positions, local_values, render_weight = self._via_gsplat_local_data(
-            query_point, projection, radius, exclude_idx, pixel_radius, max_candidates, device
+            query_point, projection, radius, exclude_idx, pixel_radius, max_candidates, device, query_direction=query_direction
         )
         local_directions = self.directions[idx]
         return bayesian_quadrature_rendering_aware_directional(
@@ -619,12 +577,21 @@ class LocalUncertaintyEngine:
         pixel_radius: float,
         max_candidates: Optional[int],
         device: str,
+        query_direction: Optional[np.ndarray] = None,
     ):
         """Shared candidate-gathering + render_weight construction for
-        rendering_aware_variance_via_gsplat and its directional variant."""
+        rendering_aware_variance_via_gsplat and its directional variant.
+
+        `query_direction`, passed only by the directional variant: see
+        GsplatCameraProjection.query_pixel's docstring for why an
+        overflowing max_candidates cut needs to rank by directional
+        alignment rather than pixel-distance ties when `positions`/
+        `directions` are a camera-expanded observation array."""
         d = query_point.shape[0]
         pixel_xy = project_point_to_pixel(query_point, viewmat_from_camera_pose(projection.camera), projection.K)
-        idx, weights = projection.query_pixel(pixel_xy, pixel_radius=pixel_radius, max_candidates=max_candidates)
+        idx, weights = projection.query_pixel(
+            pixel_xy, pixel_radius=pixel_radius, max_candidates=max_candidates, query_direction=query_direction
+        )
         if exclude_idx is not None:
             keep = idx != exclude_idx
             idx, weights = idx[keep], weights[keep]

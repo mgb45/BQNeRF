@@ -5,11 +5,10 @@ their camera poses) and converts to this project's `transforms.json`
 convention (`nerf_transforms.load_transforms`'s OpenGL c2w format).
 
 Every prior scene in this project either had hand-authored ground-truth
-poses (Blender scenes via `scene_spec`/`blender_render`) or NeRF-
-Synthetic's own pre-baked `transforms.json`. COLMAP is the first real,
-estimated-from-photographs pose source this project reads -- poses here
-come from structure-from-motion on real images, not a known ground-truth
-rig.
+poses or NeRF-Synthetic's own pre-baked `transforms.json`. COLMAP is the
+first real, estimated-from-photographs pose source this project reads --
+poses here come from structure-from-motion on real images, not a known
+ground-truth rig.
 
 Format reference: COLMAP's own `scripts/python/read_write_model.py`
 (the de facto spec for this binary layout; not vendored here, re-

@@ -3,12 +3,12 @@ quantities, at real GS scale -- not hardcoded, as every gs_experiment
 script currently does (`sigma=0.05`, picked once, never checked against
 the data).
 
-`bq_splat/hyperparams.py` already does marginal-likelihood bandwidth
-fitting (bq_splat/results/FINDINGS.md sections 5 and 7), but only ever
+`gs_experiment/hyperparams.py` already does marginal-likelihood bandwidth
+fitting (gs_experiment/results/FINDINGS.md sections 5 and 7), but only ever
 against toy 1D scenes. This script does the same thing -- maximize the GP
 log marginal likelihood -- against a real trained checkpoint's own local
 neighborhoods, using the new `log_marginal_likelihood_nd` /
-`fit_kernel_param_pooled_nd` (bq_splat/hyperparams.py), and then checks
+`fit_kernel_param_pooled_nd` (gs_experiment/hyperparams.py), and then checks
 whether the fitted bandwidth actually changes anything that matters: does
 it shift the BQ-variance-vs-sparsity correlation
 (evaluate_checkpoint.py sparsity) away from what the hardcoded sigma=0.05
@@ -18,11 +18,9 @@ Procedure:
   1. Sample query points across the checkpoint, take each one's local
      window (same ball-query convention as LocalUncertaintyEngine) as one
      "dataset" -- (local_positions, local_colors).
-  2. Split windows into a fit set and a disjoint held-out set (same
-     validate_trainable_kernel_heldout.py spirit as bq_splat/results/
-     FINDINGS.md section 7 -- does a bandwidth fit on one part of the
-     checkpoint generalize to another part, or is it overfitting to the
-     specific windows it was fit on).
+  2. Split windows into a fit set and a disjoint held-out set -- does a
+     bandwidth fit on one part of the checkpoint generalize to another
+     part, or is it overfitting to the specific windows it was fit on?
   3. Fit a shared bandwidth on the fit set via pooled marginal likelihood,
      for both RBF and Matern-3/2.
   4. Report: fitted value vs. the hardcoded 0.05; held-out pooled log
@@ -43,17 +41,17 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
 from scipy.stats import pearsonr
 
-from bq_splat.hyperparams import fit_kernel_param_pooled_nd, pooled_log_marginal_likelihood_nd
-from bq_splat.kernels import MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.hyperparams import fit_kernel_param_pooled_nd, pooled_log_marginal_likelihood_nd
+from gs_experiment.kernels import MaternKernel, ProductKernel, RBFKernel
 from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_matern_kernel, make_default_3d_position_kernel
 from gs_experiment.ply_io import read_3dgs_ply
 
-RESULTS_DIR = Path(__file__).resolve().parents[1] / "gs_experiment" / "results"
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "gs_experiment" / "results"
 
 
 def collect_windows(positions, colors, query_points, window_radius, max_window_size, seed):
@@ -130,11 +128,13 @@ def run(
     ):
         kernel = make_default_3d_position_kernel(sigma_value)
         bounds = tuple((positions[:, d].min() - 0.3, positions[:, d].max() + 0.3) for d in range(3))
-        engine = LocalUncertaintyEngine(positions=positions, values=colors, pos_kernel=kernel, scene_bounds=bounds)
+        engine = LocalUncertaintyEngine(
+            positions=positions, values=colors, pos_kernel=kernel, scene_bounds=bounds, opacities=ck["opacities"][keep]
+        )
         local_counts = np.array(
             [engine.tree.query_ball_point(p, window_radius, return_length=True) for p in corr_points]
         )
-        bq_variances = np.array([engine.spatial_only_variance(p, window_radius).variance for p in corr_points])
+        bq_variances = np.array([engine.rendering_aware_variance(p, window_radius).variance for p in corr_points])
         r, p = pearsonr(np.log1p(local_counts), bq_variances)
         print(f"  {label} ({sigma_value:.4f}): Pearson r={r:.3f}  p={p:.2e}")
 
