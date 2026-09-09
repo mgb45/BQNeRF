@@ -40,6 +40,14 @@ from gs_experiment.ply_io import read_3dgs_ply
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Used by compute_uncertainty_maps only when per-scene fitting (splat_scene.
+# fit_kernel_hyperparams) can't produce a value (too little real data in this
+# checkpoint) -- not used when fitting succeeds, which is now the default.
+# These are the project's own marginal-likelihood pooled fits (see that
+# function's docstring), not arbitrary guesses.
+FALLBACK_SIGMA = 0.0694
+FALLBACK_KAPPA = 0.745
+
 
 def render_views(scene_dir: str, view_indices, checkpoint_dir=None, background_color=(0.05, 0.05, 0.05), device="cuda"):
     """`scene_dir` supplies transforms.json + images (the views to render);
@@ -112,16 +120,18 @@ def compute_uncertainty_maps(
     checkpoint: dict,
     checkpoint_dir=None,
     device: str = "cuda",
-    sigma: float = 0.9,
-    # Marginal-likelihood-fitted (hyperparams.py::fit_kernel_param_pooled_nd, applied to
-    # DirectionalKernel directly -- it already accepts the same (N,D) array interface),
-    # pooled across real per-splat multi-view (direction, color) observations from 7
-    # real checkpoints -- not hand-picked. Held-out log marginal likelihood 1413 at this
-    # value vs 202 at the old hardcoded 4.0 (kappa=4.0 was ~5x too concentrated: real
-    # per-splat color varies much less with viewing angle than that implied, so
-    # moderately-off-angle real observations were being treated as almost uncorrelated
-    # when the data says they should still count).
-    kappa: float = 0.745,
+    # None (the default) fits sigma/kappa against THIS checkpoint's own real data
+    # (splat_scene.fit_kernel_hyperparams) rather than reusing a bandwidth pooled
+    # once across a different calibration set -- a bandwidth tuned at one splat
+    # density/coverage has no reason to be right at another (confirmed directly:
+    # a 300k-splat-tuned sigma is a real mismatch at 500 splats, not just a
+    # theoretical concern). Pass an explicit value to opt back out of fitting,
+    # e.g. for exact reproducibility across a sweep or a fixed-vs-fitted
+    # comparison (see splat_budget_uncertainty_sweep.py, which does its own
+    # explicit sigma refit and deliberately reports both side by side rather
+    # than using this default).
+    sigma: Optional[float] = None,
+    kappa: Optional[float] = None,
     window_radius: float = 1.6,
     max_neighbors: int = 150,
     alpha_threshold: float = 0.5,
@@ -129,6 +139,7 @@ def compute_uncertainty_maps(
     depth_height: int = 42,
     attribution_angular_tol: float = 0.01,
     max_observations_per_splat: Optional[int] = None,
+    return_raw_variance: bool = False,
 ):
     """Real per-pixel BQ uncertainty at every view in `view_indices`, on
     the exact same checkpoint `render_views` just rendered RGB from --
@@ -145,7 +156,9 @@ def compute_uncertainty_maps(
     own training views, not whatever split is being rendered here, or a
     held-out eval split would silently masquerade as the training-view pool.
 
-    `sigma`/`kappa`/`window_radius`/`max_neighbors` match
+    `sigma`/`kappa`: `None` (the default) fits both against this checkpoint's
+    own data (see the parameter comment above and splat_scene.fit_kernel_hyperparams);
+    pass explicit values to disable fitting. `window_radius`/`max_neighbors` match
     render_directional_uncertainty_sweep.py's own defaults, tuned for
     that script's synthetic-scene convention -- pick values matching the
     actual scene's spatial scale for a different scene family (see
@@ -162,6 +175,15 @@ def compute_uncertainty_maps(
     difference between two scripts once produced a ~12,000x difference in
     raw variance on the *same* checkpoint -- not a real signal). `spatial_map`
     is still raw (position-only) variance -- not used in the current figures.
+
+    `return_raw_variance`: if True, each tuple gains a third element,
+    `raw_directional_variance` -- the same numerator `directional_map` divides
+    by `prior_variance` to get its bounded ratio, kept unnormalized this time.
+    Not comparable across scenes/checkpoints/figures (see above -- it's
+    dominated by whatever `sigma`/`kappa` this call fit or was given), so a
+    caller plotting it needs its own per-panel scale, not the ratio's shared
+    fixed [0,1] one. Default False, i.e. every existing 2-tuple-unpacking
+    caller is unaffected.
 
     `max_observations_per_splat`: passed straight through to
     `load_from_gsplat_checkpoint` -- caps the (splat, observing-camera)
@@ -186,6 +208,21 @@ def compute_uncertainty_maps(
         attribution_min_opacity=0.1,
         max_observations_per_splat=max_observations_per_splat,
     )
+
+    if sigma is None or kappa is None:
+        from gs_experiment.splat_scene import fit_kernel_hyperparams
+
+        fitted_sigma, fitted_kappa = fit_kernel_hyperparams(scene)
+        used_sigma = sigma if sigma is not None else (fitted_sigma if fitted_sigma is not None else FALLBACK_SIGMA)
+        used_kappa = kappa if kappa is not None else (fitted_kappa if fitted_kappa is not None else FALLBACK_KAPPA)
+        print(
+            f"compute_uncertainty_maps: sigma={used_sigma:.4f}"
+            f"{' (fitted)' if sigma is None and fitted_sigma is not None else ' (fallback)' if sigma is None else ''}, "
+            f"kappa={used_kappa:.4f}"
+            f"{' (fitted)' if kappa is None and fitted_kappa is not None else ' (fallback)' if kappa is None else ''}"
+        )
+        sigma, kappa = used_sigma, used_kappa
+
     obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations = splat_observations(
         scene, include_render_attrs=True
     )
@@ -254,6 +291,7 @@ def compute_uncertainty_maps(
 
             spatial_field = np.full((depth_height, depth_width), np.nan)
             dir_field = np.full((depth_height, depth_width), np.nan)
+            raw_field = np.full((depth_height, depth_width), np.nan)
             ys, xs = np.where(valid)
             points = world_points[ys, xs]
             to_camera = cam_center[None, :] - points
@@ -280,8 +318,12 @@ def compute_uncertainty_maps(
                     angular_tol=0.05, sigma_rbf=sigma, kappa=kappa, max_candidates=500, device=device,
                 )
                 dir_field[ys, xs] = variance / np.maximum(prior_variance, 1e-300)
+                raw_field[ys, xs] = variance
 
-            maps.append((upsample(spatial_field, valid), upsample(dir_field, valid)))
+            row = (upsample(spatial_field, valid), upsample(dir_field, valid))
+            if return_raw_variance:
+                row = row + (upsample(raw_field, valid),)
+            maps.append(row)
 
     return maps
 

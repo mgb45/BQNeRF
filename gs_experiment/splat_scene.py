@@ -183,6 +183,104 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
     return positions_flat, directions_flat, values_flat
 
 
+def fit_kernel_hyperparams(
+    scene: SplatScene,
+    sigma_bounds=(0.005, 1.0),
+    kappa_bounds=(0.05, 20.0),
+    n_windows: int = 25,
+    max_window_size: int = 60,
+    window_radius: float = 0.08,
+    min_opacity: float = 0.1,
+    min_observations_for_kappa: int = 3,
+    seed: int = 0,
+):
+    """Marginal-likelihood-fit both the position kernel's bandwidth (sigma) and
+    the directional kernel's concentration (kappa) against THIS scene's own real
+    data, instead of reusing a value pooled once across a different calibration
+    set (gs_experiment.hyperparams.fit_kernel_param_pooled_nd -- the same
+    procedure fit_hyperparameters.py already validates for sigma, and the same
+    procedure the project's original pooled kappa fit used, applied per-scene
+    here instead of pooled across a fixed set of checkpoints). Exists because a
+    bandwidth tuned at one checkpoint's splat density/coverage has no reason to
+    be right for a checkpoint at a very different density (confirmed directly:
+    a 300k-splat-tuned sigma is a real bandwidth mismatch at 500 splats -- see
+    splat_budget_uncertainty_sweep.py's fixed-vs-refit-sigma comparison, which
+    this generalizes to kappa and to every caller of compute_uncertainty_maps,
+    not just that one sweep).
+
+    Sigma comes from local (position, color) windows: `n_windows` splats above
+    `min_opacity` are sampled as window centers, each paired with its neighbors
+    within `window_radius` (capped at `max_window_size`, a random subsample,
+    not a truncation, so the fit isn't spatially biased toward whichever
+    neighbors happen to sort first).
+
+    Kappa comes from per-splat multi-view (direction, color) groups: splats
+    above `min_opacity` with at least `min_observations_for_kappa` observing
+    cameras are sampled (up to `n_windows` of them), each contributing one
+    window of (viewing direction, observed color) pairs across its own real
+    observing cameras -- whether color varies with viewing direction is a
+    per-splat question, unlike sigma's spatial-neighborhood one, so kappa's
+    windows are per-splat groups, not spatial neighborhoods.
+
+    Returns `(sigma, kappa)`, either `None` if there wasn't enough real data to
+    fit it (too few above-threshold splats for sigma; too few multi-view
+    splats for kappa) -- callers should fall back to a documented default in
+    that case, not silently use an ill-fit value.
+    """
+    from scipy.spatial import cKDTree
+
+    from gs_experiment.hyperparams import fit_kernel_param_pooled_nd
+    from gs_experiment.kernels import DirectionalKernel, ProductKernel, RBFKernel
+
+    rng = np.random.default_rng(seed)
+    keep = scene.opacities > min_opacity
+    positions = scene.positions[keep]
+    colors = scene.colors[keep]
+    opac_idx = np.nonzero(keep)[0]
+
+    sigma = None
+    if len(positions) >= 6:
+        tree = cKDTree(positions)
+        query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
+        sigma_datasets = []
+        for p in positions[query_idx]:
+            idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
+            if len(idx) < 6:
+                continue
+            if len(idx) > max_window_size:
+                idx = rng.choice(idx, size=max_window_size, replace=False)
+            sigma_datasets.append((positions[idx], colors[idx]))
+        if sigma_datasets:
+            fit = fit_kernel_param_pooled_nd(
+                sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3), bounds=sigma_bounds, n_grid=25,
+            )
+            sigma = float(fit.param)
+
+    kappa = None
+    eligible = [i for i in opac_idx if len(scene.observed_camera_idx[i]) >= min_observations_for_kappa]
+    if eligible:
+        chosen = rng.choice(eligible, size=min(n_windows, len(eligible)), replace=False)
+        kappa_datasets = []
+        for i in chosen:
+            cams = scene.observed_camera_idx[i]
+            if len(cams) > max_window_size:
+                cams = rng.choice(cams, size=max_window_size, replace=False)
+            directions = np.stack(
+                [directions_from_positions_to_camera(scene.positions[i][None, :], scene.cameras[c])[0] for c in cams]
+            )
+            if scene.sh_coeffs is not None:
+                colors_i = eval_sh(scene.sh_coeffs[i][None, :, :], directions, scene.sh_degree).mean(axis=-1)
+            else:
+                colors_i = np.full(len(cams), scene.colors[i])
+            kappa_datasets.append((directions, colors_i))
+        fit = fit_kernel_param_pooled_nd(
+            kappa_datasets, lambda k: DirectionalKernel(kappa=k), bounds=kappa_bounds, n_grid=25,
+        )
+        kappa = float(fit.param)
+
+    return sigma, kappa
+
+
 def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_target_splats: int = 40, n_cameras_per_side: int = 6):
     """A more realistic scene than make_mock_scene's zone-based fiat
     assignment: a "wall" of splats at x=wall_x, a cluster of "target"

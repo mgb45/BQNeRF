@@ -36,12 +36,17 @@ from gs_experiment.scripts.render_directional_uncertainty_sweep import check_qua
 from gs_experiment.scripts.render_reconstruction import RESULTS_DIR, compute_uncertainty_maps, plot_comparisons, render_views
 
 # NeRF-Synthetic scenes are trained against a white background
-# (prepare_nerf_synthetic.py's default); sigma/window_radius match the
-# scale evaluate_checkpoint.py's multi-scene TRAIN_KWARGS trains at
-# (bounds +/-2.5, 2k-15k splats) -- render_reconstruction.py's own
-# defaults were tuned for a different, larger-scale checkpoint.
+# (prepare_nerf_synthetic.py's default); window_radius matches the scale
+# evaluate_checkpoint.py's multi-scene TRAIN_KWARGS trains at (bounds
+# +/-2.5, 2k-15k splats) -- render_reconstruction.py's own default was
+# tuned for a different, larger-scale checkpoint. SIGMA/KAPPA default to
+# None: compute_uncertainty_maps fits both per checkpoint (see
+# splat_scene.fit_kernel_hyperparams) rather than reusing one bandwidth
+# across every scene in --scenes, which can span very different splat
+# counts/densities. Pass --sigma/--kappa to pin fixed values instead.
 BACKGROUND_COLOR = (1.0, 1.0, 1.0)
-SIGMA = 0.05
+SIGMA = None
+KAPPA = None
 WINDOW_RADIUS = 0.08
 DEPTH_RES = 64  # square, matching NeRF-Synthetic's square images (unlike render_reconstruction's widescreen-tuned default)
 
@@ -56,7 +61,8 @@ def run_scene(
     skip_download: bool,
     skip_prepare: bool,
     skip_train: bool,
-    sigma: float,
+    sigma,
+    kappa,
     window_radius: float,
     depth_res: int,
     no_uncertainty: bool,
@@ -81,7 +87,7 @@ def run_scene(
         height, width = results[0][1].shape[:2]
         uncertainty_maps = compute_uncertainty_maps(
             eval_dir, view_indices, frames, camera_angle_x, width, height, checkpoint,
-            checkpoint_dir=wide_dir, sigma=sigma, window_radius=window_radius,
+            checkpoint_dir=wide_dir, sigma=sigma, kappa=kappa, window_radius=window_radius,
             depth_width=depth_res, depth_height=depth_res,
         )
 
@@ -98,7 +104,8 @@ def main():
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-prepare", action="store_true")
     parser.add_argument("--skip-train", action="store_true", help="reuse an existing wide/splats.ply if present")
-    parser.add_argument("--sigma", type=float, default=SIGMA)
+    parser.add_argument("--sigma", type=float, default=SIGMA, help="fixed value; omit to fit per checkpoint (default)")
+    parser.add_argument("--kappa", type=float, default=KAPPA, help="fixed value; omit to fit per checkpoint (default)")
     parser.add_argument("--window-radius", type=float, default=WINDOW_RADIUS)
     parser.add_argument("--depth-res", type=int, default=DEPTH_RES, help="square uncertainty-map resolution before upsampling")
     parser.add_argument("--no-uncertainty", action="store_true", help="skip the two BQ uncertainty columns (faster)")
@@ -110,7 +117,7 @@ def main():
     summary = [
         run_scene(
             scene, args.n_examples, args.skip_download, args.skip_prepare, args.skip_train,
-            args.sigma, args.window_radius, args.depth_res, args.no_uncertainty, args.min_psnr, args.force,
+            args.sigma, args.kappa, args.window_radius, args.depth_res, args.no_uncertainty, args.min_psnr, args.force,
         )
         for scene in scenes
     ]
