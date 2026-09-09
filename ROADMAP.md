@@ -73,6 +73,38 @@ choice a clean, exposed parameter, not hardcoded to one default. Further
 exhaustive kernel exploration is a "let the field discover more kernels"
 problem for after publication, not a blocker now.
 
+## How can uncertainty be used?
+
+Now that view-coverage and floater effects are both confirmed real and
+large (`gs_experiment/results/FINDINGS.md`'s session-update section), and
+the rendering-error question is genuinely open rather than settled, two
+concrete downstream uses are worth pursuing directly rather than treating
+uncertainty as only a diagnostic:
+
+1. **Fight floaters at training time.** `FINDINGS.md` section 4 tried
+   training under the BQ likelihood once (as a loss term, and as a
+   densification trigger) and got a discouraging result — but that was a
+   more general hypothesis, tested with an older, now-superseded
+   implementation, not aimed specifically at floaters, and not re-run
+   since. The floater mechanism just found is much more targeted: a
+   floater is, almost by construction, a splat whose
+   local render-weight spread (`Sigma_q`) is anomalously large relative
+   to its neighbors. A regularizer or pruning criterion built on that
+   spread directly (not on opacity or gradient magnitude, the current
+   densification/pruning signals) is a different, more targeted proposal
+   than what was already tried and found wanting — worth testing on its
+   own terms, not assumed to fail for the same reason the earlier,
+   broader attempt did.
+2. **Next-best-view selection.** The retired hand-built-scene track
+   (`FINDINGS.md` section 6) already showed a real, positive result here
+   (BQ-scored candidate views beat a poor baseline by ~3x in held-out
+   PSNR gain) — but only on a simple, designed scene, before the
+   real-checkpoint directional signal was validated as cleanly as it now
+   is (section 3's 0.03->0.97 gap sweep). Re-running next-best-view
+   selection against a real checkpoint, using the now-fixed and
+   fitted directional uncertainty to score candidate views, is a much
+   stronger test of the same idea than was available before.
+
 ## Parked (not active — real, but not on the path to working general code)
 
 Kept for the record, not deleted, and worth returning to if this becomes

@@ -56,21 +56,35 @@ for the numbers and the full reasoning behind them.
   scene picked for convenience) — yes, robustly: local splat density and
   BQ variance correlate significantly on every single scene (`r` between
   `-0.30` and `-0.56`).
-- **Is the number *calibrated*, not just correlated?** A real, honestly
-  negative result: held-out Gaussian NLL beats a flat baseline on only 3
-  of 8 scenes, and direct correlation with squared error is essentially
-  zero everywhere. Ranking-based usefulness (which is what a pruning or
-  active-view-selection policy actually needs) is real but modest.
-  Reported as an open gap, not glossed over.
 - **Does the directional/viewing-angle-coverage signal work on real
-  geometry?** Yes, cleanly, on a real lego checkpoint with a deliberate,
-  carefully-controlled angular coverage gap (strictly monotonic, rank
-  correlation 1.0). On a genuinely photographed scene (real COLMAP-estimated
+  geometry?** Yes, cleanly: a real lego checkpoint with a deliberate,
+  carefully-controlled angular coverage gap now shows the per-pixel
+  uncertainty ratio sweeping from 0.03 (full coverage) to 0.97 (widest
+  gap), strictly increasing across all 5 conditions — the project's
+  cleanest result. On a genuinely photographed scene (real COLMAP-estimated
   camera poses) — still an open question, one condition run so far.
-- **What didn't work**: training a model directly under this
-  uncertainty (as a loss weight, and as a densification trigger) — tried
-  directly, found not to help, kept in as a real negative result rather
-  than left untested or quietly dropped.
+- **Does the signal also flag GS-training floaters?** Yes, and this is
+  distinct from view coverage: two checkpoints of the same scene with
+  identical real camera coverage differed 35x in mean uncertainty purely
+  because one had floaters (stray splats displaced outside the training
+  volume, a normal optimization artifact) and the other didn't. Whether
+  this is a confound or a genuinely useful second signal depends on the
+  use case — see `ROADMAP.md`.
+- **Is the number *calibrated* against rendering error, not just
+  correlated with coverage?** An earlier "essentially zero correlation"
+  finding does not survive a clean re-test: with the pipeline bugs fixed
+  and floater-free checkpoints, per-pixel uncertainty correlates with
+  real `|error|` at `r=0.69` pooled (up to `r=0.64` within a single
+  coverage condition), strongly significant. Correlation is weak under
+  full coverage and grows sharply as coverage worsens — see
+  `gs_experiment/results/FINDINGS.md`'s session-update section for the
+  full breakdown and the one-scene caveat.
+- **Training directly under the likelihood** (as a loss weight, and as a
+  densification trigger): tried once, got a discouraging result — but
+  under an implementation from the same pre-fix era as the calibration
+  finding above, which didn't hold up on re-test. Not re-run since, so
+  treated as an open hypothesis, not a settled negative. A more targeted,
+  floater-specific version of the idea is proposed in `ROADMAP.md`.
 
 ## Repo layout
 
