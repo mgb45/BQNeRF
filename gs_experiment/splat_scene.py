@@ -32,7 +32,11 @@ import numpy as np
 
 from gs_experiment.camera import CameraPose, directions_from_positions_to_camera
 from gs_experiment.spherical_harmonics import eval_sh
-from gs_experiment.visibility_attribution import attribute_observations, invert_to_observed_camera_idx
+from gs_experiment.visibility_attribution import (
+    attribute_observations,
+    invert_to_observed_camera_idx,
+    subsample_observed_camera_idx,
+)
 
 
 @dataclass
@@ -151,14 +155,24 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
 
     positions_flat = scene.positions[splat_idx_flat]
     directions_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float)
+    values_flat = np.empty(splat_idx_flat.shape[0], dtype=float) if scene.sh_coeffs is not None else None
     for c in np.unique(cam_idx_flat):
         rows = cam_idx_flat == c
         directions_flat[rows] = directions_from_positions_to_camera(positions_flat[rows], scene.cameras[c])
+        if scene.sh_coeffs is not None:
+            # Evaluated per camera group, same as directions above: eval_sh on
+            # the full flat array would gather scene.sh_coeffs[splat_idx_flat],
+            # duplicating every splat's (n_channels, n_coeffs) coefficients once
+            # per observing camera -- for a dense checkpoint that's a
+            # (n_splat_camera_pairs, 3, 16) float64 array, tens of GB at
+            # millions of splats. Per camera, splat_idx_flat[rows] has no
+            # duplicates (each splat appears once per camera it's observed by),
+            # so this bounds peak memory by the camera with the most observed
+            # splats instead of the sum over all cameras.
+            colors = eval_sh(scene.sh_coeffs[splat_idx_flat[rows]], directions_flat[rows], scene.sh_degree)
+            values_flat[rows] = colors.mean(axis=-1)  # collapse channels to one scalar, matching the flat-color path
 
-    if scene.sh_coeffs is not None:
-        colors = eval_sh(scene.sh_coeffs[splat_idx_flat], directions_flat, scene.sh_degree)
-        values_flat = colors.mean(axis=-1)  # collapse channels to one scalar, matching the flat-color path
-    else:
+    if scene.sh_coeffs is None:
         values_flat = scene.colors[splat_idx_flat]
 
     if include_render_attrs:
@@ -242,6 +256,9 @@ def load_from_gsplat_checkpoint(
     attribution_angular_tol: float = 0.05,
     attribution_depth_margin: float = 0.05,
     use_gpu_attribution: bool = False,
+    attribution_min_opacity: float = 0.0,
+    max_observations_per_splat: Optional[int] = None,
+    attribution_seed: int = 0,
 ) -> SplatScene:
     """Real loader: reads `<scene_dir>/<ply_filename>` (a standard 3DGS
     .ply checkpoint, see gs_experiment.ply_io) for
@@ -275,6 +292,29 @@ def load_from_gsplat_checkpoint(
     torch (lazily imported here, not at module level, so this module and the
     default `pytest tests/` suite stay importable without it); default stays
     `False` so this function's behavior is unchanged for every existing caller.
+
+    `attribution_min_opacity`: splats below this opacity can't hard-occlude
+    others during attribution (see `occlusion_mask`'s docstring) -- default
+    0.0 keeps the old, opacity-blind behavior. Real checkpoints reliably
+    have a few percent of splats that are GS-training floaters (drifted
+    outside the intended training volume, near-zero opacity, a normal
+    optimization artifact, not a bug in training itself); confirmed
+    directly that these alone caused an 8x collapse in real per-splat
+    camera attribution on an otherwise-identical, floater-free checkpoint
+    of the same scene. Pass e.g. 0.1 (already this project's convention
+    elsewhere, see fit_hyperparameters.py) for real-checkpoint use.
+
+    `max_observations_per_splat`: caps each splat's `observed_camera_idx`
+    at this many cameras (uniform random subsample without replacement,
+    seeded by `attribution_seed`) -- see
+    `visibility_attribution.subsample_observed_camera_idx`'s docstring for
+    why this exists: `splat_scene.splat_observations` expands
+    `observed_camera_idx` into one row per (splat, observing-camera) pair,
+    and at high splat counts with dense multi-view coverage that row count
+    (not just splat count) is what determines whether the directional
+    `LocalUncertaintyEngine` fits in host memory. `None` (the default)
+    keeps every observation, i.e. unchanged from before this parameter
+    existed.
     """
     from gs_experiment.nerf_transforms import camera_pose_from_c2w, load_transforms
     from gs_experiment.ply_io import read_3dgs_ply
@@ -290,17 +330,24 @@ def load_from_gsplat_checkpoint(
         fov_deg = np.degrees(camera_angle_x)
 
     positions = checkpoint["positions"]
+    opacities = checkpoint["opacities"]
     if use_gpu_attribution:
         from gs_experiment.gpu_visibility_attribution import batched_attribute_observations
 
         per_camera = batched_attribute_observations(
-            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
+            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin,
+            opacities=opacities, min_opacity=attribution_min_opacity,
         )
     else:
         per_camera = attribute_observations(
-            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin
+            positions, cameras, fov_deg=fov_deg, angular_tol=attribution_angular_tol, depth_margin=attribution_depth_margin,
+            opacities=opacities, min_opacity=attribution_min_opacity,
         )
     observed_camera_idx = invert_to_observed_camera_idx(per_camera, positions.shape[0])
+    if max_observations_per_splat is not None:
+        observed_camera_idx = subsample_observed_camera_idx(
+            observed_camera_idx, max_observations_per_splat, seed=attribution_seed
+        )
 
     sh_coeffs = checkpoint["sh_coeffs"]
     colors = sh_coeffs[:, :, 0].mean(axis=1)  # unused fallback, sh_coeffs takes priority (see splat_observations)

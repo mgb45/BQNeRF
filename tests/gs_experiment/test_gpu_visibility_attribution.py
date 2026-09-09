@@ -97,3 +97,37 @@ def test_matches_scalar_with_dense_clustered_points_forcing_many_shared_cells():
     scalar = attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05)
     batched = batched_attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05, device="cuda")
     assert_exact_match(scalar, batched, 1)
+
+
+def test_matches_scalar_with_min_opacity_floater_filtering():
+    """A floater (near-zero opacity) sitting in front of real, opaque
+    splats -- with min_opacity set, both paths must agree that it no
+    longer hard-occludes them, not just agree with each other in the
+    already-tested opacity-blind default."""
+    rng = np.random.default_rng(2)
+    camera = make_camera()
+    real_positions = np.stack(
+        [rng.uniform(4.9, 5.1, 100), rng.uniform(-0.3, 0.3, 100), rng.uniform(-0.3, 0.3, 100)], axis=1
+    )
+    floater_positions = np.stack(
+        [rng.uniform(2.0, 2.1, 20), rng.uniform(-0.3, 0.3, 20), rng.uniform(-0.3, 0.3, 20)], axis=1
+    )
+    positions = np.concatenate([real_positions, floater_positions], axis=0)
+    opacities = np.concatenate([rng.uniform(0.5, 1.0, 100), rng.uniform(0.0, 0.02, 20)])
+
+    for min_opacity in (0.0, 0.1):
+        scalar = attribute_observations(
+            positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05,
+            opacities=opacities, min_opacity=min_opacity,
+        )
+        batched = batched_attribute_observations(
+            positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05, device="cuda",
+            opacities=opacities, min_opacity=min_opacity,
+        )
+        assert_exact_match(scalar, batched, 1)
+
+    # And the min_opacity=0.1 run must actually attribute (far) more real splats
+    # than the min_opacity=0.0 run -- otherwise this test isn't exercising anything.
+    unfiltered = attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05, opacities=opacities, min_opacity=0.0)
+    filtered = attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.05, depth_margin=0.05, opacities=opacities, min_opacity=0.1)
+    assert len(filtered[0]) > len(unfiltered[0])

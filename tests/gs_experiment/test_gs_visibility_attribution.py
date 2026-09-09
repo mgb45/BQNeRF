@@ -61,6 +61,55 @@ def test_occlusion_mask_flags_splat_behind_a_closer_occluder():
     assert occluded[0] == False  # the occluder itself isn't behind anything
 
 
+def test_occlusion_mask_occluder_mask_excludes_ineligible_points_from_blocking_others():
+    """A GS-training-floater analogue: a near-transparent point sitting on
+    the same bearing as, and closer than, a real target should NOT occlude
+    it once excluded via occluder_mask -- but a real (mask=True) occluder at
+    the same position still should, and the excluded point's own occlusion
+    status is still computed (it isn't just dropped)."""
+    camera = make_camera()
+    positions = np.array(
+        [
+            [2.0, 0.0, 0.0],  # floater: close to camera, same bearing as target
+            [5.0, 0.0, 0.0],  # target, further away
+        ]
+    )
+    occluder_mask = np.array([False, True])  # position 0 (the floater) can't occlude anything
+
+    occluded = occlusion_mask(positions, camera, angular_tol=0.1, depth_margin=0.05, occluder_mask=occluder_mask)
+    assert occluded[1] == False  # not occluded -- its only "occluder" was ineligible
+    assert occluded[0] == False  # the floater itself isn't behind anything
+
+    # Sanity check: with occluder_mask=None (default), the same geometry IS occluded
+    # (matches test_occlusion_mask_flags_splat_behind_a_closer_occluder).
+    occluded_unmasked = occlusion_mask(positions, camera, angular_tol=0.1, depth_margin=0.05)
+    assert occluded_unmasked[1] == True
+
+    # A THIRD point, also close and real (mask=True), still occludes the target.
+    positions3 = np.array([[2.0, 0.0, 0.0], [2.1, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    occluder_mask3 = np.array([False, True, True])
+    occluded3 = occlusion_mask(positions3, camera, angular_tol=0.1, depth_margin=0.05, occluder_mask=occluder_mask3)
+    assert occluded3[2] == True  # occluded by the real (mask=True) point at 2.1, not the floater at 2.0
+
+
+def test_attribute_observations_min_opacity_prevents_floaters_from_occluding():
+    """attribute_observations end-to-end: a near-transparent floater in
+    front of a real, opaque target must not suppress that target's real
+    camera attribution once min_opacity excludes it from occluding."""
+    camera = make_camera()
+    positions = np.array([[2.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    opacities = np.array([0.001, 0.9])  # floater, real target
+
+    without_filter = attribute_observations(positions, [camera], fov_deg=60.0, angular_tol=0.1, depth_margin=0.05)
+    assert 1 not in without_filter[0]  # current (pre-fix) behavior: wrongly occluded
+
+    with_filter = attribute_observations(
+        positions, [camera], fov_deg=60.0, angular_tol=0.1, depth_margin=0.05, opacities=opacities, min_opacity=0.1,
+    )
+    assert 1 in with_filter[0]  # fixed: the floater can no longer hard-occlude the real target
+    assert 0 in with_filter[0]  # the floater itself is still attributed (it's not occluded by anything real)
+
+
 def _occlusion_mask_reference(positions, camera, angular_tol, depth_margin=0.05):
     """Brute-force O(n^2) reference for occlusion_mask, kept only in this
     test as a cross-check for the vectorized query_pairs implementation --

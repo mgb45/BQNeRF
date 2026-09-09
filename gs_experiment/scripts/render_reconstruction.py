@@ -22,6 +22,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -112,13 +113,22 @@ def compute_uncertainty_maps(
     checkpoint_dir=None,
     device: str = "cuda",
     sigma: float = 0.9,
-    kappa: float = 4.0,
+    # Marginal-likelihood-fitted (hyperparams.py::fit_kernel_param_pooled_nd, applied to
+    # DirectionalKernel directly -- it already accepts the same (N,D) array interface),
+    # pooled across real per-splat multi-view (direction, color) observations from 7
+    # real checkpoints -- not hand-picked. Held-out log marginal likelihood 1413 at this
+    # value vs 202 at the old hardcoded 4.0 (kappa=4.0 was ~5x too concentrated: real
+    # per-splat color varies much less with viewing angle than that implied, so
+    # moderately-off-angle real observations were being treated as almost uncorrelated
+    # when the data says they should still count).
+    kappa: float = 0.745,
     window_radius: float = 1.6,
     max_neighbors: int = 150,
     alpha_threshold: float = 0.5,
     depth_width: int = 112,
     depth_height: int = 42,
     attribution_angular_tol: float = 0.01,
+    max_observations_per_splat: Optional[int] = None,
 ):
     """Real per-pixel BQ uncertainty at every view in `view_indices`, on
     the exact same checkpoint `render_views` just rendered RGB from --
@@ -152,6 +162,13 @@ def compute_uncertainty_maps(
     difference between two scripts once produced a ~12,000x difference in
     raw variance on the *same* checkpoint -- not a real signal). `spatial_map`
     is still raw (position-only) variance -- not used in the current figures.
+
+    `max_observations_per_splat`: passed straight through to
+    `load_from_gsplat_checkpoint` -- caps the (splat, observing-camera)
+    row count the directional engine below is built from, which is what
+    actually determines its host memory footprint at high splat counts
+    (see that function's docstring). `None` (the default) keeps every
+    observation, i.e. unchanged from before this parameter existed.
     """
     import gsplat
 
@@ -162,7 +179,12 @@ def compute_uncertainty_maps(
     from gs_experiment.splat_scene import load_from_gsplat_checkpoint, splat_observations
 
     scene = load_from_gsplat_checkpoint(
-        checkpoint_dir or scene_dir, attribution_angular_tol=attribution_angular_tol, use_gpu_attribution=True
+        checkpoint_dir or scene_dir, attribution_angular_tol=attribution_angular_tol, use_gpu_attribution=True,
+        # 0.1 matches this project's existing min-opacity convention elsewhere (e.g.
+        # fit_hyperparameters.py) -- excludes GS-training floaters from hard-occluding
+        # real splats during attribution (see load_from_gsplat_checkpoint's docstring).
+        attribution_min_opacity=0.1,
+        max_observations_per_splat=max_observations_per_splat,
     )
     obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations = splat_observations(
         scene, include_render_attrs=True

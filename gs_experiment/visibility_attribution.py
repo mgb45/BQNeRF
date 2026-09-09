@@ -80,7 +80,10 @@ def in_frustum(positions: np.ndarray, camera: CameraPose, fov_deg: float = 60.0,
     return in_front & within_fov & ~np.isnan(bearing_x)
 
 
-def occlusion_mask(positions: np.ndarray, camera: CameraPose, angular_tol: float, depth_margin: float = 0.05) -> np.ndarray:
+def occlusion_mask(
+    positions: np.ndarray, camera: CameraPose, angular_tol: float, depth_margin: float = 0.05,
+    occluder_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """Boolean mask: is each position occluded by another position that
     projects to a similar bearing (within `angular_tol`, in the tangent-
     plane bearing units from project_to_camera_local) but is closer to the
@@ -88,6 +91,25 @@ def occlusion_mask(positions: np.ndarray, camera: CameraPose, angular_tol: float
     (a relative, scale-aware margin rather than an absolute one, since
     "close" means different absolute distances near vs. far from the
     camera).
+
+    `occluder_mask`, if given (boolean, parallel to `positions`): only
+    points flagged `True` can ever occlude something -- every point's own
+    occlusion status is still computed (this isn't a pre-filter on which
+    points get an answer), only the "is something closer in front of me"
+    z-buffer is built from occluder-eligible points alone. Exists because
+    this test has no opacity awareness otherwise: a splat at opacity 0.001
+    blocks exactly as completely as one at opacity 1.0, which is wrong --
+    a near-transparent splat shouldn't hard-occlude anything, real
+    geometry or not. This matters most for GS training's floaters (stray,
+    near-zero-opacity splats that drift outside the intended training
+    volume -- a normal optimization artifact): confirmed directly on a
+    real 300k-splat checkpoint that ~4% of splats were such floaters, and
+    that they alone were responsible for an 8x collapse in how many real
+    training cameras got attributed to genuine splats (mean observations
+    per splat 6.0 vs. 50.2 on an otherwise-identical, floater-free
+    checkpoint of the same scene) -- pass `opacities >= min_opacity` here
+    (see `attribute_observations`) to fix it at the source rather than
+    filtering its downstream symptoms.
 
     Implemented as a real spatial-hash z-buffer -- O(n log n) time, O(n)
     memory, no pairwise enumeration at all. This replaced two earlier
@@ -153,31 +175,48 @@ def occlusion_mask(positions: np.ndarray, camera: CameraPose, angular_tol: float
     occluded = np.zeros(n, dtype=bool)
 
     valid = ~np.isnan(bearing_x)
-    if valid.sum() < 2:
+    if valid.sum() < 1:
         return occluded
 
-    valid_idx = np.where(valid)[0]
-    bx = bearing_x[valid_idx]
-    by = bearing_y[valid_idx]
-    d = depth[valid_idx]
-    m = bx.shape[0]
+    if occluder_mask is None:
+        occ_valid = valid
+    else:
+        occ_valid = valid & np.asarray(occluder_mask, dtype=bool)
+    if occ_valid.sum() < 1:
+        # nothing is eligible to occlude anything -- every valid point is unoccluded.
+        return occluded
 
     subdivision = _CELL_SUBDIVISION
     cell = max(float(angular_tol) / subdivision, 1e-12)
-    cx = np.floor(bx / cell).astype(np.int64)
-    cy = np.floor(by / cell).astype(np.int64)
-
-    # One combined, sortable integer key per (cx, cy) cell. cy is offset
-    # to be non-negative first so the packed key sorts lexicographically
-    # by (cx, cy) -- required for the reduceat-over-sorted-runs step below.
     offset = np.int64(1 << 24)  # generous vs. any plausible bearing/cell-size range
-    own_key = cx * (offset * 2) + (cy + offset)
 
-    order = np.argsort(own_key, kind="stable")
-    sorted_keys = own_key[order]
-    sorted_depth = d[order]
+    # --- build the z-buffer grid from occluder-eligible points only. When
+    # occluder_mask is None (occ_valid == valid), this is exactly the
+    # original single-population behavior -- a point's own cell always
+    # includes its own depth, so self-comparison still never triggers a
+    # false "occluded" flag for it (see the comment at the query step
+    # below, which only needs occ_valid's superset property, not this
+    # code path specifically). ---
+    occ_idx = np.where(occ_valid)[0]
+    obx, oby, od = bearing_x[occ_idx], bearing_y[occ_idx], depth[occ_idx]
+    ocx = np.floor(obx / cell).astype(np.int64)
+    ocy = np.floor(oby / cell).astype(np.int64)
+    occ_key = ocx * (offset * 2) + (ocy + offset)
+
+    order = np.argsort(occ_key, kind="stable")
+    sorted_keys = occ_key[order]
+    sorted_depth = od[order]
     unique_keys, start_idx = np.unique(sorted_keys, return_index=True)
     cell_min_depth = np.minimum.reduceat(sorted_depth, start_idx)
+
+    # --- query every valid point (not just occluder-eligible ones) against
+    # that grid: a non-occluding (e.g. low-opacity) point can still itself
+    # be flagged occluded by something real in front of it. ---
+    valid_idx = np.where(valid)[0]
+    bx, by, d = bearing_x[valid_idx], bearing_y[valid_idx], depth[valid_idx]
+    m = bx.shape[0]
+    cx = np.floor(bx / cell).astype(np.int64)
+    cy = np.floor(by / cell).astype(np.int64)
 
     best_neighbor_depth = np.full(m, np.inf)
     for dx in range(-subdivision, subdivision + 1):
@@ -189,10 +228,13 @@ def occlusion_mask(positions: np.ndarray, camera: CameraPose, angular_tol: float
             depths_here = np.where(found, cell_min_depth[pos], np.inf)
             best_neighbor_depth = np.minimum(best_neighbor_depth, depths_here)
 
-    # A point's own cell is always included above, contributing its own
-    # depth to best_neighbor_depth -- harmless: d[i] < d[i] - margin*|d[i]|
-    # is false for any positive margin, so self-comparison never triggers
-    # a false "occluded" flag.
+    # A point that is itself occluder-eligible always finds its own depth
+    # via its own cell above (it's part of the grid), so self-comparison
+    # never triggers a false "occluded" flag for it: d[i] < d[i] -
+    # margin*|d[i]| is false for any positive margin. A non-occluder point
+    # has no such self-entry, which is correct -- its own (untrusted, e.g.
+    # near-transparent) depth was never meant to protect it from a real
+    # occluder in front of it.
     occluded_local = best_neighbor_depth < d - depth_margin * np.abs(d)
     occluded[valid_idx] = occluded_local
 
@@ -339,20 +381,34 @@ class CameraSplatIndex:
         return self.indices[local]
 
 
-def attribute_observations(positions: np.ndarray, cameras: list, fov_deg: float = 60.0, angular_tol: float = 0.05, depth_margin: float = 0.05):
+def attribute_observations(
+    positions: np.ndarray, cameras: list, fov_deg: float = 60.0, angular_tol: float = 0.05, depth_margin: float = 0.05,
+    opacities: Optional[np.ndarray] = None, min_opacity: float = 0.0,
+):
     """For each camera, which splat indices does it plausibly observe
     (in frustum and not occluded). Returns a list of length len(cameras),
     each entry an array of splat indices -- the camera-indexed view of the
     same information SplatScene.observed_camera_idx stores splat-indexed;
     invert this (see gs_experiment.splat_scene) to populate that field for
     real data.
+
+    `opacities`/`min_opacity`: passed straight through to `occlusion_mask`'s
+    `occluder_mask` (`opacities >= min_opacity`) -- splats below the
+    threshold still get their own occlusion status computed and can still
+    be attributed to a camera if nothing real occludes them, they just
+    can't hard-occlude anything else themselves. `min_opacity=0.0` (the
+    default) keeps every splat occluder-eligible, i.e. unchanged from
+    before this parameter existed. See `occlusion_mask`'s docstring for
+    why this matters (GS training floaters).
     """
+    occluder_mask_full = None if opacities is None else (np.asarray(opacities, dtype=float) >= min_opacity)
     per_camera = []
     for camera in cameras:
         visible = in_frustum(positions, camera, fov_deg=fov_deg)
         if visible.any():
             occluded = np.zeros(positions.shape[0], dtype=bool)
-            occluded[visible] = occlusion_mask(positions[visible], camera, angular_tol, depth_margin)
+            local_occluder_mask = None if occluder_mask_full is None else occluder_mask_full[visible]
+            occluded[visible] = occlusion_mask(positions[visible], camera, angular_tol, depth_margin, occluder_mask=local_occluder_mask)
             visible_idx = np.where(visible)[0]
             per_camera.append(visible_idx[~occluded[visible_idx]])
         else:
@@ -368,3 +424,38 @@ def invert_to_observed_camera_idx(per_camera_visible: list, n_splats: int) -> li
         for s in splat_indices:
             observed[s].append(cam_idx)
     return [np.array(cams, dtype=int) for cams in observed]
+
+
+def subsample_observed_camera_idx(observed_camera_idx: list, max_per_splat: int, seed: int = 0) -> list:
+    """Cap each splat's observation count at `max_per_splat` (uniform
+    random subsample without replacement, seeded for reproducibility) --
+    splats already at or under the cap are returned unchanged.
+
+    Exists because `splat_scene.splat_observations` expands
+    `observed_camera_idx` into one row per (splat, observing-camera) pair,
+    and that row count is genuinely what the downstream directional
+    `LocalUncertaintyEngine` needs fully resident for its neighbor index
+    (confirmed on a real 3M-splat/100-view checkpoint: ~167M rows uncapped,
+    ~59M rows even at cap=20, measured at ~14GB resident for that one call
+    -- OOM-killed the host repeatedly at that budget; see
+    `scripts/splat_budget_uncertainty_sweep.py`'s `PER_CALL_MEMORY_BUDGET_BYTES`
+    comment). Unlike that module's per-camera *construction* chunking,
+    capping observation count per splat actually bounds the resulting
+    steady-state row count (<= `n_splats * max_per_splat`, independent of
+    real camera-coverage density) rather than just smoothing a transient
+    peak -- the same idea `max_neighbors`/`max_candidates` already apply
+    at BQ query time, just applied earlier, at data-construction time,
+    where it's what actually determines resident memory. This is a real
+    (if usually small) approximation, not free: a splat observed by more
+    cameras than the cap has some of its real observations dropped rather
+    than all of them contributing to the directional kernel.
+    """
+    if max_per_splat is None:
+        return observed_camera_idx
+    rng = np.random.default_rng(seed)
+    result = []
+    for cams in observed_camera_idx:
+        if len(cams) > max_per_splat:
+            cams = rng.choice(cams, size=max_per_splat, replace=False)
+        result.append(cams)
+    return result

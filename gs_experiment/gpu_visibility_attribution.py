@@ -46,6 +46,16 @@ import torch.nn.functional as F
 
 from gs_experiment.visibility_attribution import _CELL_SUBDIVISION, in_frustum, project_to_camera_local
 
+# Every (n_cameras, n_splats)-shaped tensor in the pipeline below (there are
+# ~8 of them live at once, float64/int64) costs about 8 bytes/pair each, so
+# chunking cameras to keep n_cameras_in_chunk * n_splats under this budget
+# keeps peak GPU memory in the low single-digit GB regardless of checkpoint
+# size -- e.g. the ~80k-splat/100-camera checkpoint this was validated
+# against (8M pairs) runs in one chunk exactly as before; a 3M-splat
+# checkpoint (which blew past 24GB VRAM unchunked -- confirmed on a real
+# splat-budget sweep) instead runs in several dozen small chunks.
+_MAX_PAIRS_PER_CHUNK = 20_000_000
+
 
 def batched_attribute_observations(
     positions: np.ndarray,
@@ -55,14 +65,57 @@ def batched_attribute_observations(
     depth_margin: float = 0.05,
     device: str = "cuda",
     subdivision: int = _CELL_SUBDIVISION,
+    opacities: np.ndarray = None,
+    min_opacity: float = 0.0,
 ) -> List[np.ndarray]:
     """Batched equivalent of
     `visibility_attribution.attribute_observations(positions, cameras,
-    fov_deg=fov_deg, angular_tol=angular_tol, depth_margin=depth_margin)`
-    -- same return contract: a list of length `len(cameras)`, each entry
-    the splat indices that camera plausibly observes (in frustum, not
-    occluded).
+    fov_deg=fov_deg, angular_tol=angular_tol, depth_margin=depth_margin,
+    opacities=opacities, min_opacity=min_opacity)` -- same return contract:
+    a list of length `len(cameras)`, each entry the splat indices that
+    camera plausibly observes (in frustum, not occluded).
+
+    `opacities`/`min_opacity`: splats with `opacity < min_opacity` are
+    excluded from the z-buffer grid (built in step 3 below) so they can't
+    hard-occlude anything -- see `occlusion_mask`'s docstring for why
+    (GS-training floaters). They still get their own occlusion status
+    computed and can still be attributed to a camera. `min_opacity=0.0`
+    (the default) is exactly the old, opacity-blind behavior.
+
+    Internally chunks over cameras (see `_MAX_PAIRS_PER_CHUNK`) so peak GPU
+    memory stays bounded regardless of `len(cameras) * len(positions)`; every
+    camera's math is fully independent of every other camera's (no step below
+    mixes information across the camera axis), so this is purely a memory
+    optimization -- results are identical to running all cameras in one batch.
     """
+    n = positions.shape[0]
+    chunk_size = max(1, _MAX_PAIRS_PER_CHUNK // max(n, 1))
+    if chunk_size >= len(cameras):
+        return _batched_attribute_observations_chunk(
+            positions, cameras, fov_deg, angular_tol, depth_margin, device, subdivision, opacities, min_opacity
+        )
+    results: List[np.ndarray] = []
+    for start in range(0, len(cameras), chunk_size):
+        results.extend(
+            _batched_attribute_observations_chunk(
+                positions, cameras[start : start + chunk_size], fov_deg, angular_tol, depth_margin,
+                device, subdivision, opacities, min_opacity,
+            )
+        )
+    return results
+
+
+def _batched_attribute_observations_chunk(
+    positions: np.ndarray,
+    cameras: list,
+    fov_deg: float,
+    angular_tol: float,
+    depth_margin: float,
+    device: str,
+    subdivision: int,
+    opacities: np.ndarray,
+    min_opacity: float,
+) -> List[np.ndarray]:
     n_cameras = len(cameras)
     n = positions.shape[0]
     dtype = torch.float64
@@ -104,9 +157,16 @@ def batched_attribute_observations(
 
     # --- 3. per-cell minimum depth, all cameras at once: scatter-reduce
     # (amin) instead of occlusion_mask's sort + reduceat, since we now have
-    # a dense index space to scatter into rather than a sparse sorted-key one. ---
-    flat_cell_safe = torch.where(use, flat_cell, torch.zeros_like(flat_cell))
-    depth_for_scatter = torch.where(use, depth_t, torch.full_like(depth_t, float("inf")))
+    # a dense index space to scatter into rather than a sparse sorted-key one.
+    # Only occluder-eligible (opacity >= min_opacity) points populate the
+    # grid -- everything still gets queried against it in step 4 below. ---
+    if opacities is None:
+        use_for_occluding = use
+    else:
+        occluder_eligible = torch.tensor(np.asarray(opacities, dtype=float) >= min_opacity, dtype=torch.bool, device=device)
+        use_for_occluding = use & occluder_eligible.view(1, -1)
+    flat_cell_safe = torch.where(use_for_occluding, flat_cell, torch.zeros_like(flat_cell))
+    depth_for_scatter = torch.where(use_for_occluding, depth_t, torch.full_like(depth_t, float("inf")))
     grid = torch.full((n_cameras, grid_size * grid_size), float("inf"), dtype=dtype, device=device)
     grid.scatter_reduce_(1, flat_cell_safe, depth_for_scatter, reduce="amin", include_self=True)
 
