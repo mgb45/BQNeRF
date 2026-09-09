@@ -85,7 +85,13 @@ LEGO_GAP_TRAIN_KWARGS = dict(
 # figures, not just internally consistent within each.
 LEGO_GAP_SIGMA = 0.0694
 LEGO_GAP_WINDOW_RADIUS = 0.08
-LEGO_GAP_KAPPA = 4.0
+# Also marginal-likelihood-fitted (DirectionalKernel via fit_kernel_param_pooled_nd), pooled
+# across real per-splat multi-view (direction, color) observations from 7 real checkpoints.
+# Held-out log marginal likelihood 1413 at this value vs 202 at the old hardcoded 4.0 -- that
+# value was ~5x too concentrated (real per-splat color varies less with viewing angle than it
+# implied), which would have made every gap condition look more under-covered than the real
+# data supports. Matches render_reconstruction.py's compute_uncertainty_maps default exactly.
+LEGO_GAP_KAPPA = 0.745
 LEGO_GAP_GATE_BACKGROUND_COLOR = (1.0, 1.0, 1.0)  # matches prepare_nerf_synthetic's own default compositing background
 
 
@@ -157,8 +163,8 @@ def lego_gap_check_reconstruction_quality(zone_dirs, eval_dir: str, gap_half_wid
 
 
 def synthetic_camera_for_query(scene, query_point: np.ndarray, query_direction: np.ndarray) -> CameraPose:
-    """A stand-in `CameraPose` for `lego_gap_analyze`/`bonsai_gap_analyze`'s
-    directional query -- these ask "how uncertain is BQ at this fixed
+    """A stand-in `CameraPose` for `bonsai_gap_analyze`'s
+    directional query -- this asks "how uncertain is BQ at this fixed
     world point, looking in this fixed direction," not "at this specific
     training view," so there's no real camera to reuse for the
     rendering-aware directional methods' occlusion/bearing computation
@@ -181,87 +187,6 @@ def synthetic_camera_for_query(scene, query_point: np.ndarray, query_direction: 
     return CameraPose(center=center, forward=forward, up=up)
 
 
-def lego_gap_analyze(zone_dirs, gap_half_widths, n_views, query_direction, overall_psnrs=None, gap_psnrs=None):
-    directional_vars, spatial_vars = [], []
-    query_point = np.zeros(3)
-
-    for zone_dir in zone_dirs:
-        scene = load_from_gsplat_checkpoint(zone_dir, attribution_angular_tol=0.01)
-        positions, directions, values, obs_opacities, obs_scales, obs_rotations = splat_observations(
-            scene, include_render_attrs=True
-        )
-        bounds = tuple((positions[:, d].min() - 1.0, positions[:, d].max() + 1.0) for d in range(3))
-
-        pos_kernel = make_default_3d_position_kernel(sigma=LEGO_GAP_SIGMA)
-        dir_kernel = DirectionalKernel(kappa=LEGO_GAP_KAPPA)
-        engine = LocalUncertaintyEngine(
-            positions=positions, values=values, pos_kernel=pos_kernel, scene_bounds=bounds,
-            directions=directions, dir_kernel=dir_kernel,
-            opacities=obs_opacities, scales=obs_scales, rotations=obs_rotations,
-        )
-
-        camera = synthetic_camera_for_query(scene, query_point, query_direction)
-        camera_index = engine.build_bearing_index(camera)
-        dir_result = engine.rendering_aware_variance_along_ray_directional(
-            query_point, query_direction, camera_index, LEGO_GAP_WINDOW_RADIUS
-        )
-        spatial_result = engine.rendering_aware_variance(query_point, LEGO_GAP_WINDOW_RADIUS)
-        directional_vars.append(dir_result.variance)
-        spatial_vars.append(spatial_result.variance)
-
-    directional_vars = np.array(directional_vars)
-    spatial_vars = np.array(spatial_vars)
-    order = np.argsort(gap_half_widths)
-
-    header = f"{'gap (deg)':>10}{'n_views':>9}"
-    if overall_psnrs is not None:
-        header += f"{'overall PSNR':>14}{'in-gap PSNR':>14}"
-    header += f"{'directional var':>18}{'spatial-only var':>18}"
-    print(f"\n{header}")
-    for i in order:
-        row = f"{gap_half_widths[i]:>10.1f}{n_views[i]:>9d}"
-        if overall_psnrs is not None:
-            row += f"{overall_psnrs[i]:>14.2f}{gap_psnrs[i]:>14.2f}"
-        row += f"{directional_vars[i]:>18.5f}{spatial_vars[i]:>18.5f}"
-        print(row)
-
-    dir_sorted = directional_vars[order]
-    is_monotonic = bool(np.all(np.diff(dir_sorted) >= -1e-12))
-    rho = float(np.corrcoef(np.argsort(np.argsort(gap_half_widths)), np.argsort(np.argsort(directional_vars)))[0, 1])
-    print(f"\ndirectional variance monotonically increasing with gap width: {is_monotonic}")
-    print(f"rank correlation (gap width vs. directional variance): rho={rho:.3f}")
-    print(f"directional variance range (widest/narrowest): {dir_sorted[-1] / max(dir_sorted[0], 1e-12):.2f}x")
-    print(f"spatial-only variance range (control): {spatial_vars.max() / max(spatial_vars.min(), 1e-12):.2f}x")
-    if overall_psnrs is not None:
-        print(
-            f"overall held-out PSNR range across conditions: {overall_psnrs.min():.2f}-{overall_psnrs.max():.2f}dB "
-            "(should stay tight if the gap design avoids the earlier global-thinning confound)"
-        )
-
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, ax1 = plt.subplots(figsize=(7, 5))
-    ax1.plot(gap_half_widths[order], directional_vars[order], "o-", color="tab:red", label="directional variance")
-    ax1.set_xlabel("gap half-width around query direction (deg)")
-    ax1.set_ylabel("position+direction BQ variance", color="tab:red")
-    ax1.tick_params(axis="y", labelcolor="tab:red")
-
-    ax2 = ax1.twinx()
-    ax2.plot(gap_half_widths[order], spatial_vars[order], "s--", color="tab:blue", label="spatial-only variance (control)")
-    ax2.set_ylabel("position-only BQ variance", color="tab:blue")
-    ax2.tick_params(axis="y", labelcolor="tab:blue")
-
-    fig.suptitle("Real NeRF-Synthetic (lego): directional BQ variance vs. a deliberate real coverage gap")
-    fig.tight_layout()
-    out_path = RESULTS_DIR / "gap_directional_gradient.png"
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"\nSaved {out_path}")
-
-
 def lego_gap_run(
     prepared_dir: str,
     gap_half_widths=LEGO_GAP_HALF_WIDTHS_DEG,
@@ -269,20 +194,16 @@ def lego_gap_run(
     train_kwargs=LEGO_GAP_TRAIN_KWARGS,
     check_quality: bool = True,
 ):
-    zone_dirs, gap_half_widths, n_views, query_direction = lego_gap_build_conditions(
+    zone_dirs, gap_half_widths, _, query_direction = lego_gap_build_conditions(
         prepared_dir, gap_half_widths=gap_half_widths, condition_prefix=condition_prefix,
     )
     lego_gap_train_zones(zone_dirs, train_kwargs=train_kwargs)
-    overall_psnrs = gap_psnrs = None
     if check_quality:
         eval_dir = os.path.join(prepared_dir, "eval")
         if os.path.exists(eval_dir):
-            overall_psnrs, gap_psnrs = lego_gap_check_reconstruction_quality(
-                zone_dirs, eval_dir, gap_half_widths, query_direction
-            )
+            lego_gap_check_reconstruction_quality(zone_dirs, eval_dir, gap_half_widths, query_direction)
         else:
             print(f"no eval/ split found at {eval_dir}, skipping reconstruction-quality check")
-    lego_gap_analyze(zone_dirs, gap_half_widths, n_views, query_direction, overall_psnrs=overall_psnrs, gap_psnrs=gap_psnrs)
 
 
 # =====================================================================

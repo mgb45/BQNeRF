@@ -5,9 +5,9 @@ half-widths 0/15/30/50/75deg around one reference training-view direction,
 every other training view left untouched (FINDINGS.md section 3's design).
 
 That experiment only ever reported a scalar summary (variance at one fixed
-query point/direction per condition, plotted as a line graph -- see
-gap_directional_gradient.png). This renders the actual per-pixel picture
-instead: pick the one held-out eval view closest to the gap center (so it's
+query point/direction per condition, plotted as a line graph -- retired,
+see git history). This renders the actual per-pixel picture instead:
+pick the one held-out eval view closest to the gap center (so it's
 genuinely inside every condition's gap, most severely in the widest one),
 and for each condition show ground truth, reconstruction, |error|, and
 position+direction BQ variance side by side -- so a reader can see, by eye,

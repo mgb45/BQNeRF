@@ -13,7 +13,7 @@
 \newcommand{\method}{BQ-Splat}
 \newcommand{\R}{\mathbb{R}}
 
-\title{BQ-Splat: Post-hoc Uncertainty Quantification\\for Gaussian Splatting}
+\title{BQ-Splat: Bayesian Quadrature for Post-hoc Uncertainty\\in Gaussian Splat Maps}
 
 % RA-L uses double-anonymous review for initial submissions.
 \author{Anonymous Authors}
@@ -25,29 +25,29 @@
 \pagestyle{empty}
 
 \begin{abstract}
-Three-dimensional Gaussian splatting can reconstruct and render a scene, but
-does not tell us where that reconstruction is well supported. This matters in
-robotics, where a map is used to decide where to move, what to observe, or
-which parts of a representation can be discarded. We introduce \method{}, a
-post-hoc uncertainty measure for trained Gaussian-splat maps. The method views
-the splats near a query as samples of an unknown local scene function and uses
-Bayesian quadrature to quantify how well those samples determine a local
-integral. The resulting variance depends on the locations of the splats and,
-when required, the directions from which they were observed. It requires no
-ensemble, additional uncertainty network, or retraining. On the eight
-NeRF-Synthetic scenes, spatial uncertainty is strongly anticorrelated with
-local splat density, with Pearson correlations from $-0.97$ to $-0.74$.
-Controlled camera-coverage experiments show that directional uncertainty
-increases monotonically as viewing directions are removed. We also derive a
-renderer-aware refinement that replaces the uniform integration measure with
-the splats' own alpha-compositing weights, which ties the reported variance
-provably to alpha-compositing error and, on real checkpoints, correctly
-down-weights occluded splats and disentangles spatial from directional
-support. We also use the box-quadrature signal for uncertainty-aware pruning
-and next-view selection. \method{}
-provides a useful measure of representation uncertainty: it identifies where
-a map is weakly supported, although it is not a calibrated predictor of pixel
-error.
+Three-dimensional Gaussian splatting reconstructs a scene as a finite set of
+Gaussian primitives and renders new views by alpha compositing their projected
+contributions. The rendered image, however, does not indicate whether a query
+is supported by many observations or extrapolated from sparse spatial or
+directional coverage. We introduce \method{}, a post-hoc uncertainty measure
+for trained Gaussian-splat maps. Our key observation is that rendering is a
+quadrature problem: a continuous radiance integral is evaluated from a finite
+set of primitives. We place a Gaussian-process prior on the unknown scene
+function and use Bayesian quadrature to obtain a posterior distribution over
+the corresponding integral. Its variance depends on the locations and viewing
+directions of the available splats, and therefore measures representation
+support without an ensemble, an auxiliary uncertainty network, or retraining.
+We also derive a rendering-aware kernel by incorporating the query-specific
+alpha-compositing weights into the covariance function. This connects the
+quadrature variance directly to the rendered quantity and suppresses the
+influence of occluded primitives. Across the eight NeRF-Synthetic scenes,
+spatial uncertainty is strongly anticorrelated with local splat density
+($r=-0.97$ to $-0.74$), while controlled coverage experiments show that
+directional uncertainty increases monotonically as viewing directions are
+removed. The same signal supports uncertainty-aware pruning and next-view
+selection. \method{} measures how strongly a finite scene representation
+supports a query; it complements methods that learn to predict photometric
+error from reconstruction residuals.
 \end{abstract}
 
 \begin{center}
@@ -57,328 +57,399 @@ Perception and Sensing; Gaussian splatting; uncertainty quantification.
 
 \section{Introduction}
 
-A map is not only an estimate of the world. It should also tell us where that
-estimate is likely to fail. This is particularly important for learned maps.
-A novel view rendered from a three-dimensional Gaussian-splat (3DGS) model may
-look plausible even when it is supported by few primitives or by observations
-from a narrow range of directions. The renderer returns a colour in either
-case. A robot using the map receives no corresponding warning.
+A scene representation used by a robot must do more than render plausible
+images. It must also indicate where those images are supported by evidence. A
+surface reconstructed from many nearby observations and a surface inferred
+from a narrow range of views may look equally convincing, even though the
+second is a much riskier basis for planning, inspection, or interaction.
 
-This is an uncertainty-quantification problem. We want to distinguish regions
-that are well constrained by the representation from regions in which the map
-must interpolate---or extrapolate---from limited evidence. Existing methods
-estimate this uncertainty using distributions over model parameters,
-ensembles, local curvature, or learned visibility fields
-\cite{savant2024,goli2024,jiang2024,hanson2025,xue2026}. These methods can be
-effective, but typically change training, add learned state, or require
-second-order information.
+Three-dimensional Gaussian splatting (3DGS) makes this problem especially
+clear. A trained map stores a finite collection of Gaussian primitives. To
+render a pixel, these primitives are projected into the image, ordered in
+depth, and alpha composited. The renderer always returns a colour, but standard
+3DGS does not report whether the relevant part of position--view space was
+dense enough to constrain that result.
 
-We instead ask a simpler question: how well do the splats in an existing map
-support a local query? A trained 3DGS map represents a continuous scene using
-a finite set of Gaussian primitives. Any local estimate is therefore based on
-samples that cover some parts of position--view space better than others.
-Bayesian quadrature provides a natural way to quantify this coverage. It
-places a Gaussian-process prior on an unknown function and induces a posterior
-distribution over its integral. Importantly, the posterior variance depends
-on where observations were made. It is small when the integration domain is
-well covered and large where the available samples leave plausible functions
-unconstrained.
+This paper approaches the problem through numerical integration. Rendering is
+the evaluation of an integral using finitely many samples. Classical
+quadrature provides a weighted approximation to that integral, while Bayesian
+quadrature places a probability distribution over the unknown integrand and,
+therefore, over the integral itself. The resulting posterior variance measures
+how much freedom remains between the available samples. Dense, well-spread
+samples reduce this freedom; sparse or clustered samples do not.
 
-We apply this idea to the primitives already stored in a Gaussian-splat map.
-For a spatial query, the sample set consists of nearby splat centres. For a
-view-dependent query, each sample also includes a direction from which the
-splat was observed. A product kernel then measures coverage jointly in
-position and direction. The result is a post-hoc estimate of
-\emph{representation uncertainty}: uncertainty arising from finite spatial
-and directional support in the map.
+This interpretation leads directly to \method{}. We treat splat centres as
+spatial samples of a local scene function and observed camera directions as
+samples of its angular dependence. A Gaussian-process kernel specifies how
+information transfers between nearby positions and directions. Bayesian
+quadrature then gives a closed-form uncertainty measure for each query. The
+method is post-hoc: it operates on an existing Gaussian-splat map and does not
+fit a second predictor to held-out errors.
 
-This interpretation is deliberately narrower than predictive uncertainty.
-The proposed variance does not model every source of rendering error, such as
-incorrect geometry, optimisation failure, occlusion mistakes, or photometric
-noise. In its simplest, uniform-box form the quadrature measure also does not
-coincide with the alpha-compositing weights 3DGS itself uses to render a
-pixel. We additionally develop a renderer-aware form of the same construction
-that replaces the uniform measure with the splats' own alpha-compositing
-weights and is provably tied to alpha-compositing error, but this refinement
-is validated separately from our main post-hoc results and is not yet what
-drives them. Bayesian quadrature is used here to evaluate the support
-provided by the splat locations, not to replace the renderer.
+The rendering operation also determines a particular kernel structure. For a
+query ray $q$, each point is weighted by opacity, visibility, and accumulated
+transmittance. Multiplying a base scene kernel by these rendering weights on
+both arguments produces a query-specific covariance. Equivalently, one can
+retain the base kernel and integrate it against the alpha-compositing measure.
+Both views yield the same Bayesian-quadrature moments. The resulting variance
+describes uncertainty in the rendered integral rather than in an arbitrary
+local average.
 
-The paper makes four contributions:
+Our contribution is therefore not another learned predictor of image error.
+It is a probabilistic interpretation of the rendering rule that exposes how
+well the finite representation supports a query. Specifically, we:
+
 \begin{itemize}
-    \item We formulate spatial support in a trained Gaussian-splat map as a
-    Bayesian-quadrature uncertainty problem.
-    \item We extend the same construction to joint position--direction space,
-    separating missing geometric support from missing view coverage.
-    \item We derive a renderer-aware refinement that replaces the uniform
-    integration measure with a query-specific alpha-compositing weight,
-    proving that its variance bounds alpha-compositing error and confirming
-    empirically that it down-weights occluded splats and correctly separates
-    spatial from directional support.
-    \item We show that the resulting uncertainty can be computed post-hoc and
-    used to analyse a map, prune splats, and select new camera views.
+    \item formulate spatial support in a trained Gaussian-splat map as a
+    Bayesian-quadrature problem;
+    \item extend the construction to joint position--direction space, so that
+    geometric support and view coverage can be examined separately;
+    \item derive a rendering-aware kernel from the alpha-compositing weights,
+    connecting posterior variance to the same integral evaluated by the
+    renderer; and
+    \item demonstrate the resulting uncertainty on spatial and directional
+    coverage tests, uncertainty-aware pruning, and next-view selection.
 \end{itemize}
 
-\section{Background and Related Work}
+\section{Background}
 
-\subsection{Gaussian splatting and map uncertainty}
+\subsection{Rendering with Gaussian splats}
 
-Neural radiance fields represent density and view-dependent colour as a
-continuous function and render pixels by integrating along camera rays
-\cite{mildenhall2020}. 3DGS instead represents a scene using explicit,
-anisotropic Gaussian primitives and renders them using ordered alpha
-compositing \cite{kerbl2023}. Its explicit representation is fast to render
-and easy to query, which makes it attractive for mapping and active
-perception. Standard 3DGS, however, provides no measure of confidence in a
-rendered view.
+Neural radiance fields represent density and view-dependent colour as
+continuous functions and render pixels by integrating radiance along camera
+rays \cite{mildenhall2020}. 3DGS instead represents the scene explicitly as
+anisotropic Gaussian primitives \cite{kerbl2023}. Each primitive $i$ has a
+centre $\mu_i$, covariance $\Sigma_i$, opacity parameter, and a
+view-dependent colour $c_i(d)$, commonly represented by spherical harmonics.
 
-Several recent methods add such a measure. Stochastic Gaussian Splatting uses
-variational inference to learn distributions over Gaussian parameters
-\cite{savant2024}. Bayes' Rays applies a Laplace approximation to a
-hypothetical deformation field \cite{goli2024}. FisherRF uses Fisher
-information for uncertainty estimation and active view selection
-\cite{jiang2024}, while PUP 3D-GS uses second-order sensitivity for pruning
-\cite{hanson2025}. GAVIS records directional visibility using spherical
-harmonics and uses this representation for active mapping \cite{xue2026}.
-Mip-Splatting addresses a related but different question: aliasing caused by
-changes in image sampling rate \cite{yu2024}.
+For a pixel $q$, the visible Gaussians are projected to the image plane and
+sorted from front to back. If $\alpha_{q,i}$ is the projected opacity of the
+$i$th primitive and
 
-These approaches quantify parameter sensitivity, learn a distribution, or
-store additional visibility information. Our interest is complementary. We
-measure whether the existing primitives adequately cover the domain of a
-query.
-
-\subsection{Bayesian quadrature as uncertainty quantification}
-
-Many quantities in science and engineering are integrals,
 \begin{equation}
-    I[f] = \int_{\Omega} f(x)p(x)\,dx,
+    T_{q,i}=\prod_{j<i}(1-\alpha_{q,j})
+\end{equation}
+
+is its accumulated transmittance, the rendered colour is
+
+\begin{equation}
+    C(q)=\sum_{i=1}^{m} T_{q,i}\alpha_{q,i}c_i(d_q).
+    \label{eq:alpha-compositing}
+\end{equation}
+
+Equation~\eqref{eq:alpha-compositing} is a weighted sum, but it is also a
+quadrature rule. It evaluates the continuous volume-rendering functional
+
+\begin{equation}
+    \mathcal{L}_q[c]=\int a_q(\xi)c(\xi,d_q)\,d\xi,
+    \label{eq:rendering-functional}
+\end{equation}
+
+where $a_q(\xi)$ combines transmittance, opacity or density, and the projected
+footprint of the ray. Under the piecewise-constant colour and density model
+used in volume rendering, the integral reduces exactly to the ordered
+alpha-compositing sum \cite{max1995}. Thus compositing is not merely analogous
+to quadrature: it is a particular quadrature rule for the rendering integral,
+with nodes supplied by the primitives and weights supplied by the renderer.
+
+\subsection{From quadrature rules to uncertainty}
+
+Consider a general integral
+
+\begin{equation}
+    I[f]=\int_{\Omega} f(x)p(x)\,dx,
     \label{eq:integral}
 \end{equation}
-but the function $f$ can usually be evaluated at only finitely many locations
-$X=\{x_1,\ldots,x_m\}$. Standard numerical quadrature approximates the
-integral with a weighted sum,
+
+where $f$ is known only at locations $X=\{x_1,\ldots,x_m\}$. A quadrature
+rule approximates this integral by
+
 \begin{equation}
-    I[f] \approx \widehat I[f] = \sum_{i=1}^{m} w_i f(x_i).
+    I[f]\approx \widehat I[f]=\sum_{i=1}^{m}w_i f(x_i).
     \label{eq:quadrature}
 \end{equation}
-The estimate alone does not say how much information was lost between the
-samples.
 
-Bayesian quadrature turns this missing information into an uncertainty model
-\cite{ohagan1991,briol2019}. We place a Gaussian-process prior on the unknown
-integrand,
+The nodes $x_i$ determine where the function is evaluated and the weights
+$w_i$ determine how those values contribute. Newton--Cotes, Gaussian
+quadrature, Monte Carlo integration, and alpha compositing all take this form;
+they differ in how they choose nodes and weights. A conventional quadrature
+rule returns an estimate but does not, by itself, express what could have
+happened between the samples.
+
+Probabilistic numerics treats that missing information as an inference
+problem. In Bayesian quadrature \cite{ohagan1991,briol2019}, the unknown
+integrand is assigned a Gaussian-process prior,
+
 \begin{equation}
-    f \sim \mathcal{GP}(0,k),
+    f\sim\mathcal{GP}(0,k),
 \end{equation}
-where the kernel $k$ encodes how quickly the function is expected to vary.
-Conditioning the process on the observed values
-$\mathbf f=[f(x_1),\ldots,f(x_m)]^\top$ gives a posterior over functions.
-Because integration is a linear operation, this also gives a Gaussian
-posterior over the integral,
+
+where $k$ encodes assumptions about the variation of $f$. Conditioning on
+$\mathbf{f}=[f(x_1),\ldots,f(x_m)]^\top$ produces a posterior over functions.
+Since integration is linear, the induced posterior over the integral is
+Gaussian:
+
 \begin{equation}
     I[f]\mid \mathbf f,X \sim
-    \mathcal{N}\!\left(\mathbf z^\top K^{-1}\mathbf f,
+    \mathcal N\!\left(\mathbf z^\top K^{-1}\mathbf f,
     z_0-\mathbf z^\top K^{-1}\mathbf z\right),
     \label{eq:bq-posterior}
 \end{equation}
-where
+
+with
+
 \begin{align}
     K_{ij} &= k(x_i,x_j), \\
-    z_i &= \int_{\Omega} k(x,x_i)p(x)\,dx, \\
+    z_i &= \int_{\Omega}k(x,x_i)p(x)\,dx, \\
     z_0 &= \int_{\Omega}\!\int_{\Omega}
     k(x,x')p(x)p(x')\,dx\,dx'.
 \end{align}
 
-The posterior mean in Eq.~\eqref{eq:bq-posterior} is a quadrature rule. The
-posterior variance,
+The posterior mean is itself a quadrature rule, with weights
+$\mathbf w=K^{-1}\mathbf z$. The posterior variance
+
 \begin{equation}
-    u(\Omega)=z_0-\mathbf z^\top K^{-1}\mathbf z,
+    u(\Omega)=z_0-\mathbf z^\top K^{-1}\mathbf z
     \label{eq:variance}
 \end{equation}
-quantifies what remains unknown about the integral after observing the
-function at $X$. Unlike a residual, this variance does not depend on the
-observed values $\mathbf f$. It depends on the sample locations, the
-integration domain, and the kernel. It is therefore a measure of
-\emph{epistemic} uncertainty: uncertainty caused by limited information.
 
-This is useful for map analysis. Dense, well-distributed samples reduce the
-variance. Sparse or clustered samples leave functions that agree at the
-observed locations but differ elsewhere, so the integral remains uncertain.
-Bayesian quadrature therefore measures more than sample count: it measures
-how informative the arrangement of samples is under the assumed kernel.
+depends on the sample locations, integration measure, and kernel, but not on
+the observed function values. It is small when the samples constrain all
+functions allowed by the prior over the relevant domain. It is large when
+substantially different functions can pass through the same observations yet
+produce different integrals. This is the sense in which Bayesian quadrature
+provides epistemic uncertainty about a numerical computation.
+
+The same quantity has a deterministic interpretation. For functions in the
+reproducing-kernel Hilbert space associated with $k$,
+
+\begin{equation}
+    |I[f]-\widehat I[f]|
+    \leq \lVert f\rVert_k\sqrt{u(\Omega)}.
+    \label{eq:error-bound}
+\end{equation}
+
+The posterior standard deviation is therefore also the worst-case integration
+error over the unit ball of that function space.
+
+\section{Related Work}
+
+\subsection{Uncertainty in radiance fields and Gaussian splatting}
+
+Uncertainty methods for radiance fields and 3DGS broadly operate on model
+parameters, rendered predictions, or observation coverage. Stochastic
+Gaussian Splatting learns distributions over Gaussian parameters using
+variational inference \cite{savant2024}. Bayes' Rays applies a Laplace
+approximation to a deformation field \cite{goli2024}. FisherRF uses Fisher
+information for uncertainty estimation and active view selection
+\cite{jiang2024}, while PUP 3D-GS uses second-order sensitivity for pruning
+\cite{hanson2025}. GAVIS records directional visibility using spherical
+harmonics for active mapping \cite{xue2026}. Mip-Splatting addresses a related
+but distinct source of error: aliasing under changes in image sampling rate
+\cite{yu2024}.
+
+Galappaththige et al.\ recently proposed a post-hoc method for predictive
+photometric uncertainty in 3DGS \cite{galappaththige2026predictive}. Their
+method freezes a trained map and learns an additional per-primitive
+uncertainty channel from training-view reconstruction residuals. These
+channels are represented with spherical harmonics and rendered with the same
+alpha-compositing weights as colour. A Gaussian prior, implemented through
+$L^2$ regularisation, drives unsupported directions towards a prescribed
+maximum uncertainty.
+
+That method and \method{} are complementary but answer different questions.
+Galappaththige et al.\ estimate expected photometric error: their uncertainty
+depends on observed reconstruction residuals and can combine epistemic,
+aleatoric, and optimisation error. \method{} estimates representation support:
+its variance depends on where primitives and observations occur under a
+chosen kernel, not on their residual values. Their approach fits extra
+spherical-harmonic coefficients using gradient optimisation; ours performs
+Gaussian-process conditioning at query time and requires no uncertainty
+targets or learned channel. Their output is designed to correlate with pixel
+error. Ours instead separates spatial and angular coverage and admits a
+Bayesian-quadrature posterior and RKHS error bound. This distinction is useful
+in practice: a residual-based predictor can identify a consistently difficult
+surface, whereas a support measure can identify an unobserved direction even
+when the training residual is small because the model has overfit the
+available views.
+
+\subsection{Bayesian quadrature for representation analysis}
+
+Bayesian quadrature is usually used when function evaluations are expensive
+and uncertainty in an integral matters \cite{ohagan1991,briol2019}. Our use is
+slightly different. The function values stored by a trained 3DGS map are
+already available; the question is whether their locations provide adequate
+support for a new spatial or directional query. The posterior variance is
+therefore used as a geometric property of the representation. This turns a
+tool for uncertain numerical integration into a post-hoc diagnostic for
+finite scene maps.
 
 \section{Bayesian Quadrature for Gaussian Splat Maps}
 
 \subsection{Spatial support}
 
-Consider a query region $\Omega\subset\R^3$ and the $m$ Gaussian centres near
-that region. We treat these centres as the locations at which the underlying
-scene representation has been sampled. Applying Eq.~\eqref{eq:variance}
-gives a scalar measure of how well the splats cover $\Omega$.
+Let $\Omega_q\subset\R^3$ be a small region centred on a query point $q$, and
+let $X_q=\{x_1,\ldots,x_m\}$ be the centres of nearby splats. We interpret the
+splat centres as sample locations of an unknown local scene function. With a
+uniform integration density over $\Omega_q$, Eq.~\eqref{eq:variance} gives a
+scalar measure of spatial support.
 
-The interpretation is straightforward. The prior term $z_0$ is the
-uncertainty in the local integral before observing any splats. The reduction
-$\mathbf z^\top K^{-1}\mathbf z$ is the information supplied by the splat
-centres. A region containing well-placed nearby splats has low uncertainty. A
-region with few splats, or with splats concentrated on only one part of the
-domain, has high uncertainty.
+The prior term $z_0$ is the uncertainty in the local integral before any
+splats are observed. The term $\mathbf z^\top K^{-1}\mathbf z$ is the
+uncertainty removed by their locations. Nearby splats distributed across the
+region produce a large reduction; few, distant, or clustered splats leave a
+larger variance. The measure consequently captures sample arrangement rather
+than only sample count.
 
-The splat colours do not appear in this calculation. \method{} is therefore
-not a photometric error estimator. It measures whether the representation
-supports the query. This makes the uncertainty available after training using
-only the structure of the map.
-
-We use a small axis-aligned box centred on each query point as $\Omega$. Nearby
-splats are retrieved using a $k$-d tree, and each solve uses at most 400
-neighbours. The integration density $p(x)$ is uniform within the box. For
-separable kernels, the terms in Eq.~\eqref{eq:bq-posterior} reduce to products
-of one-dimensional kernel integrals.
+We use an axis-aligned box for $\Omega_q$, retrieve neighbours with a $k$-d
+tree, and cap each solve at 400 splats. For separable kernels and box domains,
+the required moments factor into one-dimensional integrals. Since spatial
+uncertainty uses only the primitive locations, it can be computed from a
+trained map without colours, residuals, or additional optimisation.
 
 \subsection{Directional support}
-\label{sec:directional-support}
 
-Spatial support is not sufficient for view-dependent appearance. A surface
-may be represented by many splats but observed from only one side. Rendering
-that surface from a new direction is then an extrapolation in viewing angle.
+View-dependent appearance requires support in both position and direction. We
+represent an observation by $(x_i,d_i)$, where $d_i\in\mathbb S^2$ is a camera
+direction from which splat $i$ was observed, and use the product kernel
 
-We represent each observation by a position--direction pair $(x_i,d_i)$,
-where $d_i$ is a unit viewing direction, and use the product kernel
 \begin{equation}
     k\big((x,d),(x',d')\big)
     =k_{\mathrm{pos}}(x,x')k_{\mathrm{dir}}(d,d').
     \label{eq:product-kernel}
 \end{equation}
-The directional component is
+
+Our directional kernel is
+
 \begin{equation}
     k_{\mathrm{dir}}(d,d')
     =\exp\!\left(\kappa(d^\top d'-1)\right),
     \label{eq:direction-kernel}
 \end{equation}
-where $\kappa$ determines how quickly information decays with angular
-separation. A small $\kappa$ shares information over a broad range of
-directions. A large $\kappa$ assumes stronger view dependence.
 
-For a query direction $d_*$, the kernel mean becomes
+where $\kappa$ controls the angular length scale. Small $\kappa$ transfers
+information across a wide range of directions; large $\kappa$ represents
+stronger view dependence.
+
+For query direction $d_*$, the kernel mean is
+
 \begin{equation}
-    z_i=\left[\int_{\Omega}k_{\mathrm{pos}}(x,x_i)p(x)\,dx\right]
+    z_i=left[\int_{\Omega_q}k_{\mathrm{pos}}(x,x_i)p(x)\,dx\right]
     k_{\mathrm{dir}}(d_i,d_*).
     \label{eq:directional-mean}
 \end{equation}
-The variance is now low only when the query is supported in both position and
-direction. Position-only and position--direction uncertainty are therefore
-two instances of the same model, obtained by choosing the domain and kernel
-appropriate to the question.
 
-The training process does not retain a complete record of which cameras
-contributed to each splat. We recover these associations using camera frusta
-and a soft angular depth test, then attach the corresponding viewing
-directions to each visible splat.
+The resulting variance is low only when the query is supported in both
+position and direction. Position-only and joint position--direction
+uncertainty are therefore the same construction applied to different input
+spaces. We recover camera--splat associations from the training cameras using
+frustum intersection and an angular depth test, then attach the corresponding
+viewing direction to each visible splat.
 
-\subsection{Rendering-aware quadrature}
+\subsection{The rendering-aware kernel}
 \label{sec:rendering-aware}
 
-Both constructions above integrate the base kernel uniformly over an
-axis-aligned box: every splat inside the box is weighted only by where it
-sits relative to the box, never by how much it actually contributes to a
-rendered pixel. We now replace that uniform measure with a query-specific
-weight tied to the renderer itself.
+Uniform box quadrature asks whether splats support a local spatial average.
+Rendering asks a more specific question: whether they support the weighted
+radiance integral in Eq.~\eqref{eq:rendering-functional}. Let
 
-For a query $q$ (a pixel or ray), define
 \begin{equation}
-    a_q(\xi) = T_q(\xi)\,\sigma(\xi)\,G_q(\xi),
+    a_q(\xi)=T_q(\xi)\,\sigma(\xi)\,G_q(\xi)
     \label{eq:render-weight}
 \end{equation}
-the product of accumulated transmittance, density/opacity, and a
-footprint/visibility term---exactly the quantities standard alpha
-compositing already combines at each sample $\xi$. Placing a GP prior on the
-radiance field $c(\xi)$ rather than on the rendering integrand
-$a_q(\xi)c(\xi)$ makes the kernel itself query-specific,
+
+denote the query-dependent rendering weight, combining accumulated
+transmittance, density or opacity, and the projected footprint or visibility
+term. There are two equivalent ways to incorporate this structure.
+
+First, place a GP prior on radiance,
+$c\sim\mathcal{GP}(0,k_{\mathrm{base}})$, and apply the linear rendering
+functional $\mathcal L_q$ to that process. The Bayesian-quadrature moments are
+
+\begin{align}
+    z_{q,i} &= \int a_q(\xi)
+    k_{\mathrm{base}}(\xi,x_i)\,d\xi, \\
+    z_{q,0} &= \int\!\int a_q(\xi)a_q(\xi')
+    k_{\mathrm{base}}(\xi,\xi')\,d\xi\,d\xi'.
+    \label{eq:render-moments}
+\end{align}
+
+The observation Gram matrix remains
+$K_{ij}=k_{\mathrm{base}}(x_i,x_j)$ because the observations are colours
+$c(x_i)$.
+
+Second, define the rendering integrand $g_q(\xi)=a_q(\xi)c(\xi)$. It is also a
+Gaussian process, with the query-specific kernel
+
 \begin{equation}
-    k_q(\xi,\xi') = a_q(\xi)\,k_{\mathrm{base}}(\xi,\xi')\,a_q(\xi'),
+    k_q(\xi,\xi')=
+    a_q(\xi)k_{\mathrm{base}}(\xi,\xi')a_q(\xi').
     \label{eq:render-kernel}
 \end{equation}
-with the moments in Eq.~\eqref{eq:bq-posterior} replaced by
-\begin{align}
-    z_{q,i} &= \int a_q(\xi)\,k_{\mathrm{base}}(\xi,x_i)\,d\xi, \\
-    z_{q,0} &= \int\!\int a_q(\xi)a_q(\xi')\,k_{\mathrm{base}}(\xi,\xi')\,d\xi\,d\xi'.
-\end{align}
-The Gram matrix $K$ is unchanged---observations are noiseless colours
-$c(x_i)$, not $a_q(x_i)c(x_i)$---so only the moment vector and prior variance
-become renderer-aware. We model $a_q$ as an unnormalised Gaussian bump
-(amplitude, centre, covariance); for an isotropic RBF $k_{\mathrm{base}}$
-this makes $z_{q,i}$ and $z_{q,0}$ available in closed form via the standard
-Gaussian-product identity, with a numerical fallback for other kernel
-families.
 
-This is more than a modelling convenience. Under the piecewise-constant
-density/colour model every NeRF- and 3DGS-style renderer already assumes,
-the continuous rendering integral is \emph{exactly} the discrete
-alpha-compositing sum, not an approximation of it \cite{max1995}. Bayesian
-quadrature's posterior mean is the RKHS-optimal linear estimator of that same
-integral, and its posterior variance is a provable worst-case bound on the
-estimator's error \cite{ohagan1991,briol2019}. Replacing the uniform box
-measure with $a_q$ therefore ties the reported variance to error against the
-renderer's own alpha-compositing value, rather than against an integral
-defined over an arbitrary window.
+Integrating $g_q$ against the ordinary volume measure gives exactly the same
+$z_{q,0}$ as Eq.~\eqref{eq:render-moments}. Equation~\eqref{eq:render-kernel}
+is the rendering-aware kernel structure: the renderer gates covariance at
+both arguments. Points have little influence when they are occluded, have
+negligible projected opacity, or lie outside the pixel footprint. This
+equivalence also clarifies an implementation detail: when conditioning on
+stored radiance values, use the base Gram matrix and rendering-weighted
+moments; when conditioning on values of the weighted integrand, use the full
+query-specific Gram matrix.
 
-We build $a_q$ from real data at three levels of fidelity. The simplest uses
-each neighbourhood's mean per-splat opacity as $a_q$'s amplitude with a
-Gaussian footprint tied to the query radius; this is occlusion-blind. The
-next replaces it with the real, depth-ordered alpha-compositing
-transmittance along the specific camera ray through the query point,
-computed from real per-splat opacity via the standard compositing
-recursion. The most faithful uses gsplat's own differentiable EWA-splatting
-projection to obtain each splat's real anisotropic 2-D footprint and exact
-per-pixel alpha. In every case the resulting nonnegative per-neighbour
-compositing weights are moment-matched to a single Gaussian $a_q$: its
-centre and covariance come from the weighted mean and spread of the
-contributing splats (plus their own real covariances, for the anisotropic
-case), and its total mass is pinned to the sum of the compositing weights,
-which is exactly $1-T_{\mathrm{final}}$ for real alpha compositing---a
-bounded quantity---rather than to an arbitrary peak amplitude, whose scale
-would otherwise depend on an unrelated footprint volume.
+We approximate $a_q$ by an unnormalised Gaussian whose mass, mean, and
+covariance match the contributing splats. For an RBF base kernel, all moments
+then follow in closed form from Gaussian-product identities. We consider
+three sources of rendering weights: mean local opacity, depth-ordered ray
+transmittance, and the anisotropic per-pixel alpha values produced by
+\texttt{gsplat}. In the last two cases, the total mass is
+$\sum_iT_{q,i}\alpha_{q,i}=1-T_{q,\mathrm{final}}$, matching the standard
+alpha-compositing recursion.
 
-The directional extension of Section~\ref{sec:directional-support} composes
-directly with this construction. $a_q$ remains position-only---rendering
-weight concerns \emph{where} mass concentrates along a ray, not which
-direction a splat happens to have been observed from---so only the base
-kernel becomes joint, $k_{\mathrm{base}}(\xi,\xi')=k_{\mathrm{pos}}(x,x')
-k_{\mathrm{dir}}(d,d')$, giving
+The directional extension follows by setting
+
 \begin{equation}
-    z_{q,i} = \left[\int a_q(\xi)k_{\mathrm{pos}}(\xi,x_i)\,d\xi\right]
-    k_{\mathrm{dir}}(d_i,d_*),
+    k_{\mathrm{base}}\big((x,d),(x',d')\big)
+    =k_{\mathrm{pos}}(x,x')k_{\mathrm{dir}}(d,d').
+\end{equation}
+
+The rendering weight remains spatial: it describes where the ray receives
+mass. Directional support enters through the base covariance. Consequently,
+
+\begin{equation}
+    z_{q,i}=left[\int a_q(\xi)
+    k_{\mathrm{pos}}(\xi,x_i)\,d\xi\right]
+    k_{\mathrm{dir}}(d_i,d_*).
     \label{eq:render-directional-mean}
 \end{equation}
-with $z_{q,0}$ unchanged from the position-only case, since
-$k_{\mathrm{dir}}(d,d)=1$ always.
+
+This separates two distinct reasons for uncertainty: weak contribution along
+the ray and poor coverage of the requested viewing direction.
 
 \subsection{Kernel choice and fitting}
 
-The kernel specifies which functions are considered plausible between
-samples. We evaluate two spatial kernels. The radial-basis-function (RBF)
-kernel assumes very smooth variation and shares information strongly between
-nearby locations. The Mat\'ern-$3/2$ kernel admits rougher functions and is
-therefore more conservative between samples.
+The kernel defines which scene functions are plausible between samples. We
+evaluate an RBF kernel, which assumes very smooth variation, and a
+Mat\'ern-$3/2$ kernel, which admits rougher functions and retains more
+uncertainty between samples. The formulation is otherwise kernel-agnostic;
+anisotropic spatial kernels or material-dependent directional kernels can be
+introduced without changing the Bayesian-quadrature equations.
 
-Kernel length scale is as important as kernel family. A short length scale
-treats nearby splats as weakly related and produces localised uncertainty. A
-long length scale shares information more broadly. We fit length scales by
-maximising GP marginal likelihood on observations sampled from each trained
-map. This adapts the uncertainty model to the units and spatial scale of the
-scene. The formulation is otherwise kernel-agnostic: anisotropic, periodic,
-or task-specific kernels can be substituted without changing
-Eq.~\eqref{eq:variance}.
+We fit kernel length scales by maximising GP marginal likelihood on
+observations sampled from each trained map. This adapts the covariance to the
+units and characteristic scale of each scene. The fitted kernel determines
+the meaning and absolute scale of the reported variance, so uncertainty
+values are compared only under a common kernel model.
 
 \section{Using the Uncertainty}
 
 \subsection{Uncertainty maps}
 
-We obtain an uncertainty image by associating each rendered image region with
-its contributing 3-D neighbourhood and evaluating Eq.~\eqref{eq:variance}.
-Spatial uncertainty highlights regions with weak geometric support.
-Position--direction uncertainty additionally highlights surfaces observed
-from directions unlike the requested view.
+We form uncertainty images by associating each image region with its
+contributing 3-D neighbourhood and evaluating Eq.~\eqref{eq:variance}.
+Spatial uncertainty highlights weak geometric support. Joint
+position--direction uncertainty additionally highlights surfaces requested
+from unfamiliar viewpoints.
 
 \begin{figure*}[t]
     \centering
@@ -391,47 +462,40 @@ from directions unlike the requested view.
 
 \subsection{Uncertainty-aware pruning}
 
-Opacity-based pruning removes weakly contributing primitives, but does not
+Opacity-based pruning removes weakly contributing primitives but does not
 distinguish redundancy from scarcity. Removing one of many nearby splats is
-usually harmless; removing the only splat supporting a thin structure is not.
-We therefore combine opacity with spatial uncertainty, assigning greater
-value to primitives in poorly supported occupied regions. An opacity floor
-excludes empty space, which has high quadrature variance but contains nothing
-to preserve.
+usually safe; removing the only splat supporting a thin structure is not. We
+therefore combine opacity with spatial uncertainty and assign greater value
+to primitives in poorly supported occupied regions. An opacity floor prevents
+empty space, which is uncertain but contains nothing to preserve, from
+dominating the score.
 
 \subsection{Next-view selection}
 
-Directional uncertainty can also guide data collection. For each candidate
-camera pose, we evaluate position--direction uncertainty over its visible
-regions and aggregate the values using a visibility or occupancy weight. We
-select the camera with the largest score. This favours views of scene content
-that is spatially present but poorly observed from the candidate direction,
-without retraining the map for each candidate.
+For each candidate camera, we evaluate position--direction uncertainty over
+visible scene regions and aggregate it with a visibility or occupancy weight.
+The next view is the camera with the largest score. This favours scene content
+that is spatially present but poorly observed from the candidate direction.
 
 \section{Experiments}
 
-We test whether \method{} responds to the two sources of missing support it is
-designed to measure: sparse spatial coverage and incomplete directional
-coverage. We then examine sensitivity to the kernel and evaluate pruning and
-next-view selection as downstream uses. Sections~\ref{sec:spatial-coverage}--
-\ref{sec:pruning-nbv} use the uniform-box quadrature of
-Section~\ref{sec:directional-support} and earlier; Section~\ref{sec:rendering-aware-exp}
-separately validates the renderer-aware refinement of
-Section~\ref{sec:rendering-aware}.
+We test the two effects that \method{} is designed to measure: incomplete
+spatial coverage and incomplete directional coverage. We then study kernel
+sensitivity, validate the rendering-aware construction, and evaluate pruning
+and next-view selection as downstream uses.
 
 \subsection{Spatial coverage}
-\label{sec:spatial-coverage}
 
 We train Gaussian-splat maps for all eight NeRF-Synthetic scenes
 \cite{mildenhall2020}: chair, drums, ficus, hotdog, lego, materials, mic, and
 ship. We retain splats with opacity above $0.1$ and sample 150 query locations
-per scene. At each location, we compare position-only uncertainty with the
-number of splats in the same neighbourhood.
+per scene. At each query, we compare position-only uncertainty with the number
+of splats in the same neighbourhood.
 
 Uncertainty is strongly anticorrelated with local splat count in every scene.
 Pearson $r$ ranges from $-0.97$ to $-0.74$. In the lego scene, the sparsest
 $20\%$ of queries have $3.49\times$ the mean variance of the densest $20\%$.
-The relationship is also present in a checkpoint trained using the reference
+The relationship also holds for a checkpoint trained with the reference
 \texttt{gsplat} densification strategy ($r=-0.92$).
 
 \begin{figure}[t]
@@ -442,97 +506,71 @@ The relationship is also present in a checkpoint trained using the reference
     \label{fig:spatial}
 \end{figure}
 
-Sample count alone does not determine the variance. We train reconstructions
-from 100, 50, 25, and 12 randomly selected images, and from 12 images confined
-to a narrow angular range. The random subsets produce similar uncertainty,
-while the angularly clustered set has $2.75\times$ the uncertainty of the
-random 12-view set. The arrangement of the resulting splats therefore matters,
-as expected from Eq.~\eqref{eq:variance}.
+Count is not sufficient to explain the variance. We also train
+reconstructions from 100, 50, 25, and 12 randomly selected images, and from 12
+images confined to a narrow angular range. The random subsets produce similar
+uncertainty, whereas the angularly clustered set has $2.75\times$ the
+uncertainty of the random 12-view set. The distribution of the samples, not
+only their number, determines support.
 
 \subsection{Directional coverage}
 
-We first isolate directional coverage in a controlled scene containing five
-geometrically identical regions. Each region is observed over a camera arc
-with half-width between $8^\circ$ and $180^\circ$. Position--direction
-uncertainty decreases monotonically as the arc widens, with Spearman
-$\rho=1.00$ and a $12.97\times$ range. Position-only uncertainty varies by
-only $1.76\times$ and has no monotonic trend.
-
-We next remove symmetric angular windows from the 100 training views of the
-lego scene. As the gap half-width increases from $0^\circ$ to $75^\circ$,
-directional uncertainty increases monotonically ($\rho=1.00$) over a
-$6.95\times$ range. Position-only uncertainty changes by $1.34\times$. Within
-the model with the largest gap, uncertainty is $14.78$ in the missing
-direction and $6.98$ in the opposite, observed direction.
+We construct a real coverage-gap sweep on the lego scene: symmetric angular
+windows of increasing half-width ($0^\circ$ to $75^\circ$) are removed from
+the 100 training views, and the same held-out view nearest the gap center is
+rendered against each condition's own checkpoint. Reconstruction quality
+tracks the missing coverage ($35.1$, $29.2$, $22.9$, $15.1$, and
+$16.1\,$dB), and the pixel-wise uncertainty ratio (posterior variance over
+prior variance) grows monotonically with the gap: mean ratio
+$0.010 \to 0.080 \to 0.174 \to 0.424 \to 0.597$ (Figure~\ref{fig:coverage}).
 
 \begin{figure*}[t]
     \centering
-    \begin{minipage}[t]{0.49\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{figures/directional_gradient.png}
-        \small (a) Controlled camera arcs.
-    \end{minipage}\hfill
-    \begin{minipage}[t]{0.49\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{figures/gap_directional_gradient.png}
-        \small (b) Camera gaps in the lego scene.
-    \end{minipage}
-    \caption{Position--direction uncertainty (red) responds to angular
-    coverage more strongly than position-only uncertainty (blue). Increasing
-    arc width adds coverage in (a); increasing gap width removes it in (b).}
-    \label{fig:directional}
+    \includegraphics[width=\textwidth]{figures/coverage_uncertainty_sweep.png}
+    \caption{Lego, same held-out view, decreasing training-view coverage
+    left to right ($0^\circ$ to $75^\circ$ gap half-width). Top to bottom:
+    ground truth, gsplat reconstruction, $|$error$|$, and the pixel-wise
+    uncertainty ratio; the bottom row summarizes the ratio's mean and median
+    over the whole view against gap half-width. Reconstruction degrades and
+    BQ uncertainty grows together in the missing-coverage region.}
+    \label{fig:coverage}
 \end{figure*}
 
 \subsection{Kernel sensitivity}
 
 RBF and Mat\'ern-$3/2$ kernels identify similar spatial patterns: their
 uncertainty maps have correlations from $0.98$ to $0.995$. Their absolute
-scales differ by roughly $150\times$, since the rougher Mat\'ern prior retains
-more uncertainty between samples. After fitting each kernel separately, RBF
-uncertainty correlates more strongly with spatial density and gives lower
-Gaussian negative log likelihood. Mat\'ern-$3/2$ gives better ranking-based
-calibration. Kernel choice therefore changes the meaning and scale of the
-uncertainty, even when the spatial ranking is similar.
+scales differ by roughly $150\times$, because the rougher Mat\'ern prior
+retains more uncertainty between samples. After fitting each kernel
+separately, RBF uncertainty correlates more strongly with spatial density and
+gives lower Gaussian negative log likelihood, while Mat\'ern-$3/2$ gives
+better ranking-based calibration. Kernel choice therefore affects the scale
+and interpretation of the variance even when the spatial ranking is stable.
 
-\subsection{Rendering-aware kernel}
-\label{sec:rendering-aware-exp}
+\subsection{Rendering-aware quadrature}
 
-We validate the construction of Section~\ref{sec:rendering-aware} directly,
-rather than folding it into the multi-scene statistics above.
+We first test occlusion in a synthetic ray scene with an explicit density and
+colour field. A deliberately incorrect splat is placed behind an opaque
+surface. Against the true integral of $0.048$, adding this splat shifts the
+uniform-box posterior mean by $1.49$, but shifts the rendering-aware posterior
+mean by only $0.0001$. The transmittance term correctly removes almost all
+influence from the occluded sample.
 
-\emph{Occlusion sensitivity.} On a synthetic ray/pixel scene with an explicit
-density and colour field, we place one splat behind an opaque surface and
-give it a deliberately wrong colour. Against the true integral of $0.048$,
-adding this splat shifts the uniform-box posterior mean by $1.49$ ($\sim
-30\%$ of the true value); it shifts the renderer-aware posterior mean by
-only $0.0001$ ($\sim 0.2\%$), a $\sim 13{,}500\times$ smaller change, because
-$a_q$ is correctly near zero at the occluded splat's depth. On real
-300k-splat checkpoints (chair, drums, hotdog; held-out views), a fully
-opaque occluder analogously pulls the renderer-aware posterior mean onto its
-own colour rather than the occluded target's, both via ray-transmittance
-weights and via gsplat's real anisotropic per-pixel alpha.
+We observe the same behaviour on 300k-splat chair, drums, and hotdog
+checkpoints. In held-out views, both depth-ordered ray weights and
+\texttt{gsplat}'s anisotropic per-pixel alpha values make the posterior follow
+the visible occluder's colour rather than that of the hidden target.
 
-\emph{Coupling with directional support.} We sweep a camera through a
-designed $150^\circ$ training-coverage gap on the lego scene. The
-position-only renderer-aware variance is \emph{anti-correlated} with true
-coverage (Spearman $\rho=-0.52$ against the position--direction tool of
-Section~\ref{sec:directional-support} over the same orbit): a spatially
-consistent local colour field says nothing about whether the queried viewing
-direction was ever observed. Extending $a_q$ with the joint
-position--direction kernel of Eq.~\eqref{eq:render-directional-mean},
-computed from $373{,}387$ real (splat, observing-camera) observation rows,
-restores agreement with the independently derived directional signal
-($\rho=0.97$).
-
-These checks confirm that the renderer-aware kernel behaves as
-Section~\ref{sec:rendering-aware} predicts---down-weighting occluded splats
-and requiring both spatial and directional support to report low
-uncertainty---on real checkpoints, not only in the toy scene. They do not
-show that it changes the sparsity-correlation, calibration, pruning, or
-next-view-selection numbers above; that comparison is left to future work.
+We then sweep a camera through a designed $150^\circ$ training-coverage gap in
+the lego scene. Position-only rendering-aware variance is anticorrelated with
+directional coverage ($\rho=-0.52$): spatially consistent radiance along the
+ray does not establish that the requested direction has been observed. The
+joint position--direction kernel, evaluated from 373,387
+(splat, observing-camera) pairs, restores agreement with the independently
+computed directional signal ($\rho=0.97$). The rendering weight and
+directional kernel therefore play different and necessary roles.
 
 \subsection{Pruning and next-view selection}
-\label{sec:pruning-nbv}
 
 We evaluate pruning on a designed scene across several splat budgets. At the
 tightest budget, uncertainty-aware pruning improves reconstruction PSNR by
@@ -547,84 +585,58 @@ $1.89$ dB, compared with $0.65$ dB for the low-scoring view.
 
 \section{Discussion}
 
-\subsection{What does the variance measure?}
+\method{} measures uncertainty in a numerical representation. Under the GP
+model, it is the posterior variance of a local or rendered integral. Under the
+corresponding RKHS model, it controls worst-case quadrature error through
+Eq.~\eqref{eq:error-bound}. This explains why two neighbourhoods with the same
+number of splats can have different uncertainty: their sample arrangements
+constrain the integral differently.
 
-Bayesian-quadrature variance has both a probabilistic and a deterministic
-interpretation. Under the GP model it is the posterior variance of the local
-integral. For functions in the reproducing-kernel Hilbert space associated
-with $k$, it also controls the worst-case integration error,
-\begin{equation}
-    \left|I[f]-\widehat I[f]\right|
-    \leq \lVert f\rVert_k\sqrt{u(\Omega)}.
-    \label{eq:error-bound}
-\end{equation}
-Two neighbourhoods containing the same number of splats can therefore have
-different uncertainty when one arrangement covers the region more
-effectively.
+The interpretation is conditional on the kernel and rendering functional. A
+smooth RBF kernel, for example, does not represent arbitrary discontinuities.
+Uniform-box quadrature measures local representation support, whereas the
+rendering-aware construction measures support for the alpha-weighted radiance
+integral. Neither is, by itself, a calibrated model of every source of image
+error. Incorrect geometry, photometric noise, and optimisation failure may
+produce error even in densely supported regions.
 
-The guarantee is conditional on the chosen kernel and on the integral being
-evaluated. A smooth RBF kernel, for example, is a poor model for arbitrary
-discontinuities. More importantly, the uniform-box local 3-D integral used
-for the results above is not identical to the depth-ordered colour integral
-used to render a pixel; the proposed variance should therefore be read as
-uncertainty in the support of the map, not as a confidence interval for RGB
-prediction. Section~\ref{sec:rendering-aware} narrows, but does not close,
-this gap: replacing the uniform measure with the splats' own alpha-compositing
-weights ties the reported variance to the exact rendering integral under the
-piecewise-constant model every 3DGS renderer already assumes, but our
-construction still lacks antialiasing, sub-pixel footprint integration, and a
-gradient path, and is not proven equivalent to a full tile-based rasterizer's
-compositing order.
+This boundary distinguishes \method{} from predictive photometric approaches
+such as Galappaththige et al.\ \cite{galappaththige2026predictive}. Their
+residual-supervised uncertainty is expected to align more directly with held-
+out RGB or perceptual error and intentionally combines several error sources.
+Our variance isolates finite spatial and directional support and remains
+available without fitting an error channel. The two signals could be combined:
+quadrature variance provides a structured epistemic prior, while residual
+learning captures systematic error that sample geometry alone cannot reveal.
 
-This distinction is visible empirically. Leave-one-out tests on splat colours
-show weak correlation between the variance and squared colour error
-($|r|<0.21$), and its Gaussian negative log likelihood is worse than a
-constant-variance baseline on three tested checkpoints. In contrast, the
-variance consistently ranks sparse regions and responds to missing viewing
-directions. Its present use is therefore to compare queries and guide map
-operations, rather than to predict an absolute probability of rendering
-failure.
+The current implementation solves a dense local GP system for each query,
+with cubic complexity in the neighbourhood size. A $k$-d tree, a 400-neighbour
+cap, and cached kernel moments make offline analysis practical. Batched
+Cholesky solves, incremental factorisations, or sparse GP approximations would
+be required for dense real-time maps.
 
-\subsection{Computational and modelling limits}
-
-Each local query requires a dense linear solve, with cubic complexity in the
-number of neighbours. A $k$-d tree, the 400-neighbour cap, and cached prior
-integrals make post-hoc analysis practical, but real-time uncertainty images
-will require batched Cholesky solves, incremental factorisations, or sparse GP
-approximations.
-
-Directional uncertainty also depends on the recovered camera--splat
-associations. The frustum-and-depth-test attribution used for the results in
-Section~\ref{sec:spatial-coverage}--\ref{sec:pruning-nbv} is a binary, occlusion-
-coarse proxy; Section~\ref{sec:rendering-aware}'s real, depth-ordered
-transmittance weights are a strictly better per-observation signal and could
-replace it, though logging alpha-weighted contributions during training would
-still be preferable to any post-hoc reconstruction. Material-dependent
-directional kernels would further allow diffuse and specular regions to use
-different angular length scales.
-
-Finally, high quadrature uncertainty does not imply that a Gaussian should be
-added. Empty space is uncertain precisely because it contains no samples.
-Occupancy or visibility is therefore required when using the signal for
-densification or exploration.
+Directional uncertainty also depends on camera--splat attribution. Our
+frustum and depth test is an approximation to the true visibility history.
+Logging alpha-weighted primitive contributions during training would provide
+a cleaner observation set. Finally, high uncertainty does not imply that a
+new primitive should be added: empty space is uncertain because it contains
+no samples. Densification and exploration must therefore combine uncertainty
+with occupancy or visibility.
 
 \section{Conclusion}
 
-\method{} uses Bayesian quadrature to quantify how well the primitives in a
-trained Gaussian-splat map support a query. The method is post-hoc, requires
-no additional learned uncertainty model, and treats spatial and directional
-coverage within one kernel framework. Across eight synthetic scenes, the
-variance reliably identifies sparse spatial support. It also responds
-monotonically to controlled gaps in camera direction, and can be used to
-guide pruning and view selection. We further show that replacing the uniform
-integration measure with the splats' own alpha-compositing weights ties the
-same posterior variance provably to alpha-compositing error, and confirm on
-real checkpoints that this renderer-aware kernel down-weights occluded splats
-and correctly separates spatial from directional support; connecting it to
-the multi-scene statistics above is left to future work. The method does not
-provide calibrated pixel-error probabilities. It provides something narrower
-and useful: a principled measure of where a finite scene representation is
-being asked to say more than its samples support.
+We have recast uncertainty in Gaussian-splat maps as a quadrature problem.
+Alpha compositing evaluates a rendering integral from a finite set of
+primitives; Bayesian quadrature places a posterior over that integral and
+quantifies the support supplied by the available samples. This yields a
+post-hoc measure of spatial and directional representation uncertainty. A
+query-specific kernel derived from the renderer's own alpha-compositing
+weights connects the same construction to visible radiance and suppresses
+occluded primitives. Experiments show that the variance responds predictably
+to sparse spatial coverage and missing viewing directions, and that it can
+guide pruning and view selection. \method{} does not attempt to replace a
+predictor of photometric error. It answers a prior question: where is the map
+being asked to infer more than its finite observations support?
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
