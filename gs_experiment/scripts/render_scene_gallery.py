@@ -46,7 +46,7 @@ SCENE_BEST_VIEWS = {
     "drums": 3,
     "ficus": 13,
     "hotdog": 12,
-    "lego": 27,
+    "lego": 21,  # re-picked after retraining lego's wide checkpoint to match the other scenes' recipe
     "mic": 11,
     "ship": 21,
 }
@@ -63,19 +63,28 @@ DEPTH_RES = 64
 PREPARED_ROOT = Path(__file__).resolve().parents[1] / "local_runs"
 
 
-def build_rows(scene_views=SCENE_BEST_VIEWS, prepared_root=PREPARED_ROOT, sigma=SIGMA, window_radius=WINDOW_RADIUS, depth_res=DEPTH_RES):
+def build_rows(
+    scene_views=SCENE_BEST_VIEWS, prepared_root=PREPARED_ROOT, sigma=SIGMA, window_radius=WINDOW_RADIUS,
+    depth_res=DEPTH_RES, checkpoint_subdir="wide",
+):
+    """`checkpoint_subdir`: which per-scene checkpoint directory to render/evaluate against
+    (default "wide", this project's full-quality 300k-splat recipe). Pass e.g. "budget_10000"
+    to build the same gallery against a lower-splat-budget checkpoint instead (see
+    splat_budget_uncertainty_sweep.py's naming convention, reused here) -- everything else
+    (view choice, sigma/kappa, eval split) stays identical, so the only thing that changes
+    between two such galleries is the checkpoint's splat budget."""
     rows = []
     for scene, view_idx in scene_views.items():
-        wide_dir = prepared_root / f"{scene}_prepared" / "wide"
+        ckpt_dir = prepared_root / f"{scene}_prepared" / checkpoint_subdir
         eval_dir = prepared_root / f"{scene}_prepared" / "eval"
         camera_angle_x, frames = load_transforms(str(eval_dir / "transforms.json"))
 
-        results, checkpoint = render_views(str(eval_dir), [view_idx], checkpoint_dir=str(wide_dir), background_color=BACKGROUND_COLOR)
+        results, checkpoint = render_views(str(eval_dir), [view_idx], checkpoint_dir=str(ckpt_dir), background_color=BACKGROUND_COLOR)
         _, gt, recon = results[0]
         height, width = gt.shape[:2]
         maps = compute_uncertainty_maps(
             str(eval_dir), [view_idx], frames, camera_angle_x, width, height, checkpoint,
-            checkpoint_dir=str(wide_dir), sigma=sigma, window_radius=window_radius,
+            checkpoint_dir=str(ckpt_dir), sigma=sigma, window_radius=window_radius,
             depth_width=depth_res, depth_height=depth_res,
         )
         # maps[0] is (spatial_map, dir_map) -- spatial_map (position-only) is a reduced
@@ -84,8 +93,9 @@ def build_rows(scene_views=SCENE_BEST_VIEWS, prepared_root=PREPARED_ROOT, sigma=
         _, dir_map = maps[0]
         err = np.abs(gt - recon).mean(axis=-1)
         psnr = -10.0 * np.log10(max(float(np.mean((gt - recon) ** 2)), 1e-10))
-        print(f"{scene}: view {view_idx}, PSNR {psnr:.2f}dB, {checkpoint['positions'].shape[0]} splats")
-        rows.append(dict(scene=scene, view_idx=view_idx, psnr=psnr, gt=gt, recon=recon, err=err, dir_map=dir_map))
+        n_splats = int(checkpoint["positions"].shape[0])
+        print(f"{scene}: view {view_idx}, PSNR {psnr:.2f}dB, {n_splats} splats")
+        rows.append(dict(scene=scene, view_idx=view_idx, psnr=psnr, n_splats=n_splats, gt=gt, recon=recon, err=err, dir_map=dir_map))
     return rows
 
 
@@ -122,7 +132,7 @@ def plot_gallery(rows, out_path):
         for ax in axes[row]:
             ax.set_xticks([])
             ax.set_yticks([])
-        axes[row, 0].set_ylabel(f"{r['scene']}\n{r['psnr']:.1f}dB", fontsize=10)
+        axes[row, 0].set_ylabel(f"{r['scene']}\n{r['psnr']:.1f}dB, {r['n_splats']:,} splats", fontsize=10)
 
     fig.suptitle(
         "NeRF-Synthetic: reconstruction error vs. BQ uncertainty across scenes (best held-out view per scene)\n"
@@ -145,11 +155,15 @@ def run(out_path=None, **kwargs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--checkpoint-subdir", default="wide", help='per-scene checkpoint dir to use, e.g. "budget_10000"')
     parser.add_argument("--sigma", type=float, default=SIGMA)
     parser.add_argument("--window-radius", type=float, default=WINDOW_RADIUS)
     parser.add_argument("--depth-res", type=int, default=DEPTH_RES)
     args = parser.parse_args()
-    run(out_path=args.out, sigma=args.sigma, window_radius=args.window_radius, depth_res=args.depth_res)
+    run(
+        out_path=args.out, checkpoint_subdir=args.checkpoint_subdir, sigma=args.sigma,
+        window_radius=args.window_radius, depth_res=args.depth_res,
+    )
 
 
 if __name__ == "__main__":

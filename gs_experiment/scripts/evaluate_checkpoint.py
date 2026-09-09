@@ -430,6 +430,16 @@ TRAIN_KWARGS = dict(
     n_splats=5000, bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)), sh_degree=3, n_iters=30000, seed=0,
     init_scale=0.05, opacity_reg_weight=0.01, densify=True, densify_interval=100, densify_start=500,
     densify_end=15000, max_splats=300000, log_every=2000, position_lr_final=2e-5,
+    # Without this, train() silently falls back to its dark (0.05,0.05,0.05) default while
+    # prepare_nerf_synthetic.py composites every training/eval image onto white -- a real
+    # background mismatch, not a subtle one. Confirmed directly: lego's `wide` checkpoint,
+    # the only scene retrained after this dict was last touched, came out at 15dB held-out
+    # PSNR with 5.9% floaters vs. ~29-30dB/~0% for its 100k/1M splat-budget neighbors trained
+    # with the same recipe otherwise -- a same-bug, same-symptom match to the one
+    # real_directional_coverage_experiment.LEGO_GAP_TRAIN_KWARGS already fixed in its own
+    # copy of this dict, just never propagated back to this one (the one that actually
+    # trains `wide/` for every scene via prepare_and_train).
+    background_color=(1.0, 1.0, 1.0),
 )
 MULTI_SCENE_SIGMA = 0.05
 MULTI_SCENE_WINDOW_RADIUS = 0.08
