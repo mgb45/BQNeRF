@@ -1,9 +1,15 @@
 """ROADMAP.md item 2 ("Alternative kernels"): compares RBF, Matern-3/2, and
 a new RationalQuadratic position kernel (added in gs_experiment/kernels.py
 for this experiment -- see that class's docstring for why this family was
-chosen) against two real trained checkpoints of the same scene at very
-different splat densities (`local_runs/lego_prepared/wide`, ~300k splats,
-vs. `.../budget_500`, 500 splats), on two honestly-measured properties:
+chosen) against real trained checkpoints of every NeRF-Synthetic scene this
+project's other kept results use (chair, drums, ficus, hotdog, lego, mic,
+ship -- the same 7-scene set `scripts/render_scene_gallery.py` uses, and for
+the same reason: `materials` is excluded there because even its best
+held-out view stays visibly hazy under this project's vanilla-3DGS training
+recipe, an honestly-reported limitation unrelated to this ablation, not
+re-litigated here), each at very different splat densities
+(`local_runs/<scene>_prepared/wide`, ~300k splats, vs.
+`.../budget_500`, 500 splats), on two honestly-measured properties:
 
   1. Sparsity correlation: does posterior variance track local splat
      density (denser -> lower variance, if the signal works as intended)?
@@ -90,26 +96,47 @@ from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine
 from gs_experiment.quadrature import BQResult, _posterior_mean_variance
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEGO_ROOT = REPO_ROOT / "gs_experiment" / "local_runs" / "lego_prepared"
+LOCAL_RUNS = REPO_ROOT / "gs_experiment" / "local_runs"
+
+# The 7 NeRF-Synthetic scenes this project's other kept results use --
+# `materials` deliberately excluded, matching `scripts/render_scene_gallery.
+# py`'s own documented exclusion (its best held-out view stays visibly hazy
+# under this project's training recipe -- unrelated to kernel choice).
+SCENES = ["chair", "drums", "ficus", "hotdog", "lego", "mic", "ship"]
 
 # Per-checkpoint local-window radius. NOT shared across checkpoints: `wide`
 # (~300k splats) and `budget_500` (500 splats) cover the *same* physical
 # scene volume, so a radius chosen for one density gives a wildly different
-# number of real neighbors at the other -- confirmed directly: r=0.08 (the
-# radius gs_experiment.splat_scene.fit_kernel_hyperparams's own default uses,
-# tuned for a dense checkpoint) finds a median of ~1000 neighbors per window
-# in `wide` but a median of ~1-2 in `budget_500` (below the >=6 minimum a
-# local GP fit needs). r=0.25 was chosen for `budget_500` as the smallest
-# radius, checked directly against this checkpoint's own real splat
+# number of real neighbors at the other -- confirmed directly on lego:
+# r=0.08 (the radius gs_experiment.splat_scene.fit_kernel_hyperparams's own
+# default uses, tuned for a dense checkpoint) finds a median of ~1000
+# neighbors per window in `wide` but a median of ~1-2 in `budget_500` (below
+# the >=6 minimum a local GP fit needs). r=0.25 was chosen for `budget_500`
+# as the smallest radius, checked directly against lego's own real splat
 # positions, giving >=6 real neighbors for >90% of candidate window centers
 # (mean ~22 neighbors) -- the same "tune to this checkpoint's own density"
 # principle fit_kernel_hyperparams's docstring already argues for, applied
 # to the window radius itself, not just the fitted bandwidth.
+#
+# These two radii (0.08/0.25) were re-checked directly (KD-tree neighbor
+# counts at 150 sampled window centers, same recipe as the check above) on
+# all 7 scenes below, not just lego, before assuming they transfer: every
+# scene/checkpoint combination gives >=6 real neighbors for at least 86% of
+# candidate windows (worst case: `ship`/budget_500 at 86.7%, `hotdog`/wide
+# at 87.3% -- both still comfortably above the failure regime, and close to
+# lego's own budget_500 baseline of 90.7%). NeRF-Synthetic scenes share
+# roughly the same normalized coordinate bounds, and that held here too, so
+# no scene needed a different radius from lego's.
+WINDOW_RADIUS = {"wide": 0.08, "budget_500": 0.25}
+
 CHECKPOINTS = {
-    "wide": {"dir": LEGO_ROOT / "wide", "window_radius": 0.08},
-    "budget_500": {"dir": LEGO_ROOT / "budget_500", "window_radius": 0.25},
+    scene: {
+        "wide": {"dir": LOCAL_RUNS / f"{scene}_prepared" / "wide", "window_radius": WINDOW_RADIUS["wide"]},
+        "budget_500": {"dir": LOCAL_RUNS / f"{scene}_prepared" / "budget_500", "window_radius": WINDOW_RADIUS["budget_500"]},
+    }
+    for scene in SCENES
 }
-EVAL_DIR = LEGO_ROOT / "eval"
+EVAL_DIRS = {scene: LOCAL_RUNS / f"{scene}_prepared" / "eval" for scene in SCENES}
 
 FAMILIES: Dict[str, dict] = {
     "rbf": {"factory": lambda p: ProductKernel([RBFKernel(sigma=p)] * 3), "bounds": (0.005, 1.0), "param_name": "sigma"},
@@ -431,11 +458,12 @@ def sparsity_correlation(
 # ---------------------------------------------------------------------------
 
 
-def _render_and_unproject(checkpoint_dir: Path, view_indices, depth_width=112, depth_height=42, device="cuda"):
+def _render_and_unproject(checkpoint_dir: Path, eval_dir: Path, view_indices, depth_width=112, depth_height=42, device="cuda"):
     """Real GT vs. reconstruction (full res) plus real depth-unprojected
     world points at a lower resolution (matching
     scripts.render_reconstruction.compute_uncertainty_maps's own depth_width/
-    depth_height convention), for each of `view_indices` in `EVAL_DIR`.
+    depth_height convention), for each of `view_indices` in `eval_dir` (that
+    scene's own held-out view set).
 
     Returns a list of dicts: gt (H,W,3), recon (H,W,3), world_points
     (depth_height, depth_width, 3), valid (depth_height, depth_width) bool.
@@ -447,8 +475,8 @@ def _render_and_unproject(checkpoint_dir: Path, view_indices, depth_width=112, d
     from gs_experiment.ply_io import read_3dgs_ply
     from gs_experiment.scripts.render_reconstruction import render_views, unproject_depth_grid
 
-    results, checkpoint = render_views(str(EVAL_DIR), view_indices, checkpoint_dir=str(checkpoint_dir), device=device)
-    camera_angle_x, frames = load_transforms(str(EVAL_DIR / "transforms.json"))
+    results, checkpoint = render_views(str(eval_dir), view_indices, checkpoint_dir=str(checkpoint_dir), device=device)
+    camera_angle_x, frames = load_transforms(str(eval_dir / "transforms.json"))
 
     K_full = fov_x_to_intrinsics(camera_angle_x, results[0][1].shape[1], results[0][1].shape[0])
     K_depth = K_full.copy()
@@ -504,7 +532,7 @@ def _downsample_squared_error(gt: np.ndarray, recon: np.ndarray, depth_width: in
 
 
 def calibration_metrics(
-    engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], radius: float, checkpoint_dir: Path,
+    engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], radius: float, checkpoint_dir: Path, eval_dir: Path,
     view_indices, max_points_per_view: int = 80, depth_width: int = 112, depth_height: int = 42, seed: int = 0,
 ) -> dict:
     """Real held-out calibration: for each held-out eval view, gets GT vs.
@@ -519,7 +547,7 @@ def calibration_metrics(
     predicted Gaussian variance against a real squared residual.
     """
     rng = np.random.default_rng(seed)
-    rendered = _render_and_unproject(checkpoint_dir, view_indices, depth_width=depth_width, depth_height=depth_height)
+    rendered = _render_and_unproject(checkpoint_dir, eval_dir, view_indices, depth_width=depth_width, depth_height=depth_height)
 
     all_variance = []
     all_squared_error = []
@@ -557,7 +585,8 @@ def calibration_metrics(
 # ---------------------------------------------------------------------------
 
 
-def run_checkpoint(name: str, checkpoint_dir: Path, window_radius: float, seed: int = 0) -> dict:
+def run_checkpoint(name: str, checkpoint_dir: Path, eval_dir: Path, window_radius: float, seed: int = 0) -> dict:
+    from gs_experiment.nerf_transforms import load_transforms
     from gs_experiment.splat_scene import load_from_gsplat_checkpoint
 
     print(f"\n=== checkpoint: {name} ({checkpoint_dir}) ===")
@@ -581,14 +610,20 @@ def run_checkpoint(name: str, checkpoint_dir: Path, window_radius: float, seed: 
     n_sparsity_queries = min(150, len(keep_idx))
     query_idx = rng.choice(keep_idx, size=n_sparsity_queries, replace=False)
 
-    n_frames = 30  # gs_experiment/local_runs/lego_prepared/eval/transforms.json's held-out view count
+    # held-out view count read from this scene's own eval/transforms.json
+    # (confirmed 30 for every scene in the 7-scene set, but read it directly
+    # rather than hardcoding, since this now runs across scenes).
+    _, eval_frames = load_transforms(str(eval_dir / "transforms.json"))
+    n_frames = len(eval_frames)
     view_indices = list(range(0, n_frames, max(1, n_frames // 6)))[:6]
 
     results = {}
     for family, param in fitted.items():
         kernels_per_axis = make_kernels_per_axis(family, param)
         sparsity = sparsity_correlation(engine, kernels_per_axis, window_radius, query_idx)
-        calibration = calibration_metrics(engine, kernels_per_axis, window_radius, checkpoint_dir, view_indices, seed=seed)
+        calibration = calibration_metrics(
+            engine, kernels_per_axis, window_radius, checkpoint_dir, eval_dir, view_indices, seed=seed
+        )
         results[family] = {"param": param, "sparsity": sparsity, "calibration": calibration}
         print(
             f"  [{family:20s}] sparsity: raw_var pearson={sparsity['pearson_r']:+.3f} spearman={sparsity['spearman_r']:+.3f}"
@@ -644,13 +679,45 @@ def print_summary_table(all_results: dict):
         )
 
 
-def main():
-    all_results = {}
-    for name, spec in CHECKPOINTS.items():
-        all_results[name] = run_checkpoint(name, spec["dir"], spec["window_radius"])
-    print_summary_table(all_results)
+RESULTS_JSON = REPO_ROOT / "gs_experiment" / "results" / "kernel_family_ablation_results.json"
+
+
+def main(scenes: Optional[List[str]] = None, save_json: Path = RESULTS_JSON):
+    import json
+
+    scenes = scenes or SCENES
+    all_results: Dict[str, Dict[str, dict]] = {}
+    for scene in scenes:
+        print("\n" + "#" * 100)
+        print(f"# scene: {scene}")
+        print("#" * 100)
+        scene_results = {}
+        for checkpoint_name, spec in CHECKPOINTS[scene].items():
+            scene_results[checkpoint_name] = run_checkpoint(
+                checkpoint_name, spec["dir"], EVAL_DIRS[scene], spec["window_radius"]
+            )
+        print_summary_table(scene_results)
+        all_results[scene] = scene_results
+
+        # Save incrementally after every scene (not just at the end) so a
+        # crash/interrupt partway through the 7-scene sweep doesn't lose
+        # already-computed scenes.
+        if save_json is not None:
+            save_json.parent.mkdir(parents=True, exist_ok=True)
+            with open(save_json, "w") as f:
+                json.dump(all_results, f, indent=2)
+            print(f"\nSaved results so far ({len(all_results)}/{len(scenes)} scenes) to {save_json}")
+
     return all_results
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scenes", nargs="+", default=None, choices=SCENES,
+        help="Subset of scenes to run (default: all 7 -- chair, drums, ficus, hotdog, lego, mic, ship).",
+    )
+    args = parser.parse_args()
+    main(scenes=args.scenes)

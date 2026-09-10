@@ -291,3 +291,89 @@ checkpoint, and whether that changes which family wins.
 Scripts/data: `gs_experiment/kernel_family_ablation.py`; checkpoints at
 `gs_experiment/local_runs/lego_prepared/{wide,budget_500}` and held-out
 views at `.../lego_prepared/eval` (all gitignored, pre-existing).
+
+### 2b. Addendum: expanded to all 7 NeRF-Synthetic scenes
+
+The lego-only setup above was generalized to run on all 7 scenes this
+project's other kept results use (chair, drums, ficus, hotdog, lego, mic,
+ship — `materials` excluded for the same documented reason
+`scripts/render_scene_gallery.py` excludes it: even its best held-out view
+stays visibly hazy under this project's training recipe, unrelated to
+kernel choice). `kernel_family_ablation.py`'s `CHECKPOINTS`/`EVAL_DIR`
+globals became per-scene dicts (`CHECKPOINTS[scene]`, `EVAL_DIRS[scene]`);
+`main()` now loops over all 7 scenes and saves full results (all metrics,
+not just the printed summary) to
+`gs_experiment/results/kernel_family_ablation_results.json`, written
+incrementally after each scene so a partial run isn't lost. Everything
+else (window sampling, per-family bandwidth fitting, the generalized
+rendering-aware variance, sparsity/calibration metric code) is reused
+unchanged.
+
+**Window radius**: before trusting lego's `wide`=0.08/`budget_500`=0.25
+radii on the other 6 scenes, real neighbor counts were checked directly
+per scene/checkpoint (same recipe as the original tuning: KD-tree query
+around 150 sampled window centers). Every one of the 14 scene/checkpoint
+combinations keeps >=6 real neighbors for at least 86% of sampled windows
+(worst cases: `ship`/`budget_500` at 86.7%, `hotdog`/`wide` at 87.3%, both
+close to lego's own `budget_500` baseline of 90.7%) — no scene needed a
+different radius, consistent with NeRF-Synthetic scenes sharing roughly
+the same normalized coordinate bounds.
+
+**Results**: full per-scene tables are in `paper/main.tex`'s Appendix
+("Alternative kernels" subsection, Tables II-VIII); raw numbers for every
+scene/checkpoint/family are in `kernel_family_ablation_results.json`.
+
+**Cross-scene reading — one part of the lego-only finding generalizes
+cleanly, the other doesn't**:
+
+- **Calibration (mean NLL)**: RBF is the best-calibrated family in *all*
+  14 scene/checkpoint combinations — a fully universal result, not just a
+  lego artifact. Typically 2+ orders of magnitude better than
+  Matern/RationalQuadratic, up to ~4 orders of magnitude in the worst case
+  (`mic`, where every family is in fact badly miscalibrated in absolute
+  terms — real held-out error there is large relative to any family's
+  fitted variance — but RBF is still ~1000x less catastrophic). Same
+  mechanism as the lego-only finding: Matern/RQ's marginal-likelihood fits
+  land on tighter bandwidths that explain local color smoothness well but
+  produce overconfident (too-small) variance at real held-out points,
+  punished heavily by the NLL's `1/var` term. Calibration *correlation*
+  stays weak and sign-inconsistent across every family/scene, exactly as
+  on lego alone — none of the three families should be read as tracking
+  held-out error in the correlation sense.
+- **Sparsity, amplitude-normalized ratio, sparse checkpoint**: broadly
+  replicates lego. Raw variance has the expected positive sign for every
+  family on all 7 scenes (21/21) on `budget_500`, and RationalQuadratic
+  wins the ratio metric on 6 of 7 scenes (all but `ship`, where RBF is
+  narrowly ahead: +0.927 vs. +0.887).
+- **Sparsity, raw variance, dense (`wide`) checkpoint — does NOT
+  generalize**: lego's "wrong sign for every family" result was itself
+  scene-dependent, not universal. Raw variance keeps the *correct*
+  (positive) sign on `chair` and `ship`, is split by family on `ficus`,
+  and is wrong-signed for every family only on `drums`, `hotdog`, `lego`,
+  and `mic`. Traced directly to real per-scene density: the median real
+  neighbor count inside the same fixed-radius window at `wide` density
+  ranges from ~21 (`ficus`) to ~9,000 (`mic`) across scenes that share an
+  identical training recipe and window radius — it's specifically the
+  high-neighbor-count scenes (well past the engine's `max_neighbors=60`
+  cap) where local opacity confounds raw variance, not a universal
+  property of "dense" checkpoints in general.
+- **Sparsity ratio, dense checkpoint**: correspondingly more mixed than
+  lego alone suggested — RationalQuadratic wins on 3/7 scenes (`drums`,
+  `ficus`, `lego`), Matern on 2/7 (`chair`, `mic`), RBF on 2/7 (`hotdog`,
+  `ship`).
+- **Net honest takeaway, updated**: the calibration half of the original
+  trade-off (RBF safest for NLL-style use) is now confirmed universal
+  across all 7 scenes, stronger evidence than lego alone gave. The
+  sparsity-tracking half (RationalQuadratic best for coverage-tracking)
+  mostly holds, especially on genuinely sparse checkpoints, but is not a
+  scene-independent law at high splat density — the underlying raw-
+  variance confound this recommendation is designed to correct for is
+  itself scene-dependent, and where that confound doesn't arise (`chair`,
+  `ship`), RBF's own raw variance already does the sparsity-tracking job
+  correctly, with no need for RQ's ratio-based fix.
+
+Scripts/data: same `gs_experiment/kernel_family_ablation.py`, run with no
+`--scenes` argument (defaults to all 7); full results in
+`gs_experiment/results/kernel_family_ablation_results.json`; checkpoints
+at `gs_experiment/local_runs/<scene>_prepared/{wide,budget_500,eval}` for
+each of the 7 scenes (all gitignored, pre-existing).

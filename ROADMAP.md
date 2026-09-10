@@ -99,14 +99,25 @@ which kernel families are actually worth offering and what each one buys.
    `splat_scene.fit_kernel_hyperparams`) — this is a strength of the
    method, not a loose end to resolve into one hardcoded default.
 
-**Status**: done — see `gs_experiment/results/FINDINGS.md` section 2. Added
-`RationalQuadraticKernel` (alpha fixed at 1.0) and ran the ablation on the
-real `wide`/`budget_500` lego checkpoints. Genuine trade-off, no single
-winner: RBF is dramatically better calibrated (Gaussian-NLL score, both
-checkpoints), while RationalQuadratic gives the best sparsity-tracking
-signal once read as the amplitude-normalized `variance/prior_variance`
-ratio (raw variance on the dense `wide` checkpoint turned out confounded
-by local opacity, not real density, at the `max_neighbors` cap in use).
+**Status**: done — see `gs_experiment/results/FINDINGS.md` section 2 (and
+its 2b addendum). Added `RationalQuadraticKernel` (alpha fixed at 1.0) and
+ran the ablation on the real `wide`/`budget_500` checkpoints of all 7
+NeRF-Synthetic scenes this project's other kept results use (chair,
+drums, ficus, hotdog, lego, mic, ship — `materials` excluded, same
+documented reason as `scripts/render_scene_gallery.py`), not just lego.
+Genuine trade-off, partially universal: RBF is dramatically better
+calibrated (Gaussian-NLL score) in *all* 14 scene/checkpoint combinations,
+not just lego's 2 — a fully universal result. RationalQuadratic gives the
+best sparsity-tracking signal (amplitude-normalized `variance/prior_variance`
+ratio) on the sparse checkpoint in 6 of 7 scenes, but the dense-checkpoint
+raw-variance confound that motivated the ratio metric in the first place
+turns out to be scene-dependent, not universal (present on drums/hotdog/
+lego/mic, absent on chair/ship, mixed on ficus, tracking each scene's own
+real local splat density relative to the engine's `max_neighbors=60`
+cap) — so the dense-checkpoint sparsity-ratio winner is more mixed across
+scenes than the lego-only result suggested. Full per-scene numbers in
+`gs_experiment/results/kernel_family_ablation_results.json` and
+`paper/main.tex`'s appendix (Tables II-VIII).
 Matern-3/2 did not win outright on any metric/checkpoint.
 
 ## 3. Floater-flagging follow-up experiment
