@@ -37,6 +37,7 @@ depending on what you ask it:
 - **Is the number *calibrated** Yes, needs an experiment
 - **Training directly under the likelihood** Todo
 - **Next best view selection evaluation** Todo
+- **Alternative kernels** Eg. Matern? 
 
 ## Repo layout
 
