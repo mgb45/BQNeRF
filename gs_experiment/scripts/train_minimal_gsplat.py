@@ -878,13 +878,26 @@ def train_with_reference_strategy(
     print(f"wrote {positions.shape[0]} splats to {out_path}")
 
 
-def mean_psnr(scene_dir: str, n_views: int) -> float:
+def mean_psnr(scene_dir: str, n_views: int, background_color=(0.05, 0.05, 0.05)) -> float:
     """Mean per-view PSNR of `scene_dir`'s own checkpoint against its own
     ground-truth images -- shared by every variant `run_nll_experiment`
-    trains, so results are directly comparable at a matched splat budget."""
+    trains, so results are directly comparable at a matched splat budget.
+
+    `background_color` must match whatever `background_color` the checkpoint
+    was actually trained with (default here matches `train`'s own default,
+    for backward compatibility with existing dark-background-scene callers)
+    -- get this wrong (e.g. the default dark background against a
+    white-composited NeRF-Synthetic scene trained with
+    `background_color=(1,1,1)`, as real_directional_coverage_experiment.py's
+    LEGO_GAP_TRAIN_KWARGS uses) and every pixel the splats don't cover reads
+    as a large, spurious error, silently tanking PSNR by tens of dB without
+    the reconstruction actually being wrong -- caught exactly this way while
+    building likelihood_training_experiment.py (ROADMAP.md item 1): real
+    per-iteration training-view PSNR was 26-28dB but this function reported
+    ~1.7dB before the mismatch was found."""
     from gs_experiment.scripts.render_reconstruction import render_views
 
-    results, _ = render_views(scene_dir, list(range(n_views)))
+    results, _ = render_views(scene_dir, list(range(n_views)), background_color=background_color)
     psnrs = [-10.0 * np.log10(max(float(np.mean((gt - recon) ** 2)), 1e-10)) for _, gt, recon in results]
     return float(np.mean(psnrs))
 

@@ -244,7 +244,7 @@ stronger view dependence.
 For query direction $d_*$, the kernel mean is
 
 \begin{equation}
-    z_i=left[\int_{\Omega_q}k_{\mathrm{pos}}(x,x_i)p(x)\,dx\right]
+    z_i=\left[\int_{\Omega_q}k_{\mathrm{pos}}(x,x_i)p(x)\,dx\right]
     k_{\mathrm{dir}}(d_i,d_*).
     \label{eq:directional-mean}
 \end{equation}
@@ -327,7 +327,7 @@ The rendering weight remains spatial: it describes where the ray receives
 mass. Directional support enters through the base covariance. Consequently,
 
 \begin{equation}
-    z_{q,i}=left[\int a_q(\xi)
+    z_{q,i}=\left[\int a_q(\xi)
     k_{\mathrm{pos}}(\xi,x_i)\,d\xi\right]
     k_{\mathrm{dir}}(d_i,d_*).
     \label{eq:render-directional-mean}
@@ -337,6 +337,7 @@ This separates two distinct reasons for uncertainty: weak contribution along
 the ray and poor coverage of the requested viewing direction.
 
 \subsection{Kernel choice and fitting}
+\label{sec:kernel-choice}
 
 The kernel defines which scene functions are plausible between samples. We
 evaluate an RBF kernel, which assumes very smooth variation, and a
@@ -373,6 +374,7 @@ unfamiliar viewpoints.
 \end{figure*}
 
 \section{Experiments}
+\label{sec:experiments}
 
 We test the two effects that \method{} is designed to measure: incomplete
 spatial coverage, from the number of primitives available to represent a
@@ -435,6 +437,134 @@ variance $0.82 \to 8.54 \to 22.12 \to 59.45 \to 78.85$ (Figure~\ref{fig:coverage
 \section{Conclusion}
 
 
+
+\appendix
+
+Two further experiments, run after the headline spatial- and directional-
+coverage results above, on questions this project has not yet resolved
+into a paper-level claim: whether the BQ posterior can inform training
+itself, not just diagnose a finished checkpoint (\S\ref{app:likelihood}),
+and whether kernel choice matters for this method's two central real-data
+properties (\S\ref{app:kernels}). Both are reported here for completeness,
+at the same standard of honesty as the main results, rather than folded
+into the main claims.
+
+\subsection{Training directly under the likelihood}
+\label{app:likelihood}
+
+Every result in Section~\ref{sec:experiments} computes BQ posterior
+variance \emph{after} training, off a checkpoint fit by ordinary
+photometric loss and view-space-gradient-triggered densification. We test
+whether the posterior can instead inform training itself, via two
+mechanisms already exposed by our trainer: (i) swapping the densification
+trigger from gsplat's view-space positional gradient to closed-form BQ
+position-only variance, queried at each splat's own position, optionally
+floored by opacity so near-transparent, effectively empty splats cannot
+outscore splats near real, under-resolved geometry; and (ii) an
+uncertainty-weighted Gaussian-NLL auxiliary loss term evaluated on a sparse
+grid of real ray-surface points.
+
+We train five matched variants on a real 12-view lego training pool (same
+seed and hyperparameters throughout: 2{,}000 initial splats, an
+8{,}000-splat budget, 3{,}000 iterations, SSIM-weighted photometric loss,
+BQ hyperparameters fit at lego's scale), and evaluate each on both its
+training views and a disjoint 15-view subsample of the official held-out
+test split. Table~\ref{tab:likelihood} reports the result.
+
+\begin{table}[t]
+\centering
+\caption{Training directly under the BQ likelihood: matched variants on a
+real 12-view lego checkpoint, evaluated on training and held-out views.}
+\label{tab:likelihood}
+\small
+\begin{tabular}{lrrr}
+\toprule
+Variant & Splats & Train PSNR & Held-out PSNR \\
+\midrule
+Baseline (gradient densify)          & 3{,}108 & 26.65\,dB & 17.48\,dB \\
+BQ-variance densify                  & 3{,}333 & 27.48\,dB & 17.78\,dB \\
+NLL loss (gradient densify)          & 3{,}095 & 26.51\,dB & 17.27\,dB \\
+BQ-variance densify + NLL            & 3{,}339 & 27.51\,dB & 17.77\,dB \\
+BQ-variance densify + opacity floor  & 1{,}181 & 24.94\,dB & 17.64\,dB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+BQ-variance densification is a real, if modest, held-out win over
+gradient-triggered densification ($+0.29\,$dB), consistent whether or not
+the NLL term is also active. The NLL auxiliary loss term alone is a
+no-op-to-mild-negative ($-0.21\,$dB held-out) at this loss weight and grid
+resolution/cadence, plausibly because its variance term does not
+differentiate through the BQ posterior itself in this first installment.
+Flooring the BQ-variance densification score by opacity is a genuine
+efficiency lever rather than a quality tax: $62\%$ fewer splats than
+baseline at no held-out PSNR cost. We read this as encouraging but
+preliminary: a single scene and iteration budget, not yet a general
+training-time claim.
+
+\subsection{Alternative kernels}
+\label{app:kernels}
+
+\S\ref{sec:kernel-choice} keeps the position kernel pluggable; the main
+results use RBF. We add a third family, a rational quadratic kernel
+$k(r) = \left(1 + r^2/(2\alpha l^2)\right)^{-\alpha}$ with $\alpha$ fixed
+at $1$ (a continuous scale mixture of RBF bandwidths, plausible for scenes
+whose splat density -- and hence natural local length scale -- varies
+across the object) and length scale $l$ as its one free parameter, fit by
+the same marginal-likelihood procedure as RBF's $\sigma$ and Mat\'ern's
+$\rho$. We compare RBF, Mat\'ern-3/2, and rational quadratic, each fit
+fresh against real local windows of the same lego scene at two very
+different splat densities (a $300$k-splat checkpoint and a $500$-splat
+one), on two properties: whether posterior variance tracks real local
+splat sparsity (distance to the $8$th-nearest real neighbor, at $150$ real
+splat positions per checkpoint), and whether it is calibrated against real
+held-out rendering error (up to $480$ depth-unprojected query points per
+checkpoint from held-out views, scored by correlation and by a
+Gaussian-NLL-style proper scoring rule, lower is better).
+
+\begin{table*}[t]
+\centering
+\caption{Kernel-family comparison at fitted bandwidths, on a dense
+($300$k-splat) and a sparse ($500$-splat) checkpoint of the same lego
+scene. Sparsity $r$ is between posterior variance and distance to the
+$8$th-nearest real neighbor (a working signal is positive); ``ratio''
+normalizes variance by its own prior (amplitude-independent) variance.
+Calibration $r$/mean NLL are against real held-out rendering error.}
+\label{tab:kernels}
+\small
+\begin{tabular}{llrrrrr}
+\toprule
+Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
+\midrule
+Dense (300k)  & RBF                & $\sigma=0.0703$ & $-0.306$ & $-0.291$          & $+0.120$ & $9.80$ \\
+Dense (300k)  & Mat\'ern-3/2       & $\rho=0.0186$   & $-0.441$ & $-0.019$          & $+0.062$ & $1878.0$ \\
+Dense (300k)  & Rational quadratic & $l=0.0067$      & $-0.458$ & $\mathbf{+0.191}$ & $+0.064$ & $6062.0$ \\
+Sparse (500)  & RBF                & $\sigma=0.0988$ & $+0.766$ & $+0.811$          & $-0.055$ & $\mathbf{0.08}$ \\
+Sparse (500)  & Mat\'ern-3/2       & $\rho=0.0406$   & $+0.783$ & $+0.916$          & $-0.112$ & $87.8$ \\
+Sparse (500)  & Rational quadratic & $l=0.0238$      & $+0.783$ & $\mathbf{+0.921}$ & $-0.112$ & $85.4$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+No single family dominates every metric or checkpoint (Table~\ref{tab:kernels}).
+RBF is far better calibrated by the Gaussian-NLL score on both checkpoints
+(roughly $200\times$ and $1000\times$ lower than Mat\'ern/rational
+quadratic on the dense and sparse checkpoint respectively): the other two
+families' marginal-likelihood fits land on tighter bandwidths that fit
+local color smoothness well but produce overconfident (too-small) variance
+at real held-out points, which is punished heavily by the $1/\text{var}$
+term whenever real held-out error is non-trivial. On raw posterior
+variance, the sparsity signal has the expected sign on the sparse
+checkpoint for every family, but the \emph{wrong} sign for every family on
+the dense one -- traced to the local-neighbor cap saturating almost
+universally at that density, so raw variance there tracks local opacity
+more than splat count. Once read via the amplitude-normalized ratio
+instead, rational quadratic is the only family with the correct sign on
+the dense checkpoint and the strongest correlation on the sparse one. We
+read this as a genuine trade-off rather than a resolved choice: RBF where a
+well-behaved, non-catastrophic variance estimate matters most (e.g.\ any
+NLL-style loss, including \S\ref{app:likelihood}'s), rational quadratic
+where sparsity/coverage-tracking is the goal.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

@@ -54,6 +54,17 @@ regression — in `gs_experiment/results/FINDINGS.md`, with the concrete
 next untested step named explicitly rather than left as a vague "needs
 more work."
 
+**Status**: done, first installment — see `gs_experiment/results/FINDINGS.md`
+section 1. Mixed, honest result on the lego `narrow` (12-view) pool at
+matched splat budget: `bq_variance` densification is a real but modest win
+(+0.83dB train / +0.29dB held-out PSNR vs. gradient densification), the
+`nll_weight` auxiliary loss term alone is a no-op-to-mild-negative
+(-0.14dB / -0.21dB), and `bq_densify_min_opacity` is a genuine efficiency
+lever (62% fewer splats, no held-out quality cost). Next untested step:
+differentiate the NLL term's variance through the BQ posterior itself
+(currently detached) rather than iterating further on the auxiliary-loss
+weighting as-is.
+
 ## 2. Alternative kernels
 
 `gs_experiment/kernels.py` currently has two families — `RBFKernel` and
@@ -87,6 +98,16 @@ which kernel families are actually worth offering and what each one buys.
    (already true via `pixel_uncertainty.LocalUncertaintyEngine` and
    `splat_scene.fit_kernel_hyperparams`) — this is a strength of the
    method, not a loose end to resolve into one hardcoded default.
+
+**Status**: done — see `gs_experiment/results/FINDINGS.md` section 2. Added
+`RationalQuadraticKernel` (alpha fixed at 1.0) and ran the ablation on the
+real `wide`/`budget_500` lego checkpoints. Genuine trade-off, no single
+winner: RBF is dramatically better calibrated (Gaussian-NLL score, both
+checkpoints), while RationalQuadratic gives the best sparsity-tracking
+signal once read as the amplitude-normalized `variance/prior_variance`
+ratio (raw variance on the dense `wide` checkpoint turned out confounded
+by local opacity, not real density, at the `max_neighbors` cap in use).
+Matern-3/2 did not win outright on any metric/checkpoint.
 
 ## 3. Floater-flagging follow-up experiment
 

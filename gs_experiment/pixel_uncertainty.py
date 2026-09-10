@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 
-from gs_experiment.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel, RationalQuadraticKernel
 from gs_experiment.quadrature import BQResult, bayesian_quadrature_rendering_aware, bayesian_quadrature_rendering_aware_directional
 from gs_experiment.render_weight import GaussianRenderWeight
 from gs_experiment.camera import CameraPose, project_point_to_pixel, viewmat_from_camera_pose
@@ -47,6 +47,18 @@ def make_default_3d_matern_kernel(rho: float) -> ProductKernel:
     general.
     """
     return ProductKernel([MaternKernel(rho=rho), MaternKernel(rho=rho), MaternKernel(rho=rho)])
+
+
+def make_default_3d_rational_quadratic_kernel(l: float) -> ProductKernel:
+    """RationalQuadratic analogue of make_default_3d_position_kernel/
+    make_default_3d_matern_kernel, for ROADMAP.md item 2's kernel-family
+    ablation (gs_experiment/kernel_family_ablation.py,
+    gs_experiment/results/FINDINGS.md). `l` plays the same "bandwidth" role
+    sigma/rho do for RBF/Matern -- alpha (the scale-mixture shape) is fixed
+    inside RationalQuadraticKernel itself, so this stays a single-scalar
+    family like its siblings.
+    """
+    return ProductKernel([RationalQuadraticKernel(l=l), RationalQuadraticKernel(l=l), RationalQuadraticKernel(l=l)])
 
 
 def quat_scale_to_covariance(quats: np.ndarray, scales: np.ndarray) -> np.ndarray:

@@ -6,7 +6,7 @@ Each kernel provides:
   - vv(a, b):   double integral of k(x, y) dx dy over [a, b] x [a, b]
 
 `v` is given in closed form where cheap (RBF) or by 1D numerical
-integration otherwise (Matern). `vv` is always obtained by integrating `v`
+integration otherwise (Matern, RationalQuadratic). `vv` is always obtained by integrating `v`
 numerically over [a, b] — this avoids trusting a hand-derived double-integral
 antiderivative (the original models/nerf.py RBF formulas take that riskier
 route, and this repo's git history already records a "double quad" bug from
@@ -155,6 +155,71 @@ class DirectionalKernel:
         w_prime = np.atleast_2d(np.asarray(w_prime, dtype=float))
         dot = w @ w_prime.T
         return np.exp(self.kappa * (dot - 1.0))
+
+
+class RationalQuadraticKernel(Kernel):
+    """Rational quadratic kernel: k(r) = (1 + r^2 / (2*alpha*l^2))^(-alpha).
+
+    Standard GP-literature form (Rasmussen & Williams, GPML section 4.2.1):
+    an equal-weighted, continuous scale mixture of RBF kernels with
+    different lengthscales, integrated against a Gamma(alpha, ...) mixing
+    distribution over the inverse squared lengthscale. Concretely, as
+    alpha -> infinity this kernel converges to the plain RBF kernel with
+    lengthscale `l` (the mixture concentrates on a single lengthscale), and
+    for finite alpha it behaves like an RBF whose local bandwidth varies
+    smoothly across scale -- a plausible fit for a scene like this
+    project's lego checkpoint, whose splat density (and hence the natural
+    local lengthscale) varies a lot between the sparse background and the
+    densely-packed mechanical part, unlike RBF/Matern which each commit to
+    one single bandwidth everywhere.
+
+    `alpha` is fixed to a stated constant rather than exposed as a second
+    free parameter, for the same reason `MaternKernel` fixes its smoothness
+    at 3/2: `hyperparams.fit_kernel_param[_pooled_nd]` fits exactly one
+    scalar via `kernel_factory: Callable[[float], Kernel]`, so any new
+    family needs exactly one free knob to plug into that machinery
+    unchanged. alpha=1.0 is used here (a comparatively heavy-tailed choice
+    -- k(r) decays as 1/r^2 rather than RBF's exp(-r^2), so a small number
+    of far-away points can still pull on the posterior a bit -- rather than
+    a large alpha that would make this numerically redundant with
+    `RBFKernel`); `l` (the lengthscale) is the single free parameter fit
+    the same way sigma/rho are.
+
+    Positive semidefinite for any alpha > 0, l > 0 -- a standard result
+    (GPML section 4.2.1: it is literally an infinite mixture, with positive
+    mixing weights, of PD RBF kernels of varying lengthscale, and a
+    nonnegative mixture of PD kernels is PD).
+
+    `v`/`vv` have no closed form (unlike RBF) -- same `scipy.integrate.quad`
+    treatment as `MaternKernel`, including the `breakpoints` trick (this
+    kernel is smooth everywhere, unlike Matern-3/2's kink at r=0, but the
+    breakpoint still helps QUADPACK localize the integrand's peak when it
+    falls strictly inside [a, b]).
+    """
+
+    name = "rational_quadratic"
+
+    def __init__(self, l: float, alpha: float = 1.0):
+        self.l = float(l)
+        self.alpha = float(alpha)
+
+    def k(self, x, y):
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        r2 = (x - y) ** 2
+        return (1.0 + r2 / (2.0 * self.alpha * self.l**2)) ** (-self.alpha)
+
+    def v(self, x, a, b):
+        x_arr = np.atleast_1d(np.asarray(x, dtype=float))
+        out = np.empty_like(x_arr)
+        for i, xi in enumerate(x_arr):
+            breakpoints = [xi] if a < xi < b else None
+            out[i], _ = integrate.quad(lambda t, xi=xi: float(self.k(xi, t)), a, b, points=breakpoints)
+        return out if out.shape[0] > 1 else out[0]
+
+    def vv(self, a, b):
+        val, _ = integrate.quad(lambda y: float(self.v(y, a, b)), a, b)
+        return val
 
 
 class MaternKernel(Kernel):
