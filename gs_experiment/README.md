@@ -12,8 +12,6 @@ math/geometry modules (`kernels.py`, `quadrature.py`, `render_weight.py`,
 `spherical_harmonics.py`) run on `numpy`/`scipy` alone and are covered by
 the main test suite (`pytest tests/`).
 
-**Results**: see [`results/FINDINGS.md`](results/FINDINGS.md) for the
-current-conclusions summary (real scenes first).
 
 ## Core library modules
 
@@ -108,20 +106,10 @@ current-conclusions summary (real scenes first).
   real photographed datasets like Mip-NeRF360 ship), for scenes where
   poses are an SfM *estimate*, not exactly known.
 - **`train_minimal_gsplat.py`** — a minimal from-scratch `gsplat` trainer
-  with real gradient-triggered densification (`train`), the reference
-  strategy variant (`train_with_reference_strategy`), and an
-  `--nll-experiment` mode: training directly under the BQ likelihood, as
-  a loss term and as a densification trigger — a real negative result,
-  kept in (`results/FINDINGS.md` §4). `DEFAULT_TRAIN_KWARGS` is this
-  project's standard NeRF-Synthetic recipe (30k iterations, densify
-  500->15k, white background -- see its docstring for why the background
-  color specifically matters) used to train every scene's `wide/`
-  checkpoint and every splat-budget variant of it.
 
 ## Entry-point tools
 
-These are the tools that actually produce this project's current results
-(see `results/FINDINGS.md`) — one file per figure, reusing
+These are the tools that actually produce this project's current results — one file per figure, reusing
 `render_reconstruction.py`'s shared `render_views`/`compute_uncertainty_maps`
 (no CLI of its own) rather than duplicating rendering logic per script.
 

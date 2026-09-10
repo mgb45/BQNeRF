@@ -1,0 +1,27 @@
+{
+    "files.watcherExclude": {
+        "**/.venv-gsplat/**": true,
+        "**/.venv/**": true,
+        "**/gs_experiment/local_runs/**": true,
+        "**/__pycache__/**": true,
+        "**/.git/objects/**": true
+    },
+    "search.exclude": {
+        "**/.venv-gsplat": true,
+        "**/.venv": true,
+        "**/gs_experiment/local_runs": true,
+        "**/__pycache__": true
+    },
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.venv-gsplat": true,
+        "**/.venv": true,
+        "**/gs_experiment/local_runs": true
+    },
+    "python.analysis.exclude": [
+        "**/.venv-gsplat/**",
+        "**/.venv/**",
+        "**/gs_experiment/local_runs/**"
+    ],
+    "pylint.enabled": false
+}
