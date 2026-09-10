@@ -19,7 +19,12 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from gs_experiment.kernels import DirectionalKernel, MaternKernel, ProductKernel, RBFKernel, RationalQuadraticKernel
-from gs_experiment.quadrature import BQResult, bayesian_quadrature_rendering_aware, bayesian_quadrature_rendering_aware_directional
+from gs_experiment.quadrature import (
+    BQResult,
+    bayesian_quadrature_rendering_aware,
+    bayesian_quadrature_rendering_aware_directional,
+    rendering_aware_alternative_weight_risk,
+)
 from gs_experiment.render_weight import GaussianRenderWeight
 from gs_experiment.camera import CameraPose, project_point_to_pixel, viewmat_from_camera_pose
 from gs_experiment.visibility_attribution import CameraSplatIndex, project_to_camera_local, ray_transmittance_weights
@@ -92,6 +97,24 @@ def quat_scale_to_covariance(quats: np.ndarray, scales: np.ndarray) -> np.ndarra
     rotation[:, 2, 2] = 1 - 2 * (x**2 + y**2)
     scales_sq = scales**2  # (N, 3)
     return np.einsum("nik,nk,njk->nij", rotation, scales_sq, rotation)
+
+
+@dataclass
+class RenderingAwareAlphaRisk:
+    """`LocalUncertaintyEngine.rendering_aware_alpha_risk_along_ray`'s
+    result: the usual BQ-optimal (`mean`, `variance`) pair alongside the
+    real local alpha-compositing quadrature rule's own (`alpha_mean`,
+    `alpha_risk`) under the identical kernel/z/K/z0 geometry -- see that
+    method's docstring and `gs_experiment.quadrature.
+    rendering_aware_alternative_weight_risk` for what each quantity means
+    and why pairing them this way (rather than `variance` with a mean it
+    was never computed for) is the point.
+    """
+
+    mean: float
+    variance: float
+    alpha_mean: float
+    alpha_risk: float
 
 
 @dataclass
@@ -304,10 +327,57 @@ class LocalUncertaintyEngine:
         """
         query_point = np.asarray(query_point, dtype=float)
         sigma_rbf = self._require_rbf_sigma("rendering_aware_variance_along_ray", sigma_rbf)
-        idx, local_positions, local_values, render_weight = self._along_ray_local_data(
+        idx, local_positions, local_values, render_weight, _alpha_weights = self._along_ray_local_data(
             query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates
         )
         return bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+
+    def rendering_aware_alpha_risk_along_ray(
+        self,
+        query_point: np.ndarray,
+        camera_index: CameraSplatIndex,
+        radius: float,
+        exclude_idx: Optional[int] = None,
+        angular_tol: float = 0.05,
+        max_candidates: int = 500,
+        sigma_rbf: Optional[float] = None,
+    ) -> "RenderingAwareAlphaRisk":
+        """`rendering_aware_variance_along_ray`'s calibration-methodology
+        companion: reports the *real* local alpha-compositing quadrature
+        rule's own predicted value and RKHS worst-case risk under the exact
+        same kernel/z/K/z0 geometry, alongside the usual BQ-optimal
+        mean/variance -- instead of only ever pairing the BQ variance with
+        a mean (real alpha compositing) it was never computed for, which is
+        what every other rendering_aware_variance* method's caller has done
+        so far (see FINDINGS.md's calibration-methodology addendum).
+
+        Reuses `_along_ray_local_data`'s own real, already-computed
+        `w_i = T_i * alpha_i` weights (previously computed there only to be
+        moment-matched into a smooth envelope and then discarded) as the
+        literal alternative weight vector `rendering_aware_alternative_
+        weight_risk` needs -- no new occlusion/transmittance modeling, just
+        no longer throwing away a quantity already being computed.
+
+        `alpha_mean`/`alpha_risk` are local to this call's own candidate
+        window (`radius`/`angular_tol`/`max_candidates`), so `alpha_mean`
+        is *not* guaranteed to bit-match a full scene renderer's actual
+        per-pixel output (which sees every splat along the ray, not just
+        this window's candidates) -- compare against a real rendered pixel
+        value directly if that gap matters for a given use, don't assume
+        equality.
+        """
+        query_point = np.asarray(query_point, dtype=float)
+        sigma_rbf = self._require_rbf_sigma("rendering_aware_alpha_risk_along_ray", sigma_rbf)
+        idx, local_positions, local_values, render_weight, alpha_weights = self._along_ray_local_data(
+            query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates
+        )
+        bq_result = bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+        alpha_mean, alpha_risk = rendering_aware_alternative_weight_risk(
+            local_positions, local_values, render_weight, alpha_weights, sigma_rbf=sigma_rbf
+        )
+        return RenderingAwareAlphaRisk(
+            mean=bq_result.mean, variance=bq_result.variance, alpha_mean=alpha_mean, alpha_risk=alpha_risk,
+        )
 
     def rendering_aware_variance_along_ray_directional(
         self,
@@ -344,7 +414,7 @@ class LocalUncertaintyEngine:
             raise ValueError("directions/dir_kernel not set on this engine -- construct with both to use this method")
         query_point = np.asarray(query_point, dtype=float)
         sigma_rbf = self._require_rbf_sigma("rendering_aware_variance_along_ray_directional", sigma_rbf)
-        idx, local_positions, local_values, render_weight = self._along_ray_local_data(
+        idx, local_positions, local_values, render_weight, _alpha_weights = self._along_ray_local_data(
             query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates, query_direction=query_direction
         )
         local_directions = self.directions[idx]
@@ -409,7 +479,7 @@ class LocalUncertaintyEngine:
         render_weight = self._render_weight_from_local_weights(
             local_positions, weights, query_point, radius, d, local_covariances=local_covariances
         )
-        return idx, local_positions, local_values, render_weight
+        return idx, local_positions, local_values, render_weight, weights
 
     @staticmethod
     def _render_weight_from_local_weights(

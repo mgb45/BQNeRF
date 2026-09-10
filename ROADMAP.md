@@ -140,6 +140,24 @@ the standard NeRF-Synthetic scenes already used elsewhere in this
 project. Reuse whatever calibration metric gets built for item 2's kernel
 ablation rather than writing a second, separate metric.
 
+**Status update**: item 2's calibration metric (and every number in
+`paper/main.tex`'s Tables II-VIII) turned out to rest on an incoherent
+pairing — `u_BQ` (the variance around the BQ posterior mean `C_BQ`)
+scored against the squared error of a *different* quantity, the real
+alpha-compositing renderer's `C_alpha`. See
+`gs_experiment/results/FINDINGS.md` section 3 for the fix (a proper RKHS
+risk formulation, `rendering_aware_alternative_weight_risk`, applied to
+5 coherent mean/uncertainty pairings across all 7 scenes × 2 checkpoints)
+and its result: none of the real (non-null-baseline) variants beat a
+trivial constant-variance model on Gaussian NLL, but pairing the real
+`C_alpha` with `R_alpha = u_BQ + (C_BQ-C_alpha)^2` (variant 3) is
+measurably more robust and better-calibrated (coverage sense) than the
+existing practice, and `C_BQ` itself does not render well enough (Phase
+B: ~1.6dB PSNR behind real alpha compositing on average, ~50% of its raw
+predictions out of `[0,1]` range, ~49% negative BQ weights) to replace
+alpha compositing as the deployed mean. Tables II-VIII have NOT yet been
+updated to reflect this — that edit needs review with the user first.
+
 ## 5. Next-best-view selection evaluation
 
 README lists this as Todo. Use posterior variance to pick the next

@@ -310,6 +310,74 @@ def renderer_centered_residual_variance(
     return max(variance, 0.0)
 
 
+def rendering_aware_alternative_weight_risk(
+    nodes,
+    values,
+    render_weight,
+    weights,
+    sigma_rbf: float | None = None,
+    base_kernel: ProductKernel | None = None,
+    domain=None,
+    rel_jitter: float = 1e-4,
+    mode: str = "closed_form",
+) -> tuple[float, float]:
+    """Formulation 3 ("BQ risk of an arbitrary quadrature rule"): evaluates
+    *any* real, literal weight vector `weights` (aligned 1:1 with `nodes`)
+    as an estimator of the same rendering functional
+    `L_q[f] = integral a_q(x) f(x) p(x) dx` that
+    `bayesian_quadrature_rendering_aware` computes the BQ-*optimal* estimator
+    for -- most usefully, the real alpha-compositing weights
+    `w_i = T_i * alpha_i` from
+    `gs_experiment.visibility_attribution.ray_transmittance_weights`, so the
+    actual renderer's own quadrature rule can be scored under the same
+    kernel/RKHS this project's posterior variance is built from, instead of
+    silently pairing that variance with a mean it was never computed for
+    (`C_alpha` from a totally different renderer) -- see
+    ROADMAP.md/FINDINGS.md's calibration-methodology follow-up for why this
+    matters and how it's used.
+
+    This is the general RKHS worst-case-squared-error quadratic form for
+    *any* linear estimator `Q_w[f] = sum_i w_i f(x_i)`:
+
+        e(w)^2 = z_0 - 2 w^T z + w^T K w
+
+    (the classical Bayes-Hermite/kernel-quadrature result -- see e.g. the
+    derivation this project's retired `bq_splat/PROOF_alpha_compositing_
+    equivalence.md` gives in ray-depth-domain notation, Theorem B, connected
+    here to this module's actual `z`/`kxx`/`z0` code paths). It is uniquely
+    minimized at the BQ-optimal weights `w* = K^-1 z`
+    (`bayesian_quadrature_rendering_aware`'s own weights), where it reduces
+    exactly to that function's reported `variance` -- confirmed directly by
+    `tests/gs_experiment/test_quadrature.py`'s
+    `test_alternative_weight_risk_reduces_to_bq_variance_at_bq_weights` test,
+    not just asserted. Any other real weight vector -- in particular, one
+    that actually gets *used* to render (alpha compositing) rather than
+    chosen to minimize this quantity -- gives a valid but generically
+    *larger* worst-case error: this is the quantitative sense in which "how
+    good is the alpha-compositing rule itself, under this same posterior" is
+    a well-posed, directly comparable question, not a category error.
+
+    Returns `(mean, risk)`: `mean = weights @ values` (the estimator's own
+    predicted value, e.g. a real, locally-windowed alpha-compositing color
+    estimate -- generally *not* bit-identical to a full scene renderer's
+    actual per-pixel output, since it only sees this call's local `nodes`,
+    not every splat along the real ray/footprint; report both if that gap
+    matters), `risk = max(e(w)^2, 0)` (clamped against small negative
+    values from floating-point cancellation, same convention as this
+    module's other variance-like returns).
+    """
+    values = np.asarray(values, dtype=float).reshape(-1)
+    weights = np.asarray(weights, dtype=float).reshape(-1)
+    _, kxx, z, z0 = _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter)
+
+    mean = float(weights @ values) if weights.shape[0] == values.shape[0] and values.shape[0] > 0 else 0.0
+    if kxx is None:
+        return mean, max(z0, 0.0)
+
+    risk = float(z0 - 2.0 * (weights @ z) + weights @ kxx @ weights)
+    return mean, max(risk, 0.0)
+
+
 def bayesian_quadrature_rendering_aware_directional(
     positions,
     directions,

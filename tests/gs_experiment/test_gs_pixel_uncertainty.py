@@ -202,6 +202,25 @@ def test_rendering_aware_variance_along_ray_partial_occluder_lets_some_target_we
     assert partial_result.mean > fully_opaque_result.mean
 
 
+def test_rendering_aware_alpha_risk_along_ray_matches_alpha_compositing_on_the_occluder_scene():
+    """The real local alpha-compositing estimate (`alpha_mean`) on this
+    exact scene should itself land on the occluder's color -- it's the
+    literal w_i=T_i*alpha_i weighted sum, i.e. real alpha compositing
+    itself, not a GP posterior mean approximating it -- and its risk
+    (`alpha_risk`) must be >= the BQ-optimal `variance` (Bayes-Hermite
+    optimality: no other real weight vector can score lower)."""
+    engine, camera, occluder_color, target_color = build_occluder_engine(occluder_opacity=1.0)
+    camera_index = engine.build_bearing_index(camera)
+    query_point = np.array([3.5, 0.0, 0.0])
+
+    result = engine.rendering_aware_alpha_risk_along_ray(query_point, camera_index, radius=3.0)
+
+    assert abs(result.alpha_mean - occluder_color) < 1e-9
+    assert result.alpha_risk >= result.variance - 1e-9
+    assert np.isfinite(result.mean) and np.isfinite(result.alpha_mean)
+    assert result.variance >= 0.0 and result.alpha_risk >= 0.0
+
+
 def test_rendering_aware_variance_along_ray_falls_back_gracefully_when_nothing_is_on_ray():
     """A splat that's nearby in plain 3D distance but far off to the side
     of this specific ray (a_q is identically 0 for it) should make the

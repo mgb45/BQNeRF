@@ -377,3 +377,242 @@ Scripts/data: same `gs_experiment/kernel_family_ablation.py`, run with no
 `gs_experiment/results/kernel_family_ablation_results.json`; checkpoints
 at `gs_experiment/local_runs/<scene>_prepared/{wide,budget_500,eval}` for
 each of the 7 scenes (all gitignored, pre-existing).
+
+## 3. Calibration-methodology correction: pairing u_BQ with the mean it was actually computed for
+
+**Question**: every calibration number reported so far (section 2/2b
+above, `paper/main.tex`'s Appendix Tables II-VIII) computes the BQ
+posterior variance `u_BQ` around the BQ posterior mean `C_BQ`, then scores
+it against the squared error of a *different* quantity: `C_alpha`, the
+real gsplat alpha-compositing renderer's actual output. `u_BQ` was never
+computed as a variance around `C_alpha` — pairing `N(C_alpha, u_BQ)` and
+implicitly calling that "the BQ posterior" (what every existing table
+does) is not a coherent probabilistic statement, regardless of how it
+happens to score. This is a real, independently plausible explanation for
+why calibration correlation has stayed weak/sign-inconsistent everywhere
+in sections 2/2b despite `u_BQ` clearly tracking *something* real
+(sparsity, directional coverage).
+
+**Method**: `gs_experiment.quadrature.rendering_aware_alternative_weight_risk`
+(the general RKHS worst-case-squared-error quadratic form `e(w)^2 = z0 -
+2w@z + w@K@w` for *any* real weight vector, reducing exactly to the BQ
+posterior variance at the BQ-optimal `w*=K^-1 z` and never smaller for any
+other real weight vector — proven in
+`tests/gs_experiment/test_render_weight.py`) and
+`pixel_uncertainty.LocalUncertaintyEngine.rendering_aware_alpha_risk_along_ray`
+(which applies it to the real `w_i=T_i*alpha_i` alpha-compositing
+transmittance weights already computed by
+`visibility_attribution.ray_transmittance_weights`) make five
+mean/uncertainty pairings directly comparable at the same query points,
+under the same kernel:
+
+1. **existing post-hoc** (what sections 2/2b and Tables II-VIII actually
+   compute, unlabeled as such): mean=`C_alpha` (real), var=`u_BQ`
+2. **coherent BQ renderer**: mean=`C_BQ`, var=`u_BQ` (the pairing `u_BQ`
+   was actually derived for)
+3. **BQ risk of the alpha renderer**: mean=`C_alpha` (real),
+   var=`R_alpha = u_BQ + (C_BQ - C_alpha)^2` (the posterior expected
+   squared error of the real renderer's output, treating `C_BQ` as the
+   model's best estimate and `u_BQ` as remaining uncertainty around it)
+4. **constant baseline** (sanity-check null model): mean=`C_alpha` (real),
+   var=one global constant per checkpoint (MLE = mean squared error over
+   that checkpoint's own query points)
+5. **alpha's own local quadrature risk**: mean=`C_alpha_local` (a
+   real alpha-compositing estimate, but from this call's local candidate
+   window only — not guaranteed to bit-match the full-scene renderer's
+   `C_alpha`), var=`alpha_risk` (that same estimator's own RKHS risk,
+   `e_alpha^2`) — "how good is the renderer's own quadrature rule, under
+   this same kernel," no borrowed mean at all
+
+Phase A (mandatory, all 7 scenes × 2 checkpoints — `chair`, `drums`,
+`ficus`, `hotdog`, `lego`, `mic`, `ship`, each at `wide`/`budget_500`,
+reusing `kernel_family_ablation.py`'s `SCENES`/`CHECKPOINTS`/`EVAL_DIRS`/
+`fit_all_families` verbatim, RBF kernel only since the along-ray path
+requires it): 480 real held-out query points per checkpoint (6 views ×
+up to 80 points, same convention as `kernel_family_ablation.calibration_metrics`),
+scoring Gaussian NLL, Pearson/Spearman correlation, empirical 1σ/2σ
+coverage, sharpness (mean variance), and an AUSE-style risk-coverage area
+for all 5 variants. Phase B (image-level, scoped down for tractability to
+`lego` + `chair`/`hotdog`/`ficus`, 2 held-out views each, `wide`
+checkpoint only): reconstructs a 112×42 grayscale image from `C_BQ` at
+every valid pixel and reports PSNR/SSIM against a same-resolution real
+alpha-compositing render, plus the fraction of raw (pre-clip) `C_BQ`
+values outside `[0,1]` and the fraction of negative BQ posterior weights
+(`w*=K^-1 z` entries).
+
+**A real bug found and fixed while building Phase B**: `render_views`
+defaults to a dark `(0.05,0.05,0.05)` background, while this dataset's
+real ground truth has a white background (confirmed directly: GT corner
+pixels are exactly `[1,1,1]`, the renderer's own corner pixels are
+exactly `[0.05,0.05,0.05]`). This never touched Phase A or any earlier
+section's numbers (all of them only ever sample points inside the
+valid/foreground mask), but a naive whole-frame Phase B PSNR/SSIM is
+almost entirely a measurement of that orthogonal background-color
+default (confirmed: ~1-3dB PSNR for *both* variants before the fix, since
+60-90% of a frame at this resolution is background) rather than of
+reconstruction quality. Fixed by neutralizing background/invalid pixels
+to GT's own value in both compared images before scoring, so neither
+reconstruction is scored on the background at all.
+
+**Phase A results — aggregated across all 14 scene/checkpoint combinations**:
+
+| variant | NLL (median) | NLL (mean) | pearson (median) | spearman (median) | cov 1σ (mean) | cov 2σ (mean) | sharpness (median) | AUSE (mean) |
+|---|---|---|---|---|---|---|---|---|
+| 1. existing post-hoc | 4.498 | 20.885 | -0.017 | -0.171 | 0.778 | 0.861 | 0.836 | 0.210 |
+| 2. coherent BQ renderer | 14.369 | 48.276 | +0.034 | -0.161 | 0.313 | 0.519 | 0.836 | 1.467 |
+| 3. BQ risk for alpha renderer | 0.702 | 1.070 | -0.036 | -0.144 | 0.888 | 0.949 | 2.788 | 0.212 |
+| 4. constant baseline | -0.392 | -0.337 | n/a (constant) | n/a (constant) | 0.729 | 0.928 | 0.168 | 0.179 |
+| 5. alpha's own quadrature risk | 1.694 | 2.385 | -0.104 | -0.152 | 0.707 | 0.881 | 7.559 | 0.992 |
+
+(n=480 query points per checkpoint, 14 checkpoints; lower is better for
+NLL and AUSE; cov 1σ/2σ closer to the nominal 0.68/0.95 is better, not
+simply "higher"; variant 4's correlation is undefined by construction —
+its variance is a single constant per checkpoint, reported as n/a, not a
+crash or a silently-recorded garbage value.)
+
+**Win counts** (best variant per checkpoint, out of 14): NLL — variant 4
+wins all **14/14**; every one of variants 1/2/3/5 is beaten by the
+trivial constant-variance null model on every single checkpoint. AUSE —
+variant 4 wins 9/14, variant 3 wins 3/14, variant 1 wins 2/14, variants 2
+and 5 win 0/14. Head-to-head, variant 3 beats variant 1 on NLL in 9/14
+checkpoints and on AUSE in 6/14. Correlation sign is inconsistent for
+every non-null variant across checkpoints (variant 1: 7 positive/7
+negative; variant 2: 8/6; variant 3: 5/9; variant 5: 2/12 — variant 5 is
+mostly *negative*-signed).
+
+**Per-checkpoint NLL, variants 1/2/3/4/5** (representative full spread,
+not just an aggregate):
+
+| scene | checkpoint | v1 (existing) | v2 (coherent BQ) | v3 (R_alpha) | v4 (constant) | v5 (alpha risk) |
+|---|---|---|---|---|---|---|
+| chair | wide | 29.953 | 66.591 | 1.079 | -0.469 | 2.458 |
+| chair | budget_500 | 0.271 | 1.833 | 0.448 | -0.417 | 1.201 |
+| drums | wide | 21.857 | 54.339 | 2.984 | -0.072 | 2.441 |
+| drums | budget_500 | 1.414 | 6.951 | 0.446 | -0.253 | 1.295 |
+| ficus | wide | 10.975 | 14.598 | 1.543 | -0.045 | 1.144 |
+| ficus | budget_500 | 0.137 | 14.141 | 0.750 | -0.163 | 3.076 |
+| hotdog | wide | 163.163 | 304.455 | 1.612 | -0.534 | 4.545 |
+| hotdog | budget_500 | -0.089 | 2.244 | 0.197 | -0.459 | 0.876 |
+| lego | wide | 38.632 | 128.426 | 2.415 | -0.368 | 5.633 |
+| lego | budget_500 | 0.457 | 5.217 | 0.653 | -0.465 | 1.307 |
+| mic | wide | 17.681 | 24.363 | 1.791 | 0.057 | 1.649 |
+| mic | budget_500 | 0.597 | 6.150 | 0.560 | -0.028 | 1.739 |
+| ship | wide | 7.582 | 43.134 | 0.259 | -0.584 | 5.124 |
+| ship | budget_500 | -0.232 | 3.421 | 0.240 | -0.920 | 0.902 |
+
+Variant 3's biggest wins over variant 1 are exactly where variant 1 is
+most catastrophic — the dense `wide` checkpoints, where a small `u_BQ`
+paired with a large real `C_alpha` error blows up the NLL's `1/var` term
+(`hotdog`/`wide`: 163.2 → 1.6; `lego`/`wide`: 38.6 → 2.4). On the sparse
+`budget_500` checkpoints, where variant 1 is already reasonably well-
+behaved, variant 3 is sometimes worse (e.g. `ficus`/`budget_500`: 0.137 →
+0.750) — the fix trades away some already-decent small-NLL cases for
+robustness against the large ones.
+
+**Phase B — image-level reconstruction quality and failure-mode diagnostics**:
+
+| scene | view | n valid px | PSNR C_BQ | PSNR alpha | SSIM C_BQ | SSIM alpha | frac. C_BQ out-of-range | frac. negative BQ weights |
+|---|---|---|---|---|---|---|---|---|
+| chair | 0 | 1199 | 9.01 dB | 11.70 dB | 0.487 | 0.583 | 0.439 | 0.484 |
+| chair | 5 | 1326 | 8.70 dB | 11.95 dB | 0.426 | 0.600 | 0.391 | 0.480 |
+| ficus | 0 | 991 | 9.21 dB | 8.08 dB | 0.473 | 0.369 | 0.639 | 0.510 |
+| ficus | 5 | 896 | 8.82 dB | 8.82 dB | 0.432 | 0.354 | 0.622 | 0.515 |
+| hotdog | 0 | 1243 | 9.40 dB | 11.80 dB | 0.484 | 0.638 | 0.593 | 0.480 |
+| hotdog | 5 | 1545 | 10.49 dB | 13.01 dB | 0.505 | 0.693 | 0.270 | 0.473 |
+| lego | 0 | 1261 | 9.46 dB | 11.02 dB | 0.467 | 0.602 | 0.809 | 0.491 |
+| lego | 5 | 1819 | 9.75 dB | 11.59 dB | 0.526 | 0.655 | 0.695 | 0.485 |
+| **mean** | | | **9.36 dB** | **11.00 dB** | **0.475** | **0.562** | **0.557** | **0.490** |
+
+`C_BQ` renders competitively but consistently a bit behind the real
+renderer on 3 of 4 scenes (chair, hotdog, lego: ~1.5-2.7dB PSNR gap, ~0.1
+SSIM gap) — not degenerate, but not an improvement either. On `ficus`
+(thin/fine structure), `C_BQ` actually *ties or beats* the real renderer
+(9.21 vs 8.08dB on view 0, exactly tied at 8.82dB on view 5) — the real
+renderer itself does worse there at this resolution, and `C_BQ`'s local
+GP smoothing doesn't lose any further ground on fine structure the way it
+might have been expected to.
+
+The two failure-mode diagnostics are the most decisive finding here, and
+they are **not rare**: averaged over all 8 Phase-B views, 55.7% of raw
+(pre-clip) `C_BQ` predictions fall outside `[0,1]`, and 49.0% of BQ-
+optimal weight entries (`w*=K^-1 z`) are negative. These sit close to
+half of all cases, at every scene checked (39-81% out-of-range, 47-52%
+negative-weight) — not a tail-case rounding artifact, and not something
+this experiment can responsibly report as "rare/negligible."
+
+**Honest reading, structured around the decisive-experiment framing this
+was set up to test**:
+
+- Regardless of which way the numbers came out, it is worth restating
+  plainly: pairing `N(C_alpha, u_BQ)` and calling it "the BQ posterior" —
+  implicitly what Tables II-VIII currently do — is not a coherent
+  probabilistic statement. `u_BQ` was derived as the variance around
+  `C_BQ`, never around `C_alpha`.
+- `C_BQ` does **not** render competitively enough, and has a substantial,
+  non-negligible rate of both out-of-range predictions (~56%) and
+  negative BQ weights (~49%), to be positioned as a full probabilistic
+  renderer replacing alpha compositing. Variant 2 (the "coherent" `C_BQ`
+  +`u_BQ` pairing) is also the worst-performing variant on every metric
+  here — dramatically worse NLL than even variant 1, and badly
+  overconfident coverage (31% of points fall within 1σ against a nominal
+  68%) — a direct consequence of `C_BQ` itself being a poor predictor of
+  real held-out color on `wide` checkpoints in particular, not something
+  `u_BQ`'s magnitude was ever sized to cover.
+- None of variants 1/2/3/5 beat a trivial single-constant null model on
+  Gaussian NLL, on *any* of the 14 checkpoints. Read plainly, real
+  per-point calibration signal in the strict proper-scoring-rule sense is
+  weak-to-absent for all of them at this query-point granularity — this
+  methodology fix does not, by itself, resolve the weak/sign-inconsistent
+  correlation problem sections 2/2b already found; correlation stays weak
+  and sign-inconsistent for every non-null variant here too.
+- That said, variant 3 (`R_alpha`, paired with the real `C_alpha`) is
+  clearly the most defensible of the three "real" variants: it beats
+  variant 1 on NLL in a majority of checkpoints (9/14) and on AUSE in a
+  plurality (6/14 vs. variant 1's 2/14), achieves the best empirical
+  coverage of any non-null variant (cov 1σ=0.888, cov 2σ=0.949 — errs
+  conservative/over-covering, the safer failure direction for a risk
+  bound), and specifically fixes variant 1's worst catastrophic-NLL cases
+  on dense checkpoints without requiring `C_BQ` to be a good renderer in
+  its own right.
+- Variant 5 (alpha's own local quadrature risk, no borrowed `C_BQ` mean
+  at all) does not improve on variant 3 — worse median NLL (1.694 vs.
+  0.702), worse mean AUSE (0.992 vs. 0.212), and a mostly negative
+  correlation sign (12/14 checkpoints) — so "the renderer's own
+  quadrature risk, standalone" is not a better answer than `R_alpha` here.
+- **Net conclusion, following the user's own framing**: this comes out on
+  the "keep alpha compositing as the renderer" side. `C_BQ` should not
+  replace alpha compositing as the deployed mean (Phase B's quality gap
+  plus the ~50% out-of-range/negative-weight rates are concrete, not
+  cosmetic, reasons). The right fix for Tables II-VIII is not to switch
+  to variant 2, but to replace `u_BQ` alone with `R_alpha` (variant 3) as
+  the principled post-hoc reliability measure paired with the real,
+  deployed `C_alpha` — coherent by construction (it is the literal RKHS
+  risk of the real alpha-compositing estimator under this project's own
+  posterior), measurably more robust against catastrophic NLL blowups,
+  and better-calibrated in the coverage sense than the current practice,
+  even though — like every variant tested — it still does not beat a
+  trivial constant-variance baseline outright.
+
+**Concrete next untested step**: variant 3's remaining NLL losses on
+`budget_500` checkpoints (where variant 1 was already reasonably behaved)
+suggest `R_alpha`'s `(C_BQ-C_alpha)^2` bias term may be adding more
+inflation than needed when `C_alpha` is already well-resolved (sparse,
+well-supported regions) — worth checking whether a version that only
+adds this term when `C_BQ` and `C_alpha` disagree beyond some
+uncertainty-aware threshold (rather than unconditionally) recovers more
+of variant 1's sparse-checkpoint behavior while keeping variant 3's
+dense-checkpoint robustness.
+
+Scripts/data: `gs_experiment/rendering_aware_calibration_experiment.py`
+(Phase A/B driver, reuses `kernel_family_ablation.py`'s
+`SCENES`/`CHECKPOINTS`/`EVAL_DIRS`/`fit_all_families`/`_render_and_unproject`
+verbatim); full per-scene/per-checkpoint/per-variant numeric results
+(including every raw per-point record, not just the aggregated metrics
+above) in `gs_experiment/results/rendering_aware_calibration_results.json`;
+checkpoints/eval views at
+`gs_experiment/local_runs/<scene>_prepared/{wide,budget_500,eval}` for
+all 7 scenes (all gitignored, pre-existing). Core math (unmodified,
+already unit-tested this session): `gs_experiment.quadrature.
+rendering_aware_alternative_weight_risk`,
+`gs_experiment.pixel_uncertainty.LocalUncertaintyEngine.
+rendering_aware_alpha_risk_along_ray`.

@@ -9,6 +9,7 @@ from gs_experiment.quadrature import (
     numerical_rendering_moment_vector,
     numerical_rendering_prior_variance,
     renderer_centered_residual_variance,
+    rendering_aware_alternative_weight_risk,
     rendering_aware_moment_vector,
     rendering_aware_prior_variance,
 )
@@ -209,6 +210,52 @@ def test_renderer_centered_variance_matches_formulation_one_variance():
     residual_variance = renderer_centered_residual_variance(nodes, w, sigma_rbf=sigma_rbf)
 
     assert abs(result.variance - residual_variance) < 1e-9
+
+
+def test_alternative_weight_risk_reduces_to_bq_variance_at_bq_weights():
+    """rendering_aware_alternative_weight_risk's e(w)^2 = z0 - 2 w@z + w@K@w
+    is the general RKHS worst-case-error quadratic form for *any* real
+    weight vector w; at the BQ-optimal weights w* = K^-1 z it must reduce
+    exactly to bayesian_quadrature_rendering_aware's own reported mean and
+    variance -- the correctness check this project's calibration-methodology
+    follow-up (ROADMAP.md/FINDINGS.md) leans on before trusting the formula
+    for a genuinely different weight vector (e.g. real alpha-compositing
+    weights)."""
+    w = GaussianRenderWeight(amplitude=0.8, center=[0.3], covariance=[[0.1]])
+    nodes = np.array([[0.05], [0.2], [0.5], [0.8]])
+    values = np.array([1.0, 0.7, 0.3, 0.9])
+    sigma_rbf = 0.2
+
+    result = bayesian_quadrature_rendering_aware(nodes, values, w, sigma_rbf=sigma_rbf)
+
+    from gs_experiment.quadrature import _rendering_aware_moments
+
+    _, kxx, z, _ = _rendering_aware_moments(nodes, w, sigma_rbf, None, None, "closed_form", 1e-4)
+    w_bq = np.linalg.solve(kxx, z)
+
+    mean, risk = rendering_aware_alternative_weight_risk(nodes, values, w, w_bq, sigma_rbf=sigma_rbf)
+    assert abs(mean - result.mean) < 1e-9
+    assert abs(risk - result.variance) < 1e-9
+
+
+def test_alternative_weight_risk_is_never_smaller_than_bq_variance():
+    """w* = K^-1 z uniquely minimizes e(w)^2 (the classical Bayes-Hermite
+    optimality result) -- any other real, nonnegative weight vector, in
+    particular one chosen for a different reason than minimizing this
+    quantity (e.g. real alpha-compositing transmittance weights), must give
+    an equal-or-larger worst-case error, never smaller."""
+    w = GaussianRenderWeight(amplitude=1.0, center=[0.4], covariance=[[0.12]])
+    nodes = np.array([[0.1], [0.3], [0.6], [0.9]])
+    values = np.array([0.9, 0.4, 0.6, 0.2])
+    sigma_rbf = 0.25
+
+    result = bayesian_quadrature_rendering_aware(nodes, values, w, sigma_rbf=sigma_rbf)
+
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        alt_weights = rng.uniform(0.0, 1.0, size=len(nodes))
+        _, risk = rendering_aware_alternative_weight_risk(nodes, values, w, alt_weights, sigma_rbf=sigma_rbf)
+        assert risk >= result.variance - 1e-9
 
 
 def test_rendering_aware_with_zero_nodes_returns_prior():
