@@ -64,8 +64,8 @@ def test_engine_builds_and_local_neighbors_returns_indices_within_radius():
 def test_exclude_idx_removes_self_from_a_ball_query_centered_on_it():
     """Querying at a real splat's own position always finds that splat at
     distance 0 -- exclude_idx must filter it out, the basis for a
-    leave-one-out calibration check (gs_experiment/scripts/evaluate_checkpoint.py calibration)
-    not trivially seeing its own held-out answer."""
+    leave-one-out calibration check not trivially seeing its own held-out
+    answer."""
     engine, _ = build_engine()
     self_idx = 7
     q = engine.positions[self_idx]

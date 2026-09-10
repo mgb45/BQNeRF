@@ -183,6 +183,80 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
     return positions_flat, directions_flat, values_flat
 
 
+# Two independent, additive costs make up load_from_gsplat_checkpoint's/
+# splat_observations' host RSS, both measured directly (not estimated) against
+# real checkpoints from this project's own local_runs/lego_prepared/ -- one at
+# 1,000,000 splats, one at 3,000,000 (the exact checkpoint a --budgets 3000000
+# run of splat_budget_uncertainty_sweep.py produced right before OOM-killing the
+# host, repeatedly, on a 30GB machine):
+#
+#   n_splats=1,000,000, cap=20  -> 19,683,660 rows: attribution baseline
+#       2757 MiB, +2467 MiB after row-expansion (125.4 bytes/row marginal).
+#   n_splats=3,000,000, cap=20  -> 59,168,609 rows: attribution baseline
+#       7007 MiB, +6948 MiB after row-expansion (123.1 bytes/row marginal).
+#
+# The row-expansion cost is what `max_observations_per_splat` (above, in
+# load_from_gsplat_checkpoint) caps; the attribution-baseline cost (reading the
+# checkpoint + gpu_visibility_attribution's per-camera index lists -- scales
+# with n_splats, not rows) is NOT bounded by that cap, and at 3M splats alone
+# it's already ~7GB -- larger than the whole memory budget below. That's the
+# actual failure mode a row-only guard misses: a budget whose *row* count fits
+# under a cap can still have an unrelated, unbounded *baseline* cost that
+# doesn't. Fit as a line through the two measured points above (both terms, in
+# bytes):
+_ATTRIBUTION_FIXED_OVERHEAD_BYTES = 700 * 1024 * 1024  # process/import/checkpoint-read floor
+_ATTRIBUTION_BYTES_PER_SPLAT = 2200  # measured ~2125 B/splat marginal; rounded up for margin
+_BYTES_PER_OBSERVATION_ROW = 140  # measured ~123-125 B/row; rounded up for margin
+
+# Target ceiling for ONE load_from_gsplat_checkpoint + splat_observations call.
+# compute_uncertainty_maps calls this path once per (checkpoint, sigma) pair, so
+# a caller scoring the same checkpoint at both a fixed and a refit sigma pays
+# this twice in one process -- keep it well under a small machine's free RAM
+# (not just under it) to leave room for both calls plus normal desktop load and
+# matplotlib/render buffers. Lower this further on a smaller machine; raise it
+# only after remeasuring against a real checkpoint at the new budget, not by
+# just guessing a bigger number.
+PER_CALL_MEMORY_BUDGET_BYTES = 5 * 1024**3
+MIN_OBSERVATIONS_PER_SPLAT = 8  # floor -- below this the directional kernel sees too few real
+# observations per splat for its per-camera fit to mean much, regardless of memory pressure.
+
+
+def _attribution_baseline_bytes(n_splats: int) -> int:
+    return _ATTRIBUTION_FIXED_OVERHEAD_BYTES + _ATTRIBUTION_BYTES_PER_SPLAT * n_splats
+
+
+def max_observations_per_splat_for_budget(budget: int, n_training_views: int = 100) -> Optional[int]:
+    """None (no cap) whenever `n_training_views` itself already bounds
+    per-splat observation count below what PER_CALL_MEMORY_BUDGET_BYTES
+    allows -- keeps small budgets byte-for-byte reproducible rather than
+    introducing subsampling noise where it isn't needed.
+
+    Raises ValueError if `budget`'s attribution baseline alone (before a
+    single observation row is added) already exceeds the memory budget --
+    that budget can't be made safe by capping rows at all, regardless of
+    how low; refuse rather than silently under-cap it (see the module-level
+    comment above for why a row-only guard misses exactly this case).
+    """
+    baseline = _attribution_baseline_bytes(budget)
+    if baseline >= PER_CALL_MEMORY_BUDGET_BYTES:
+        raise ValueError(
+            f"budget={budget:,}: attribution alone costs an estimated {baseline / 1024**3:.1f}GB, "
+            f"already at or over PER_CALL_MEMORY_BUDGET_BYTES={PER_CALL_MEMORY_BUDGET_BYTES / 1024**3:.1f}GB "
+            f"-- no observation cap can make this budget safe. This is the exact shape of budget that "
+            f"OOM-killed the host repeatedly before this guard existed; lower the budget rather than bypass this."
+        )
+    remaining = PER_CALL_MEMORY_BUDGET_BYTES - baseline
+    max_rows = remaining // _BYTES_PER_OBSERVATION_ROW
+    cap = max(MIN_OBSERVATIONS_PER_SPLAT, max_rows // budget)
+    if cap * budget * _BYTES_PER_OBSERVATION_ROW > remaining and cap == MIN_OBSERVATIONS_PER_SPLAT:
+        raise ValueError(
+            f"budget={budget:,}: even the MIN_OBSERVATIONS_PER_SPLAT={MIN_OBSERVATIONS_PER_SPLAT} floor "
+            f"would exceed the remaining {remaining / 1024**3:.1f}GB after attribution's "
+            f"{baseline / 1024**3:.1f}GB baseline -- refuse rather than exceed PER_CALL_MEMORY_BUDGET_BYTES."
+        )
+    return None if cap >= n_training_views else cap
+
+
 def fit_kernel_hyperparams(
     scene: SplatScene,
     sigma_bounds=(0.005, 1.0),
@@ -198,15 +272,17 @@ def fit_kernel_hyperparams(
     the directional kernel's concentration (kappa) against THIS scene's own real
     data, instead of reusing a value pooled once across a different calibration
     set (gs_experiment.hyperparams.fit_kernel_param_pooled_nd -- the same
-    procedure fit_hyperparameters.py already validates for sigma, and the same
-    procedure the project's original pooled kappa fit used, applied per-scene
-    here instead of pooled across a fixed set of checkpoints). Exists because a
-    bandwidth tuned at one checkpoint's splat density/coverage has no reason to
-    be right for a checkpoint at a very different density (confirmed directly:
-    a 300k-splat-tuned sigma is a real bandwidth mismatch at 500 splats -- see
-    splat_budget_uncertainty_sweep.py's fixed-vs-refit-sigma comparison, which
-    this generalizes to kappa and to every caller of compute_uncertainty_maps,
-    not just that one sweep).
+    procedure a held-out check once validated for sigma against a real
+    checkpoint's own local windows, and the same procedure the project's
+    original pooled kappa fit used, applied per-scene here instead of pooled
+    across a fixed set of checkpoints; see git history for both). Exists
+    because a bandwidth tuned at one checkpoint's splat density/coverage has no
+    reason to be right for a checkpoint at a very different density (confirmed
+    directly: a 300k-splat-tuned sigma is a real bandwidth mismatch at 500
+    splats -- an earlier, retired sweep script first demonstrated this with an
+    explicit fixed-vs-refit-sigma comparison for sigma alone; this generalizes
+    that to kappa and to every caller of compute_uncertainty_maps, not just
+    one sweep).
 
     Sigma comes from local (position, color) windows: `n_windows` splats above
     `min_opacity` are sampled as window centers, each paired with its neighbors
@@ -400,7 +476,8 @@ def load_from_gsplat_checkpoint(
     directly that these alone caused an 8x collapse in real per-splat
     camera attribution on an otherwise-identical, floater-free checkpoint
     of the same scene. Pass e.g. 0.1 (already this project's convention
-    elsewhere, see fit_hyperparameters.py) for real-checkpoint use.
+    elsewhere, see fit_kernel_hyperparams' own min_opacity default) for
+    real-checkpoint use.
 
     `max_observations_per_splat`: caps each splat's `observed_camera_idx`
     at this many cameras (uniform random subsample without replacement,

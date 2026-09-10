@@ -438,8 +438,8 @@ def subsample_observed_camera_idx(observed_camera_idx: list, max_per_splat: int,
     (confirmed on a real 3M-splat/100-view checkpoint: ~167M rows uncapped,
     ~59M rows even at cap=20, measured at ~14GB resident for that one call
     -- OOM-killed the host repeatedly at that budget; see
-    `scripts/splat_budget_uncertainty_sweep.py`'s `PER_CALL_MEMORY_BUDGET_BYTES`
-    comment). Unlike that module's per-camera *construction* chunking,
+    `splat_scene.py`'s `PER_CALL_MEMORY_BUDGET_BYTES` comment). Unlike
+    `gpu_visibility_attribution`'s per-camera *construction* chunking,
     capping observation count per splat actually bounds the resulting
     steady-state row count (<= `n_splats * max_per_splat`, independent of
     real camera-coverage density) rather than just smoothing a transient

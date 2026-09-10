@@ -210,9 +210,9 @@ def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: flo
 
 
 def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -> np.ndarray:
-    """Same construction as gs_experiment/render_directional_uncertainty_sweep.py's
-    function of the same name (not imported from there to avoid a
-    matplotlib/PIL import chain inside the training hot path): depth (H, W)
+    """Same construction as gs_experiment/scripts/render_reconstruction.py's
+    function of the same name (duplicated rather than imported, to avoid this
+    training hot path depending on a rendering/plotting script): depth (H, W)
     in OpenCV camera space -> (H, W, 3) world-space points, the real
     ray-surface hit for every pixel of a low-res depth pass."""
     h, w = depth.shape
@@ -417,6 +417,24 @@ def densify_and_prune(
     )
 
 
+# This project's standard NeRF-Synthetic recipe: publication-scale 3DGS budget
+# (Kerbl et al. 2023's own schedule -- 30k iterations, densify 500->15k every 100
+# steps, ~100x position LR decay), used to train every scene's "wide" checkpoint
+# and (with max_splats overridden) every splat-budget variant of it.
+# background_color=(1,1,1) matters most: omit it and train() silently falls back
+# to its dark (0.05,0.05,0.05) default while prepare_nerf_synthetic.py composites
+# every image onto white -- a real background mismatch, not a subtle one.
+# Confirmed directly: every checkpoint trained without this override measured
+# 11-23dB held-out PSNR with up to 12.5% floaters; every scene retrained with it
+# measures 25-42dB with ~0% floaters (see FINDINGS.md).
+DEFAULT_TRAIN_KWARGS = dict(
+    n_splats=5000, bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)), sh_degree=3, n_iters=30000, seed=0,
+    init_scale=0.05, opacity_reg_weight=0.01, densify=True, densify_interval=100, densify_start=500,
+    densify_end=15000, max_splats=300000, log_every=2000, position_lr_final=2e-5,
+    background_color=(1.0, 1.0, 1.0),
+)
+
+
 def train(
     scene_dir: str,
     out_path: str,
@@ -486,9 +504,9 @@ def train(
       Gaussian-NLL auxiliary loss term every `nll_interval` iterations,
       `0.5 * ((pred-gt)^2 / var + log(var))` averaged over a sparse
       `nll_grid_res` x `nll_grid_res` grid of REAL ray-surface points
-      (gsplat's own expected-depth output, unprojected -- same
-      construction as `render_directional_uncertainty_sweep.py`, not an
-      approximation of pixel positions), `var` the real closed-form BQ position-only
+      (gsplat's own expected-depth output, unprojected via this module's own
+      `unproject_depth_grid`, not an approximation of pixel positions), `var`
+      the real closed-form BQ position-only
       variance at each of those points. Honest scope note: `var` is
       computed via `LocalUncertaintyEngine` (pure numpy/scipy) from a
       detached snapshot of the current splat state and is *not* itself

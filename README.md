@@ -112,11 +112,11 @@ python -m pytest tests/ -v
 That runs everything that doesn't need a GPU. For the real experiments,
 set up `gsplat` (see [`requirements-gsplat.txt`](requirements-gsplat.txt)
 for a from-scratch setup, including a couple of real CUDA/compiler
-gotchas already solved there) and, for example, run the
-sparsity-correlation check against a real checkpoint:
+gotchas already solved there) and, for example, build the cross-scene
+uncertainty gallery against already-trained checkpoints:
 
 ```
-.venv-gsplat/bin/python gs_experiment/scripts/evaluate_checkpoint.py sparsity <path/to/splats.ply>
+.venv-gsplat/bin/python gs_experiment/scripts/render_scene_gallery.py
 ```
 
 `gs_experiment/README.md` has the full list of tools, what each one

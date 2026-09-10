@@ -9,9 +9,9 @@ query point/direction per condition, plotted as a line graph -- retired,
 see git history). This renders the actual per-pixel picture instead:
 pick the one held-out eval view closest to the gap center (so it's
 genuinely inside every condition's gap, most severely in the widest one),
-and for each condition show ground truth, reconstruction, |error|, and
-position+direction BQ variance side by side -- so a reader can see, by eye,
-both the reconstruction degrading and BQ's own uncertainty growing in
+and for each condition show ground truth, reconstruction, |error|, and raw
+position+direction BQ posterior variance side by side -- so a reader can see,
+by eye, both the reconstruction degrading and BQ's own uncertainty growing in
 exactly the same missing-coverage region as the gap widens, without having
 to trust a single summary number.
 
@@ -38,6 +38,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 
 from gs_experiment.nerf_transforms import load_transforms
 from gs_experiment.scripts.real_directional_coverage_experiment import (
@@ -48,9 +49,15 @@ from gs_experiment.scripts.real_directional_coverage_experiment import (
     LEGO_GAP_WINDOW_RADIUS,
     REFERENCE_IDX,
 )
-from gs_experiment.scripts.render_reconstruction import RESULTS_DIR, compute_uncertainty_maps, render_views
+from gs_experiment.scripts.render_reconstruction import (
+    RAW_VARIANCE_VMAX,
+    RAW_VARIANCE_VMIN,
+    RESULTS_DIR,
+    compute_uncertainty_maps,
+    render_views,
+)
 
-DEPTH_RES = 64  # square, matching NeRF-Synthetic's square images (see run_synthetic_pipeline.py)
+DEPTH_RES = 64  # square, matching NeRF-Synthetic's square images
 
 
 def pick_gap_query_view(prepared_dir: str, condition_prefix: str):
@@ -106,33 +113,31 @@ def build_columns(
         maps = compute_uncertainty_maps(
             zone_eval_dir, [query_idx], eval_frames, camera_angle_x, width, height, checkpoint,
             checkpoint_dir=zone_dir, sigma=sigma, kappa=kappa, window_radius=window_radius,
-            depth_width=depth_res, depth_height=depth_res,
+            depth_width=depth_res, depth_height=depth_res, return_raw_variance=True,
         )
-        _, dir_map = maps[0]
+        _, _, raw_map = maps[0]
         err = np.abs(gt - recon).mean(axis=-1)
         psnr = -10.0 * np.log10(max(float(np.mean((gt - recon) ** 2)), 1e-10))
         print(
             f"gap {hw:.0f} deg: {len(train_frames)} train views, query-view PSNR {psnr:.2f}dB, "
-            f"uncertainty ratio mean={np.nanmean(dir_map):.4f} median={np.nanmedian(dir_map):.4f} "
-            f"p95={np.nanpercentile(dir_map, 95):.4f} max={np.nanmax(dir_map):.4f}"
+            f"posterior variance mean={np.nanmean(raw_map):.4f} median={np.nanmedian(raw_map):.4f} "
+            f"p95={np.nanpercentile(raw_map, 95):.4f} max={np.nanmax(raw_map):.4f}"
         )
 
         columns.append(dict(
             gap_deg=hw, n_train_views=len(train_frames), psnr=psnr,
-            gt=gt, recon=recon, err=err, dir_map=dir_map,
+            gt=gt, recon=recon, err=err, raw_map=raw_map,
         ))
     return columns
 
 
 def plot_coverage_sweep(columns, out_path):
     n = len(columns)
-    # A shared color scale across the pixel-map columns is correct here (unlike the
-    # cross-scene gallery) -- these are the same checkpoint family at the same view, so
-    # absolute BQ-variance magnitude is directly comparable condition to condition. But
-    # the mean shift across conditions turns out to be real and monotonic-ish yet modest
-    # (~30-40%, see the printed per-condition stats) against a much larger pixel-to-pixel
-    # spatial range within any single condition -- easy to miss by eye against a shared
-    # scale. A 5th row makes the trend explicit as numbers, not just color.
+    # A shared color scale across the pixel-map columns is correct here (unlike a
+    # per-panel autoscale) -- these are the same checkpoint family at the same view, so
+    # absolute BQ-variance magnitude is directly comparable condition to condition. Uses
+    # the same fixed log scale (render_reconstruction.RAW_VARIANCE_VMIN/VMAX) every other
+    # figure showing raw posterior variance uses, so this is comparable across figures too.
     fig = plt.figure(figsize=(3 * n, 15.5))
     gs = fig.add_gridspec(5, n, height_ratios=[3, 3, 3, 3, 2])
     axes = np.array([[fig.add_subplot(gs[r, c]) for c in range(n)] for r in range(4)])
@@ -142,20 +147,16 @@ def plot_coverage_sweep(columns, out_path):
     cmap = plt.get_cmap("inferno").copy()
     cmap.set_bad(color=(0.4, 0.4, 0.4))
 
-    # dir_map is variance/prior_variance in [0,1] (see compute_uncertainty_maps' docstring).
-    # A fixed [0,1] scale, not a per-column percentile, matches render_scene_gallery.py and
-    # is what actually lets the mean-value labels below mean something on sight, rather than
-    # a colorbar that autoscales to whatever this specific sweep's own range happens to be.
     for col, c in enumerate(columns):
-        mean_ratio = float(np.nanmean(c["dir_map"]))
+        mean_var = float(np.nanmean(c["raw_map"]))
         axes[0, col].imshow(c["gt"])
         axes[0, col].set_title(f"gap ±{c['gap_deg']:.0f}°\n{c['n_train_views']} train views, {c['psnr']:.1f}dB")
         axes[1, col].imshow(c["recon"])
         im_err = axes[2, col].imshow(c["err"], cmap="inferno", vmin=0, vmax=err_vmax)
         fig.colorbar(im_err, ax=axes[2, col], fraction=0.046, pad=0.04)
-        im_dir = axes[3, col].imshow(c["dir_map"], cmap=cmap, vmin=0, vmax=1)
-        fig.colorbar(im_dir, ax=axes[3, col], fraction=0.046, pad=0.04)
-        axes[3, col].set_xlabel(f"mean ratio={mean_ratio:.3f}", fontsize=9)
+        im_raw = axes[3, col].imshow(c["raw_map"], cmap=cmap, norm=LogNorm(vmin=RAW_VARIANCE_VMIN, vmax=RAW_VARIANCE_VMAX))
+        fig.colorbar(im_raw, ax=axes[3, col], fraction=0.046, pad=0.04)
+        axes[3, col].set_xlabel(f"mean variance={mean_var:.3f}", fontsize=9)
         for ax in axes[:, col]:
             ax.set_xticks([])
             ax.set_yticks([])
@@ -163,26 +164,20 @@ def plot_coverage_sweep(columns, out_path):
     axes[0, 0].set_ylabel("ground truth\n(held-out view)", fontsize=10)
     axes[1, 0].set_ylabel("gsplat\nreconstruction", fontsize=10)
     axes[2, 0].set_ylabel("|error|\n(mean over RGB)", fontsize=10)
-    axes[3, 0].set_ylabel("uncertainty ratio\n(variance / prior variance)", fontsize=10)
+    axes[3, 0].set_ylabel("posterior variance\n(unnormalized)", fontsize=10)
 
     gap_degs = [c["gap_deg"] for c in columns]
-    mean_ratios = [float(np.nanmean(c["dir_map"])) for c in columns]
-    median_ratios = [float(np.nanmedian(c["dir_map"])) for c in columns]
-    trend_ax.plot(gap_degs, mean_ratios, "o-", color="tab:red", label="mean")
-    trend_ax.plot(gap_degs, median_ratios, "s--", color="tab:orange", label="median")
+    mean_vars = [float(np.nanmean(c["raw_map"])) for c in columns]
+    median_vars = [float(np.nanmedian(c["raw_map"])) for c in columns]
+    trend_ax.plot(gap_degs, mean_vars, "o-", color="tab:red", label="mean")
+    trend_ax.plot(gap_degs, median_vars, "s--", color="tab:orange", label="median")
     trend_ax.set_xlabel("gap half-width (deg)")
-    trend_ax.set_ylabel("uncertainty ratio\n(variance / prior variance, averaged over the whole held-out view)")
-    trend_ax.set_ylim(0, 1)
-    trend_ax.set_title("same numbers as the row above, averaged over every pixel per condition")
+    trend_ax.set_ylabel("posterior variance\n(averaged over the whole held-out view)")
+    trend_ax.set_yscale("log")
     trend_ax.legend()
     trend_ax.grid(alpha=0.3)
 
-    fig.suptitle(
-        "Lego: same held-out view, decreasing training-view coverage (left→right) --\n"
-        "reconstruction degrades and BQ directional uncertainty grows together in the missing-coverage region",
-        fontsize=13,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved {out_path}")

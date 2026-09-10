@@ -1,24 +1,21 @@
-"""Render ground-truth vs. gsplat-reconstruction comparisons for a
-trained checkpoint (gs_experiment.scripts.train_minimal_gsplat's output), plus
-error maps and (by default) real per-pixel BQ uncertainty maps -- so a
-reader can see, side by side on the exact same held-out/test views used
-to judge quality, both where the reconstruction is actually wrong and
-where BQ itself expects to be uncertain (ROADMAP.md item 2: "render it
-and look, before reaching for statistics"). Uncertainty is computed the
-same way as render_directional_uncertainty_sweep.py's per-pixel field
-(real depth-unprojection via gsplat's own "ED" output, real closed-form
-BQ position-only and position+direction variance at each ray-surface
-hit) rather than approximated, so a bad-quality view and a
-low-confidence view can be told apart on sight rather than conflated.
+"""Shared rendering/uncertainty library: renders ground-truth vs. gsplat
+reconstruction for a trained checkpoint (gs_experiment.scripts.train_minimal_gsplat's
+output) and computes real per-pixel BQ uncertainty on the same views (real
+depth-unprojection via gsplat's own "ED" output, real closed-form BQ position-only
+and position+direction variance at each ray-surface hit, not approximated) --
+so a bad-quality view and a low-confidence view can be told apart on sight
+rather than conflated (ROADMAP.md item 2: "render it and look, before reaching
+for statistics").
+
+No CLI of its own -- render_views/compute_uncertainty_maps are imported by the
+actual figure-generation scripts (render_scene_gallery.py,
+render_coverage_uncertainty_sweep.py, render_splat_sweep_gallery.py).
 
 Needs torch + gsplat (requirements-gsplat.txt).
-
-Run: .venv-gsplat/bin/python gs_experiment/render_reconstruction.py <scene_dir> [--view-indices 0 20 40] [--out <path>] [--no-uncertainty]
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from pathlib import Path
@@ -26,10 +23,6 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image
@@ -47,6 +40,19 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # function's docstring), not arbitrary guesses.
 FALLBACK_SIGMA = 0.0694
 FALLBACK_KAPPA = 0.745
+
+# Shared log-scale color range for raw (unnormalized) posterior variance, used by
+# every figure that plots it (render_scene_gallery.py, render_coverage_uncertainty_sweep.py,
+# render_splat_sweep_gallery.py) so panels are visually comparable across scenes,
+# splat budgets, and figures -- a per-panel autoscale would hide exactly the
+# cross-condition magnitude differences those figures exist to show. Fixed, not
+# computed per-run: covers the empirical range observed across every real
+# checkpoint rendered so far in this project, from ~1e-3 at the best-supported
+# points (300k-splat scene checkpoints) to ~134 at the least-supported (the
+# widest, 51-training-view coverage-gap condition), with headroom on each end
+# rather than clipping to exactly what's been seen so far.
+RAW_VARIANCE_VMIN = 1e-3
+RAW_VARIANCE_VMAX = 2e2
 
 
 def render_views(scene_dir: str, view_indices, checkpoint_dir=None, background_color=(0.05, 0.05, 0.05), device="cuda"):
@@ -95,11 +101,11 @@ def render_views(scene_dir: str, view_indices, checkpoint_dir=None, background_c
 
 
 def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -> np.ndarray:
-    """Same construction as train_minimal_gsplat.py's/render_directional_uncertainty_sweep.py's
-    function of the same name (duplicated rather than imported, matching
-    this project's established convention for this exact helper -- see
-    train_minimal_gsplat.py's module docstring): depth (H, W) in OpenCV
-    camera space -> (H, W, 3) world-space points."""
+    """Same construction as train_minimal_gsplat.py's function of the same
+    name (duplicated rather than imported, so that training doesn't depend on
+    this rendering/plotting script -- see train_minimal_gsplat.py's own
+    docstring on that function): depth (H, W) in OpenCV camera space ->
+    (H, W, 3) world-space points."""
     h, w = depth.shape
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     us, vs = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
@@ -127,9 +133,9 @@ def compute_uncertainty_maps(
     # a 300k-splat-tuned sigma is a real mismatch at 500 splats, not just a
     # theoretical concern). Pass an explicit value to opt back out of fitting,
     # e.g. for exact reproducibility across a sweep or a fixed-vs-fitted
-    # comparison (see splat_budget_uncertainty_sweep.py, which does its own
-    # explicit sigma refit and deliberately reports both side by side rather
-    # than using this default).
+    # comparison (an earlier, retired sweep script did its own explicit sigma
+    # refit and deliberately reported both side by side rather than using
+    # this default; see git history).
     sigma: Optional[float] = None,
     kappa: Optional[float] = None,
     window_radius: float = 1.6,
@@ -142,12 +148,11 @@ def compute_uncertainty_maps(
     return_raw_variance: bool = False,
 ):
     """Real per-pixel BQ uncertainty at every view in `view_indices`, on
-    the exact same checkpoint `render_views` just rendered RGB from --
-    the same depth-unprojection + closed-form-variance construction as
-    render_directional_uncertainty_sweep.py's orbit GIF (real ray-surface
-    hits via gsplat's "ED" render mode, not an approximation), just
-    evaluated at real dataset views instead of a synthetic sweep so it
-    lines up 1:1 with the GT/recon/error columns already being rendered.
+    the exact same checkpoint `render_views` just rendered RGB from -- real
+    depth-unprojection (gsplat's own "ED" render mode, not an approximation)
+    plus a closed-form BQ variance at every resulting ray-surface hit,
+    evaluated at real dataset views so it lines up 1:1 with the GT/recon/error
+    columns already being rendered.
 
     `scene_dir` supplies the views being queried (`frames`); `checkpoint_dir`
     (defaults to `scene_dir`, matching `render_views`) supplies splats.ply
@@ -158,10 +163,9 @@ def compute_uncertainty_maps(
 
     `sigma`/`kappa`: `None` (the default) fits both against this checkpoint's
     own data (see the parameter comment above and splat_scene.fit_kernel_hyperparams);
-    pass explicit values to disable fitting. `window_radius`/`max_neighbors` match
-    render_directional_uncertainty_sweep.py's own defaults, tuned for
-    that script's synthetic-scene convention -- pick values matching the
-    actual scene's spatial scale for a different scene family (see
+    pass explicit values to disable fitting. `window_radius`/`max_neighbors`
+    default to a synthetic-scene scale -- pick values matching the actual
+    scene's spatial scale for a different scene family (see
     train_minimal_gsplat.train's docstring for the same caveat).
 
     Returns a list of (spatial_map, directional_map) aligned with
@@ -203,8 +207,9 @@ def compute_uncertainty_maps(
     scene = load_from_gsplat_checkpoint(
         checkpoint_dir or scene_dir, attribution_angular_tol=attribution_angular_tol, use_gpu_attribution=True,
         # 0.1 matches this project's existing min-opacity convention elsewhere (e.g.
-        # fit_hyperparameters.py) -- excludes GS-training floaters from hard-occluding
-        # real splats during attribution (see load_from_gsplat_checkpoint's docstring).
+        # splat_scene.fit_kernel_hyperparams) -- excludes GS-training floaters from
+        # hard-occluding real splats during attribution (see
+        # load_from_gsplat_checkpoint's docstring).
         attribution_min_opacity=0.1,
         max_observations_per_splat=max_observations_per_splat,
     )
@@ -233,9 +238,7 @@ def compute_uncertainty_maps(
     # deduplicated splat positions for the position-only engine, camera-
     # expanded observation rows for the directional one -- reusing the
     # expanded rows for the position-only query would silently leak
-    # observation-count into a signal meant to be blind to direction (see
-    # render_directional_uncertainty_sweep.py's run_view_projection for
-    # the same distinction).
+    # observation-count into a signal meant to be blind to direction.
     spatial_engine = LocalUncertaintyEngine(
         positions=scene.positions, values=scene.colors, pos_kernel=pos_kernel, scene_bounds=bounds,
         max_neighbors=max_neighbors, opacities=scene.opacities,
@@ -327,116 +330,3 @@ def compute_uncertainty_maps(
 
     return maps
 
-
-def plot_comparisons(results, out_path, title, uncertainty_maps=None):
-    """`uncertainty_maps`, if given, must be aligned 1:1 with `results`
-    (see `compute_uncertainty_maps`) -- adds two more columns (spatial and
-    position+direction BQ variance) so a reader can compare reconstruction
-    error against BQ's own uncertainty on the same views at a glance."""
-    n = len(results)
-    n_cols = 5 if uncertainty_maps is not None else 3
-    fig, axes = plt.subplots(n, n_cols, figsize=(3 * n_cols, 3 * n))
-    if n == 1:
-        axes = axes[None, :]
-
-    if uncertainty_maps is not None:
-        spatial_vmax = np.nanpercentile(np.stack([m[0] for m in uncertainty_maps]), 95)
-        dir_vmax = np.nanpercentile(np.stack([m[1] for m in uncertainty_maps]), 95)
-
-    for row, (i, gt, recon) in enumerate(results):
-        err = np.abs(gt - recon).mean(axis=-1)
-        axes[row, 0].imshow(gt)
-        axes[row, 0].set_title(f"view {i}: ground truth" if row == 0 else "")
-        axes[row, 1].imshow(recon)
-        axes[row, 1].set_title("gsplat reconstruction" if row == 0 else "")
-        im = axes[row, 2].imshow(err, cmap="inferno", vmin=0, vmax=0.3)
-        axes[row, 2].set_title("|error| (mean over RGB)" if row == 0 else "")
-        fig.colorbar(im, ax=axes[row, 2], fraction=0.046, pad=0.04)
-
-        if uncertainty_maps is not None:
-            spatial_map, dir_map = uncertainty_maps[row]
-            cmap = plt.get_cmap("inferno").copy()
-            cmap.set_bad(color=(0.05, 0.05, 0.05))
-            im3 = axes[row, 3].imshow(spatial_map, cmap=cmap, vmin=0, vmax=spatial_vmax)
-            axes[row, 3].set_title("spatial (quadrature) BQ variance" if row == 0 else "")
-            fig.colorbar(im3, ax=axes[row, 3], fraction=0.046, pad=0.04)
-
-            im4 = axes[row, 4].imshow(dir_map, cmap=cmap, vmin=0, vmax=dir_vmax)
-            axes[row, 4].set_title("position+direction BQ variance" if row == 0 else "")
-            fig.colorbar(im4, ax=axes[row, 4], fraction=0.046, pad=0.04)
-
-        for ax in axes[row]:
-            ax.set_xticks([])
-            ax.set_yticks([])
-        axes[row, 0].set_ylabel(f"view {i}", fontsize=9)
-
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"Saved {out_path}")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("scene_dir", help="directory with transforms.json + images -- the views to render")
-    parser.add_argument(
-        "--checkpoint-dir", default=None,
-        help="directory with splats.ply (default: scene_dir). Pass a training split's dir here while "
-        "scene_dir points at a held-out split (e.g. an eval/ built by prepare_nerf_synthetic.py) to "
-        "render genuine held-out-test-image comparisons instead of reconstruction on training views.",
-    )
-    parser.add_argument("--view-indices", type=int, nargs="+", default=None)
-    parser.add_argument("--out", default=None)
-    parser.add_argument(
-        "--background-color", type=float, nargs=3, default=[0.05, 0.05, 0.05],
-        help="must match the background the checkpoint was trained against (e.g. 1 1 1 for NeRF-Synthetic's white)",
-    )
-    parser.add_argument(
-        "--no-uncertainty", action="store_true",
-        help="skip the two BQ uncertainty columns (faster; RGB/error only, the old behavior)",
-    )
-    parser.add_argument("--sigma", type=float, default=0.9, help="position kernel bandwidth; see compute_uncertainty_maps' docstring")
-    parser.add_argument("--kappa", type=float, default=4.0, help="directional kernel concentration")
-    parser.add_argument("--window-radius", type=float, default=1.6)
-    parser.add_argument("--max-neighbors", type=int, default=150)
-    parser.add_argument("--depth-width", type=int, default=112)
-    parser.add_argument("--depth-height", type=int, default=42)
-    args = parser.parse_args()
-
-    camera_angle_x, frames = load_transforms(os.path.join(args.scene_dir, "transforms.json"))
-    n_views = len(frames)
-    view_indices = args.view_indices or sorted(set([0, n_views // 4, n_views // 2, n_views - 1]))
-    view_indices = [i for i in view_indices if 0 <= i < n_views]
-
-    results, checkpoint = render_views(
-        args.scene_dir, view_indices, checkpoint_dir=args.checkpoint_dir, background_color=tuple(args.background_color),
-    )
-
-    psnrs = []
-    for i, gt, recon in results:
-        mse = float(np.mean((gt - recon) ** 2))
-        psnr = -10.0 * np.log10(max(mse, 1e-10))
-        psnrs.append(psnr)
-        print(f"view {i}: PSNR {psnr:.2f}dB")
-    print(f"mean PSNR over shown views: {np.mean(psnrs):.2f}dB  ({checkpoint['positions'].shape[0]} splats)")
-
-    uncertainty_maps = None
-    if not args.no_uncertainty:
-        height, width = results[0][1].shape[:2]
-        uncertainty_maps = compute_uncertainty_maps(
-            args.scene_dir, view_indices, frames, camera_angle_x, width, height, checkpoint,
-            checkpoint_dir=args.checkpoint_dir,
-            sigma=args.sigma, kappa=args.kappa, window_radius=args.window_radius, max_neighbors=args.max_neighbors,
-            depth_width=args.depth_width, depth_height=args.depth_height,
-        )
-
-    out_path = args.out or (RESULTS_DIR / f"reconstruction_{Path(args.scene_dir).name}.png")
-    plot_comparisons(
-        results, out_path, title=f"gsplat reconstruction vs. ground truth ({args.scene_dir})",
-        uncertainty_maps=uncertainty_maps,
-    )
-
-
-if __name__ == "__main__":
-    main()

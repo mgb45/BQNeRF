@@ -112,77 +112,48 @@ current-conclusions summary (real scenes first).
   strategy variant (`train_with_reference_strategy`), and an
   `--nll-experiment` mode: training directly under the BQ likelihood, as
   a loss term and as a densification trigger — a real negative result,
-  kept in (`results/FINDINGS.md` §4).
-- **`fit_hyperparameters.py`** — extends `hyperparams.py`'s
-  marginal-likelihood bandwidth fitting to a real checkpoint's local
-  windows, with a held-out check.
+  kept in (`results/FINDINGS.md` §4). `DEFAULT_TRAIN_KWARGS` is this
+  project's standard NeRF-Synthetic recipe (30k iterations, densify
+  500->15k, white background -- see its docstring for why the background
+  color specifically matters) used to train every scene's `wide/`
+  checkpoint and every splat-budget variant of it.
 
 ## Entry-point tools
 
-These are the general, flag-driven tools that replace what used to be
-many one-off scripts — one file per *kind* of question, not one file per
-run.
+These are the tools that actually produce this project's current results
+(see `results/FINDINGS.md`) — one file per figure, reusing
+`render_reconstruction.py`'s shared `render_views`/`compute_uncertainty_maps`
+(no CLI of its own) rather than duplicating rendering logic per script.
 
 - **`prepare_nerf_synthetic.py`** — downloads/prepares a standard
   NeRF-Synthetic scene (100 real training views + an official held-out
   test split); also builds a "narrow" (angularly clustered) real-view
   subset and graded-spread/gap conditions used by the tools below.
-- **`run_synthetic_pipeline.py --scenes chair,drums,lego,...`** — the
-  one-command version of "train, then render it and look": downloads/
-  prepares/trains each named scene (reusing `evaluate_checkpoint.py`'s
-  multi-scene machinery), checks each against the same held-out-PSNR
-  quality gate as `render_directional_uncertainty_sweep.py`, then plots
-  ground truth / reconstruction / error / BQ uncertainty for a few
-  held-out (never trained-on) example views per scene, one figure per
-  scene under `results/pipeline_<scene>.png`. `--n-examples`,
-  `--sigma`/`--window-radius`, `--min-psnr`/`--force`, and
-  `--skip-download`/`--skip-prepare`/`--skip-train` (to reuse whatever's
-  already on disk) are all exposed.
-- **`render_reconstruction.py`** — renders ground-truth vs. reconstruction
-  comparisons; worth running before trusting any uncertainty number off a
-  new checkpoint (a real past incident: a degenerate, blank reconstruction
-  still reported a deceptively reasonable PSNR — see `FINDINGS.md`).
-- **`render_directional_uncertainty_sweep.py`** — the general entry
-  point for looking at BQ uncertainty on an arbitrary real checkpoint:
-  `--mode directional` (default) renders a per-pixel, per-frame animated
-  sweep showing spatial (quadrature) and directional (epistemic)
-  uncertainty side by side with the reconstruction; `--mode
-  position-only` renders the same sweep without the directional panel;
-  `--mode view-projection` projects real splat positions into specific
-  dataset camera views instead of an orbit. Auto-frames the camera from
-  the checkpoint's own splat extent and refuses to compute anything on a
-  checkpoint that fails a mandatory held-out-PSNR quality gate
-  (`--min-psnr`, `--force` to override). RBF-only for now (`--kernel-
-  family` accepts only `rbf` -- `rendering_aware_variance_via_gsplat`'s
-  closed form doesn't support other base kernels yet). This is the
-  primary way this project validates a new result: render it and look,
-  rather than reach for statistics first (see `ROADMAP.md`).
-- **`evaluate_checkpoint.py {sparsity,calibration,kernel-ablation,
-  wide-vs-narrow,multi-scene}`** — the statistical checks behind
-  `FINDINGS.md` §1-2, §5: does local splat density correlate with BQ
-  variance (`sparsity`); is the variance calibrated via leave-one-out
-  cross-validation, AUSE, and held-out NLL (`calibration`); sparsity +
-  calibration at each checkpoint's own fitted RBF bandwidth across three
-  fixed real checkpoints (`kernel-ablation` -- narrowed to RBF-only, see
-  above); wide vs. narrow view-pool comparison (`wide-vs-narrow`); and the
-  full 8-scene NeRF-Synthetic benchmark run via `--scenes` (`multi-scene`).
-  (`window-ablation`/`visibility-trend` modes were retired -- each already
-  has a concluded, summarized result in `FINDINGS.md`; see git history.)
-- **`real_directional_coverage_experiment.py --dataset {lego,bonsai}`**
-  — the directional/viewing-angle-coverage question on real geometry
-  (`FINDINGS.md` §3): removes a deliberate angular gap from an otherwise-
-  dense real view pool (confound-free, the current best-trusted design);
-  `--dataset` selects lego or the real photographed Mip-NeRF360 "bonsai"
-  scene. (An earlier "subsample" design -- thin the view pool, vary
-  spread at fixed count -- confounded spread with global thinning and is
-  retired; see git history.)
-
-The designed hand-built-scene track this section used to also cover
-(`scene_spec.py`, `blender_render.py`, `visibility_baseline.py`,
-`designed_scene_experiments.py` -- pruning, NBV, differentiation,
-declustering-isolation) predates the real-checkpoint path above and is
-retired; its results are still documented, as historical record, in
-`results/FINDINGS.md` §6. See git history to resurrect the code.
+- **`render_scene_gallery.py`** — the cross-scene qualitative result:
+  one held-out view per scene (7 of the 8 standard NeRF-Synthetic
+  scenes; `materials` excluded, see the script's own docstring), at two
+  splat budgets (500 and this project's standard 300k `wide` recipe)
+  side by side, showing ground truth / reconstruction / |error| / raw
+  rendering-aware posterior variance. `sigma`/`kappa` default to fitting
+  per checkpoint (`splat_scene.fit_kernel_hyperparams`) rather than
+  reusing one bandwidth pooled across a fixed calibration set.
+- **`render_splat_sweep_gallery.py`** — same columns as
+  `render_scene_gallery.py`, but rows are increasing splat budgets (500
+  to 1,000,000 by default) for one scene (lego), showing reconstruction
+  quality and BQ uncertainty improving and saturating together. Large
+  budgets are automatically capped via
+  `splat_scene.max_observations_per_splat_for_budget` to stay within a
+  validated host-memory ceiling.
+- **`real_directional_coverage_experiment.py`** — trains the lego
+  coverage-gap checkpoints `render_coverage_uncertainty_sweep.py` needs:
+  removes a deliberate angular gap of increasing half-width from the
+  100-view training pool, leaving every other view untouched (confound-
+  free relative to an earlier, retired "subsample" design that thinned
+  the pool globally; see git history).
+- **`render_coverage_uncertainty_sweep.py`** — the directional-coverage
+  result: the same held-out view rendered against each gap condition's
+  own checkpoint, showing reconstruction degrading and raw posterior
+  variance growing together in the missing-coverage region.
 
 ## Running it
 
@@ -196,14 +167,5 @@ end, with a `gsplat` environment set up (`../requirements-gsplat.txt`):
 ```
 .venv-gsplat/bin/python gs_experiment/scripts/prepare_nerf_synthetic.py <raw_scene_dir> <out_dir>
 .venv-gsplat/bin/python -m gs_experiment.scripts.train_minimal_gsplat <out_dir>/wide <out_dir>/wide/splats.ply --densify
-.venv-gsplat/bin/python gs_experiment/scripts/render_reconstruction.py <out_dir>/wide   # sanity-check before trusting anything below
-.venv-gsplat/bin/python gs_experiment/scripts/evaluate_checkpoint.py sparsity <out_dir>/wide/splats.ply
-```
-
-or, for the full 8-scene benchmark run behind `FINDINGS.md`'s headline
-multi-scene result:
-
-```
-.venv-gsplat/bin/python gs_experiment/scripts/evaluate_checkpoint.py multi-scene \
-  --scenes chair,drums,ficus,hotdog,lego,materials,mic,ship
+.venv-gsplat/bin/python gs_experiment/scripts/render_scene_gallery.py
 ```

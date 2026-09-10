@@ -40,12 +40,14 @@ support without an ensemble, an auxiliary uncertainty network, or retraining.
 We also derive a rendering-aware kernel by incorporating the query-specific
 alpha-compositing weights into the covariance function. This connects the
 quadrature variance directly to the rendered quantity and suppresses the
-influence of occluded primitives. Across the eight NeRF-Synthetic scenes,
-spatial uncertainty is strongly anticorrelated with local splat density
-($r=-0.97$ to $-0.74$), while controlled coverage experiments show that
-directional uncertainty increases monotonically as viewing directions are
-removed. The same signal supports uncertainty-aware pruning and next-view
-selection. \method{} measures how strongly a finite scene representation
+influence of occluded primitives. Held-out reconstruction quality and quadrature uncertainty both track the
+number of primitives allotted to a scene: sweeping a single scene from 500 to
+1,000,000 splats raises held-out PSNR from $21.4$ to $41.0\,$dB while
+posterior variance visibly concentrates from covering nearly the whole object
+down to a handful of under-resolved regions. A controlled coverage experiment
+shows the same posterior variance increasing monotonically, by roughly two
+orders of magnitude, as training viewing directions are removed. \method{}
+measures how strongly a finite scene representation
 supports a query; it complements methods that learn to predict photometric
 error from reconstruction residuals.
 \end{abstract}
@@ -108,7 +110,7 @@ well the finite representation supports a query. Specifically, we:
     connecting posterior variance to the same integral evaluated by the
     renderer; and
     \item demonstrate the resulting uncertainty on spatial and directional
-    coverage tests, uncertainty-aware pruning, and next-view selection.
+    coverage tests.
 \end{itemize}
 
 \section{Background}
@@ -446,72 +448,52 @@ values are compared only under a common kernel model.
 \subsection{Uncertainty maps}
 
 We form uncertainty images by associating each image region with its
-contributing 3-D neighbourhood and evaluating Eq.~\eqref{eq:variance}.
-Spatial uncertainty highlights weak geometric support. Joint
-position--direction uncertainty additionally highlights surfaces requested
-from unfamiliar viewpoints.
+contributing 3-D neighbourhood and evaluating Eq.~\eqref{eq:variance} under
+the joint position--direction rendering-aware kernel, so the result
+highlights both weak geometric support and surfaces requested from
+unfamiliar viewpoints.
 
 \begin{figure*}[t]
     \centering
-    \includegraphics[width=\textwidth]{figures/qualitative_lego.png}
-    \caption{Held-out views of the lego scene. From left to right: ground
-    truth, 3DGS rendering, RGB error, position-only uncertainty, and
-    position--direction uncertainty.}
+    \includegraphics[width=\textwidth]{figures/scene_gallery.png}
+    \caption{Seven NeRF-Synthetic scenes, one held-out view each, at two
+    splat budgets (500 and this project's standard 300{,}000-splat recipe).
+    Left to right: ground truth, gsplat reconstruction, $|$error$|$, and raw
+    rendering-aware posterior variance (shared log-scale color range across
+    every figure in this paper).}
     \label{fig:qualitative}
 \end{figure*}
-
-\subsection{Uncertainty-aware pruning}
-
-Opacity-based pruning removes weakly contributing primitives but does not
-distinguish redundancy from scarcity. Removing one of many nearby splats is
-usually safe; removing the only splat supporting a thin structure is not. We
-therefore combine opacity with spatial uncertainty and assign greater value
-to primitives in poorly supported occupied regions. An opacity floor prevents
-empty space, which is uncertain but contains nothing to preserve, from
-dominating the score.
-
-\subsection{Next-view selection}
-
-For each candidate camera, we evaluate position--direction uncertainty over
-visible scene regions and aggregate it with a visibility or occupancy weight.
-The next view is the camera with the largest score. This favours scene content
-that is spatially present but poorly observed from the candidate direction.
 
 \section{Experiments}
 
 We test the two effects that \method{} is designed to measure: incomplete
-spatial coverage and incomplete directional coverage. We then study kernel
-sensitivity, validate the rendering-aware construction, and evaluate pruning
-and next-view selection as downstream uses.
+spatial coverage, from the number of primitives available to represent a
+scene, and incomplete directional coverage, from missing viewing angles.
 
 \subsection{Spatial coverage}
 
-We train Gaussian-splat maps for all eight NeRF-Synthetic scenes
-\cite{mildenhall2020}: chair, drums, ficus, hotdog, lego, materials, mic, and
-ship. We retain splats with opacity above $0.1$ and sample 150 query locations
-per scene. At each query, we compare position-only uncertainty with the number
-of splats in the same neighbourhood.
+We train the lego scene at six splat budgets -- $500$; $10{,}000$;
+$30{,}000$; $100{,}000$; $300{,}000$ (this project's standard recipe); and
+$1{,}000{,}000$ -- and render the same held-out view against each checkpoint.
+Held-out PSNR rises from $21.4\,$dB at $500$ splats to $30.5$, $34.9$,
+$38.7$, $40.4$, and $41.0\,$dB at $1{,}000{,}000$, with diminishing returns
+past roughly $100{,}000$ splats. Posterior variance tracks the same curve
+spatially rather than just in aggregate (Figure~\ref{fig:spatial}): at $500$
+splats it is elevated across nearly the whole object, and by
+$300{,}000$--$1{,}000{,}000$ splats it concentrates onto a shrinking set of
+genuinely under-resolved regions instead of shrinking uniformly.
 
-Uncertainty is strongly anticorrelated with local splat count in every scene.
-Pearson $r$ ranges from $-0.97$ to $-0.74$. In the lego scene, the sparsest
-$20\%$ of queries have $3.49\times$ the mean variance of the densest $20\%$.
-The relationship also holds for a checkpoint trained with the reference
-\texttt{gsplat} densification strategy ($r=-0.92$).
-
-\begin{figure}[t]
+\begin{figure*}[t]
     \centering
-    \includegraphics[width=\columnwidth]{figures/sparsity_correlation.png}
-    \caption{Position-only uncertainty against local splat count in the chair
-    scene. Poorly supported regions have higher quadrature uncertainty.}
+    \includegraphics[width=0.97\textwidth]{figures/lego_splat_sweep.png}
+    \caption{Lego, same held-out view, increasing splat budget top to bottom
+    ($500$ to $1{,}000{,}000$). Left to right: ground truth, gsplat
+    reconstruction, $|$error$|$, and raw rendering-aware posterior variance
+    (shared log-scale color range across every figure in this paper).
+    Reconstruction quality and BQ uncertainty improve together and saturate
+    together.}
     \label{fig:spatial}
-\end{figure}
-
-Count is not sufficient to explain the variance. We also train
-reconstructions from 100, 50, 25, and 12 randomly selected images, and from 12
-images confined to a narrow angular range. The random subsets produce similar
-uncertainty, whereas the angularly clustered set has $2.75\times$ the
-uncertainty of the random 12-view set. The distribution of the samples, not
-only their number, determines support.
+\end{figure*}
 
 \subsection{Directional coverage}
 
@@ -520,68 +502,23 @@ windows of increasing half-width ($0^\circ$ to $75^\circ$) are removed from
 the 100 training views, and the same held-out view nearest the gap center is
 rendered against each condition's own checkpoint. Reconstruction quality
 tracks the missing coverage ($35.1$, $29.2$, $22.9$, $15.1$, and
-$16.1\,$dB), and the pixel-wise uncertainty ratio (posterior variance over
-prior variance) grows monotonically with the gap: mean ratio
-$0.010 \to 0.080 \to 0.174 \to 0.424 \to 0.597$ (Figure~\ref{fig:coverage}).
+$16.1\,$dB), and the raw rendering-aware posterior variance grows
+monotonically with the gap, by roughly two orders of magnitude: mean
+variance $0.82 \to 8.54 \to 22.12 \to 59.45 \to 78.85$ (Figure~\ref{fig:coverage}).
 
 \begin{figure*}[t]
     \centering
     \includegraphics[width=\textwidth]{figures/coverage_uncertainty_sweep.png}
     \caption{Lego, same held-out view, decreasing training-view coverage
     left to right ($0^\circ$ to $75^\circ$ gap half-width). Top to bottom:
-    ground truth, gsplat reconstruction, $|$error$|$, and the pixel-wise
-    uncertainty ratio; the bottom row summarizes the ratio's mean and median
-    over the whole view against gap half-width. Reconstruction degrades and
-    BQ uncertainty grows together in the missing-coverage region.}
+    ground truth, gsplat reconstruction, $|$error$|$, and raw rendering-aware
+    posterior variance (shared log-scale color range across every figure in
+    this paper); the bottom row summarizes the variance's mean and median
+    (log scale) over the whole view against gap half-width. Reconstruction
+    degrades and BQ uncertainty grows together in the missing-coverage
+    region.}
     \label{fig:coverage}
 \end{figure*}
-
-\subsection{Kernel sensitivity}
-
-RBF and Mat\'ern-$3/2$ kernels identify similar spatial patterns: their
-uncertainty maps have correlations from $0.98$ to $0.995$. Their absolute
-scales differ by roughly $150\times$, because the rougher Mat\'ern prior
-retains more uncertainty between samples. After fitting each kernel
-separately, RBF uncertainty correlates more strongly with spatial density and
-gives lower Gaussian negative log likelihood, while Mat\'ern-$3/2$ gives
-better ranking-based calibration. Kernel choice therefore affects the scale
-and interpretation of the variance even when the spatial ranking is stable.
-
-\subsection{Rendering-aware quadrature}
-
-We first test occlusion in a synthetic ray scene with an explicit density and
-colour field. A deliberately incorrect splat is placed behind an opaque
-surface. Against the true integral of $0.048$, adding this splat shifts the
-uniform-box posterior mean by $1.49$, but shifts the rendering-aware posterior
-mean by only $0.0001$. The transmittance term correctly removes almost all
-influence from the occluded sample.
-
-We observe the same behaviour on 300k-splat chair, drums, and hotdog
-checkpoints. In held-out views, both depth-ordered ray weights and
-\texttt{gsplat}'s anisotropic per-pixel alpha values make the posterior follow
-the visible occluder's colour rather than that of the hidden target.
-
-We then sweep a camera through a designed $150^\circ$ training-coverage gap in
-the lego scene. Position-only rendering-aware variance is anticorrelated with
-directional coverage ($\rho=-0.52$): spatially consistent radiance along the
-ray does not establish that the requested direction has been observed. The
-joint position--direction kernel, evaluated from 373,387
-(splat, observing-camera) pairs, restores agreement with the independently
-computed directional signal ($\rho=0.97$). The rendering weight and
-directional kernel therefore play different and necessary roles.
-
-\subsection{Pruning and next-view selection}
-
-We evaluate pruning on a designed scene across several splat budgets. At the
-tightest budget, uncertainty-aware pruning improves reconstruction PSNR by
-$2.3$ dB over opacity-only pruning. The methods converge at larger budgets,
-where both retain the primitives required to represent the scene.
-
-For next-view selection, we score a discrete set of candidate cameras using
-position--direction uncertainty and visibility. We add the highest-scoring
-view to the training set, retrain the map, and compare it with a
-low-scoring-view baseline. The selected view improves held-out PSNR by
-$1.89$ dB, compared with $0.65$ dB for the low-scoring view.
 
 \section{Discussion}
 
@@ -633,8 +570,7 @@ post-hoc measure of spatial and directional representation uncertainty. A
 query-specific kernel derived from the renderer's own alpha-compositing
 weights connects the same construction to visible radiance and suppresses
 occluded primitives. Experiments show that the variance responds predictably
-to sparse spatial coverage and missing viewing directions, and that it can
-guide pruning and view selection. \method{} does not attempt to replace a
+to sparse spatial coverage and missing viewing directions. \method{} does not attempt to replace a
 predictor of photometric error. It answers a prior question: where is the map
 being asked to infer more than its finite observations support?
 

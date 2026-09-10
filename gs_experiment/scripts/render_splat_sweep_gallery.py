@@ -1,17 +1,17 @@
 """Single-scene splat-budget sweep, reusing render_scene_gallery.py's row-building
 and plotting exactly (same columns: ground truth / gsplat reconstruction / |error| /
-uncertainty ratio / raw posterior variance, sigma+kappa fit per checkpoint) -- rows
-are increasing splat budgets for ONE scene instead of different scenes, so growing
-splat count's effect on quality and BQ uncertainty (both normalized and raw) can be
-seen on one figure instead of flipping between separate scene_gallery*.png files.
+raw posterior variance, sigma+kappa fit per checkpoint) -- rows are increasing splat
+budgets for ONE scene instead of different scenes, so growing splat count's effect
+on quality and BQ uncertainty can be seen on one figure instead of flipping between
+separate scene_gallery*.png files.
 
 Every budget above render_scene_gallery.py's own ~300k default is passed through
 build_rows' `max_observations_per_splat`, sized per budget by
-splat_budget_uncertainty_sweep.max_observations_per_splat_for_budget -- the same
-validated memory model that script already uses, not a new guess. Confirmed
-necessary the hard way: an early version of this script called build_rows with no
-cap at all, and rendering the 1,000,000-splat checkpoint uncapped OOM-killed the
-host at 18GB (an explicit gc.collect()/torch.cuda.empty_cache() between budget
+splat_scene.max_observations_per_splat_for_budget -- the same validated memory model
+splat_scene.py already uses for load_from_gsplat_checkpoint, not a new guess.
+Confirmed necessary the hard way: an early version of this script called build_rows
+with no cap at all, and rendering the 1,000,000-splat checkpoint uncapped OOM-killed
+the host at 18GB (an explicit gc.collect()/torch.cuda.empty_cache() between budget
 iterations was tried first and did NOT fix it -- the unbuffered log showed the
 crash happened *during* the first, single 1M-splat call, not from cross-iteration
 accumulation, so a per-call cap was the actual fix needed, not per-iteration
@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gs_experiment.scripts.render_scene_gallery import RESULTS_DIR, build_rows, plot_gallery
-from gs_experiment.scripts.splat_budget_uncertainty_sweep import max_observations_per_splat_for_budget
+from gs_experiment.splat_scene import max_observations_per_splat_for_budget
 
 SCENE = "lego"
 VIEW_IDX = 21
@@ -69,13 +69,7 @@ def run(scene: str = SCENE, view_idx: int = VIEW_IDX, budgets=BUDGETS, out_path=
             torch.cuda.empty_cache()
 
     out_path = Path(out_path) if out_path else (RESULTS_DIR / f"{scene}_splat_sweep.png")
-    plot_gallery(
-        rows, out_path,
-        title=(
-            f"{scene}: same held-out view across increasing splat budgets (sigma/kappa fit per checkpoint)\n"
-            "uncertainty = complete position+direction rendering-aware variance / prior variance, fixed [0,1] scale"
-        ),
-    )
+    plot_gallery(rows, out_path)
     return out_path
 
 
