@@ -37,8 +37,13 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # fit_kernel_hyperparams) can't produce a value (too little real data in this
 # checkpoint) -- not used when fitting succeeds, which is now the default.
 # These are the project's own marginal-likelihood pooled fits (see that
-# function's docstring), not arbitrary guesses.
-FALLBACK_SIGMA = 0.0694
+# function's docstring), not arbitrary guesses. FALLBACK_SIGMA matches
+# real_directional_coverage_experiment.py's LEGO_GAP_SIGMA -- see that
+# constant's own comment for the 2025-09 refit story (a real bug,
+# SplatScene.colors being raw SH coefficients rather than real color,
+# gs_experiment/results/FINDINGS.md section 4). FALLBACK_KAPPA is
+# unaffected by that bug (its fitting path never used the raw fallback).
+FALLBACK_SIGMA = 0.13926
 FALLBACK_KAPPA = 0.745
 
 # Shared log-scale color range for raw (unnormalized) posterior variance, used by

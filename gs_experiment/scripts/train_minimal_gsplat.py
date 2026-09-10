@@ -525,9 +525,14 @@ def train(
       mechanisms above, not independently tunable per-mechanism in this
       first installment -- defaults match the thin-rod/cylinder scene
       family's established convention, not the lego-scale
-      `sigma=0.05`/`window_radius=0.08` used elsewhere in
-      `gs_experiment/` -- pick values matching the actual scene's spatial
-      scale, not these defaults blindly, for a different scene family.
+      `sigma=0.13926`/`window_radius=0.08` (`LEGO_GAP_SIGMA`/
+      `LEGO_GAP_WINDOW_RADIUS` in `real_directional_coverage_experiment.py`)
+      used elsewhere in `gs_experiment/` -- pick values matching the actual
+      scene's spatial scale, not these defaults blindly, for a different
+      scene family. (This docstring previously said `sigma=0.05`, which
+      matched neither the pre-fix lego value (0.0694) nor the post-fix one
+      (0.13926, see FINDINGS.md section 4) -- just a stale/imprecise
+      figure, not a second functional bug; corrected here for accuracy.)
 
     `ssim_weight` (default 0.2): weight of the SSIM term in the loss,
     following the standard 3DGS formulation `(1-w)*L1 + w*(1-SSIM)`.

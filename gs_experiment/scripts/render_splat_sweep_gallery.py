@@ -61,9 +61,15 @@ def run(scene: str = SCENE, view_idx: int = VIEW_IDX, budgets=BUDGETS, out_path=
         scene_rows = build_rows(
             scene_views={scene: view_idx}, checkpoint_subdir=checkpoint_subdir, max_observations_per_splat=max_obs,
         )
+        label = budget_label(b)
         for r in scene_rows:
-            r["scene"] = budget_label(b)  # row label becomes the budget, not the scene name
-        rows.extend(scene_rows)
+            r["scene"] = label  # row label becomes the budget, not the scene name
+            # plot_gallery (render_scene_gallery.py) was refactored to the multi-budget
+            # side-by-side layout and now expects each row to carry a "budget_rows" list
+            # of (label, row) pairs rather than being plotted flat -- wrap each single-budget
+            # row as its own one-entry "budget_rows" list so it renders as one row per budget
+            # (this script's actual intent), not side by side.
+            rows.append(dict(scene=label, budget_rows=[(label, r)]))
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

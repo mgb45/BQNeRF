@@ -414,7 +414,7 @@ rendered against each condition's own checkpoint. Reconstruction quality
 tracks the missing coverage ($35.1$, $29.2$, $22.9$, $15.1$, and
 $16.1\,$dB), and the raw rendering-aware posterior variance grows
 monotonically with the gap, by roughly two orders of magnitude: mean
-variance $0.82 \to 8.54 \to 22.12 \to 59.45 \to 78.85$ (Figure~\ref{fig:coverage}).
+variance $0.084 \to 1.254 \to 3.343 \to 8.886 \to 11.769$ (Figure~\ref{fig:coverage}).
 
 \begin{figure*}[t]
     \centering
@@ -481,26 +481,26 @@ real 12-view lego checkpoint, evaluated on training and held-out views.}
 \toprule
 Variant & Splats & Train PSNR & Held-out PSNR \\
 \midrule
-Baseline (gradient densify)          & 3{,}108 & 26.65\,dB & 17.48\,dB \\
-BQ-variance densify                  & 3{,}333 & 27.48\,dB & 17.78\,dB \\
-NLL loss (gradient densify)          & 3{,}095 & 26.51\,dB & 17.27\,dB \\
-BQ-variance densify + NLL            & 3{,}339 & 27.51\,dB & 17.77\,dB \\
-BQ-variance densify + opacity floor  & 1{,}181 & 24.94\,dB & 17.64\,dB \\
+Baseline (gradient densify)          & 3{,}132 & 26.71\,dB & 17.57\,dB \\
+BQ-variance densify                  & 3{,}330 & 27.56\,dB & 17.81\,dB \\
+NLL loss (gradient densify)          & 3{,}106 & 26.80\,dB & 17.43\,dB \\
+BQ-variance densify + NLL            & 3{,}345 & 27.38\,dB & 17.72\,dB \\
+BQ-variance densify + opacity floor  & 1{,}179 & 24.76\,dB & 17.55\,dB \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 BQ-variance densification is a real, if modest, held-out win over
-gradient-triggered densification ($+0.29\,$dB), consistent whether or not
+gradient-triggered densification ($+0.24\,$dB), consistent whether or not
 the NLL term is also active. The NLL auxiliary loss term alone is a
-no-op-to-mild-negative ($-0.21\,$dB held-out) at this loss weight and grid
+no-op-to-mild-negative ($-0.14\,$dB held-out) at this loss weight and grid
 resolution/cadence, plausibly because its variance term does not
 differentiate through the BQ posterior itself in this first installment.
 Flooring the BQ-variance densification score by opacity is a genuine
 efficiency lever rather than a quality tax: $62\%$ fewer splats than
-baseline at no held-out PSNR cost. We read this as encouraging but
-preliminary: a single scene and iteration budget, not yet a general
-training-time claim.
+baseline at essentially no held-out PSNR cost ($-0.02\,$dB). We read this
+as encouraging but preliminary: a single scene and iteration budget, not
+yet a general training-time claim.
 
 \subsection{Alternative kernels}
 \label{app:kernels}
@@ -547,12 +547,12 @@ Tables~\ref{tab:kernels-drums}--\ref{tab:kernels-ship}.}
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.0608$ & $+0.473$ & $+0.508$          & $+0.120$ & $\mathbf{21.9}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0180$   & $+0.693$ & $\mathbf{+0.779}$ & $+0.050$ & $7635.6$ \\
-Dense (300k) & Rational quadratic & $l=0.0100$      & $+0.706$ & $+0.768$          & $+0.041$ & $8808.3$ \\
-Sparse (500) & RBF                & $\sigma=0.0952$ & $+0.647$ & $+0.785$          & $-0.077$ & $\mathbf{-0.29}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0155$   & $+0.320$ & $+0.879$          & $-0.146$ & $1246.9$ \\
-Sparse (500) & Rational quadratic & $l=0.0120$      & $+0.342$ & $\mathbf{+0.885}$ & $-0.149$ & $470.0$ \\
+Dense (300k) & RBF                & $\sigma=0.1181$ & $+0.422$ & $+0.373$          & $+0.024$ & $\mathbf{1105.2}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.0503$   & $+0.572$ & $+0.402$          & $+0.206$ & $2123.8$ \\
+Dense (300k) & Rational quadratic & $l=0.0217$      & $+0.664$ & $\mathbf{+0.578}$ & $+0.184$ & $2708.2$ \\
+Sparse (500) & RBF                & $\sigma=0.1382$ & $+0.717$ & $\mathbf{+0.785}$ & $-0.066$ & $\mathbf{0.04}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.1000$   & $+0.589$ & $+0.747$          & $-0.076$ & $18.2$ \\
+Sparse (500) & Rational quadratic & $l=0.0480$      & $+0.551$ & $+0.776$          & $-0.110$ & $24.1$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -566,12 +566,12 @@ Sparse (500) & Rational quadratic & $l=0.0120$      & $+0.342$ & $\mathbf{+0.885
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.0546$ & $-0.062$ & $-0.213$          & $-0.051$ & $\mathbf{22.5}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0109$   & $-0.076$ & $+0.183$          & $-0.077$ & $2.93\times 10^{4}$ \\
-Dense (300k) & Rational quadratic & $l=0.0060$      & $-0.082$ & $\mathbf{+0.245}$ & $-0.084$ & $3.40\times 10^{4}$ \\
-Sparse (500) & RBF                & $\sigma=0.1111$ & $+0.718$ & $+0.639$          & $+0.059$ & $\mathbf{-0.10}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0623$   & $+0.642$ & $+0.707$          & $-0.120$ & $25.0$ \\
-Sparse (500) & Rational quadratic & $l=0.0370$      & $+0.639$ & $\mathbf{+0.725}$ & $-0.133$ & $25.1$ \\
+Dense (300k) & RBF                & $\sigma=0.1026$ & $-0.073$ & $-0.229$          & $-0.021$ & $\mathbf{1123.7}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.0359$   & $-0.096$ & $-0.281$          & $-0.065$ & $3220.8$ \\
+Dense (300k) & Rational quadratic & $l=0.0156$      & $-0.093$ & $\mathbf{-0.166}$ & $-0.078$ & $5299.5$ \\
+Sparse (500) & RBF                & $\sigma=0.1699$ & $+0.691$ & $\mathbf{+0.594}$ & $+0.067$ & $\mathbf{0.82}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.1906$   & $+0.664$ & $+0.525$          & $+0.086$ & $10.6$ \\
+Sparse (500) & Rational quadratic & $l=0.0896$      & $+0.696$ & $+0.576$          & $+0.063$ & $9.71$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -585,12 +585,12 @@ Sparse (500) & Rational quadratic & $l=0.0370$      & $+0.639$ & $\mathbf{+0.725
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.0578$ & $-0.193$ & $-0.308$          & $+0.112$ & $\mathbf{60.0}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0131$   & $+0.185$ & $-0.269$          & $-0.026$ & $4.47\times 10^{4}$ \\
-Dense (300k) & Rational quadratic & $l=0.0077$      & $+0.114$ & $\mathbf{-0.193}$ & $+0.047$ & $4.32\times 10^{4}$ \\
-Sparse (500) & RBF                & $\sigma=0.1033$ & $+0.769$ & $+0.751$          & $+0.149$ & $\mathbf{0.33}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0071$   & $+0.724$ & $+0.884$          & $+0.151$ & $2.45\times 10^{4}$ \\
-Sparse (500) & Rational quadratic & $l=0.0050$      & $+0.725$ & $\mathbf{+0.893}$ & $+0.150$ & $1.11\times 10^{4}$ \\
+Dense (300k) & RBF                & $\sigma=0.1038$ & $-0.239$ & $\mathbf{-0.301}$ & $+0.050$ & $\mathbf{1792.9}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.0437$   & $-0.088$ & $-0.343$          & $+0.142$ & $6992.1$ \\
+Dense (300k) & Rational quadratic & $l=0.0197$      & $-0.065$ & $-0.325$          & $+0.161$ & $8814.6$ \\
+Sparse (500) & RBF                & $\sigma=0.1588$ & $+0.668$ & $+0.664$          & $+0.105$ & $\mathbf{6.88}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.1299$   & $+0.761$ & $+0.662$          & $+0.157$ & $46.3$ \\
+Sparse (500) & Rational quadratic & $l=0.0079$      & $+0.729$ & $\mathbf{+0.906}$ & $+0.151$ & $3023.1$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -604,12 +604,12 @@ Sparse (500) & Rational quadratic & $l=0.0050$      & $+0.725$ & $\mathbf{+0.893
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.1110$ & $-0.341$ & $\mathbf{+0.582}$ & $+0.202$ & $\mathbf{2298.8}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0455$   & $-0.420$ & $+0.503$          & $+0.122$ & $7191.2$ \\
-Dense (300k) & Rational quadratic & $l=0.0180$      & $-0.425$ & $+0.516$          & $+0.113$ & $1.06\times 10^{4}$ \\
-Sparse (500) & RBF                & $\sigma=0.1204$ & $+0.557$ & $+0.575$          & $+0.123$ & $\mathbf{-0.24}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0531$   & $+0.497$ & $+0.867$          & $-0.005$ & $62.8$ \\
-Sparse (500) & Rational quadratic & $l=0.0317$      & $+0.494$ & $\mathbf{+0.877}$ & $-0.008$ & $61.2$ \\
+Dense (300k) & RBF                & $\sigma=0.2225$ & $-0.367$ & $+0.406$          & $+0.134$ & $1.07\times 10^{5}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.1544$   & $-0.380$ & $+0.346$          & $+0.178$ & $1.82\times 10^{4}$ \\
+Dense (300k) & Rational quadratic & $l=0.0576$      & $-0.369$ & $\mathbf{+0.525}$ & $+0.150$ & $\mathbf{1.02\times 10^{4}}$ \\
+Sparse (500) & RBF                & $\sigma=0.1906$ & $+0.472$ & $+0.450$          & $+0.192$ & $\mathbf{2.29}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.1936$   & $+0.533$ & $+0.465$          & $+0.170$ & $16.8$ \\
+Sparse (500) & Rational quadratic & $l=0.0968$      & $+0.567$ & $\mathbf{+0.542}$ & $+0.116$ & $15.9$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -623,12 +623,12 @@ Sparse (500) & Rational quadratic & $l=0.0317$      & $+0.494$ & $\mathbf{+0.877
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k)  & RBF                & $\sigma=0.0703$ & $-0.306$ & $-0.291$          & $+0.120$ & $\mathbf{9.80}$ \\
-Dense (300k)  & Mat\'ern-3/2       & $\rho=0.0186$   & $-0.441$ & $-0.019$          & $+0.062$ & $1878.0$ \\
-Dense (300k)  & Rational quadratic & $l=0.0067$      & $-0.458$ & $\mathbf{+0.191}$ & $+0.064$ & $6062.0$ \\
-Sparse (500)  & RBF                & $\sigma=0.0988$ & $+0.766$ & $+0.811$          & $-0.055$ & $\mathbf{0.08}$ \\
-Sparse (500)  & Mat\'ern-3/2       & $\rho=0.0406$   & $+0.783$ & $+0.916$          & $-0.112$ & $87.8$ \\
-Sparse (500)  & Rational quadratic & $l=0.0238$      & $+0.783$ & $\mathbf{+0.921}$ & $-0.112$ & $85.4$ \\
+Dense (300k)  & RBF                & $\sigma=0.1359$ & $-0.304$ & $-0.343$          & $+0.145$ & $504.9$ \\
+Dense (300k)  & Mat\'ern-3/2       & $\rho=0.0675$   & $-0.439$ & $-0.405$          & $+0.100$ & $\mathbf{476.6}$ \\
+Dense (300k)  & Rational quadratic & $l=0.0277$      & $-0.449$ & $\mathbf{-0.327}$ & $+0.093$ & $563.7$ \\
+Sparse (500)  & RBF                & $\sigma=0.1564$ & $+0.656$ & $+0.669$          & $-0.006$ & $\mathbf{0.55}$ \\
+Sparse (500)  & Mat\'ern-3/2       & $\rho=0.1181$   & $+0.775$ & $+0.756$          & $-0.041$ & $11.5$ \\
+Sparse (500)  & Rational quadratic & $l=0.0573$      & $+0.793$ & $\mathbf{+0.838}$ & $-0.074$ & $15.3$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -642,12 +642,12 @@ Sparse (500)  & Rational quadratic & $l=0.0238$      & $+0.783$ & $\mathbf{+0.92
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.0588$ & $-0.368$ & $-0.294$          & $+0.141$ & $\mathbf{312.1}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0110$   & $-0.443$ & $\mathbf{+0.046}$ & $+0.013$ & $3.69\times 10^{6}$ \\
-Dense (300k) & Rational quadratic & $l=0.0052$      & $-0.462$ & $-0.083$          & $+0.016$ & $6.11\times 10^{6}$ \\
-Sparse (500) & RBF                & $\sigma=0.0997$ & $+0.215$ & $+0.034$          & $+0.127$ & $\mathbf{1.31\times 10^{8}}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0506$   & $+0.228$ & $+0.139$          & $-0.019$ & $9.28\times 10^{8}$ \\
-Sparse (500) & Rational quadratic & $l=0.0292$      & $+0.231$ & $\mathbf{+0.172}$ & $-0.030$ & $9.28\times 10^{8}$ \\
+Dense (300k) & RBF                & $\sigma=0.1126$ & $-0.329$ & $\mathbf{-0.306}$ & $+0.200$ & $\mathbf{4254.6}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.0380$   & $-0.435$ & $-0.329$          & $+0.042$ & $1.77\times 10^{5}$ \\
+Dense (300k) & Rational quadratic & $l=0.0136$      & $-0.459$ & $-0.366$          & $+0.028$ & $5.56\times 10^{5}$ \\
+Sparse (500) & RBF                & $\sigma=0.1623$ & $+0.191$ & $\mathbf{-0.009}$ & $+0.192$ & $\mathbf{2.63\times 10^{8}}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.1356$   & $+0.159$ & $-0.103$          & $+0.126$ & $9.28\times 10^{8}$ \\
+Sparse (500) & Rational quadratic & $l=0.0662$      & $+0.176$ & $-0.066$          & $+0.102$ & $9.28\times 10^{8}$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -661,12 +661,12 @@ Sparse (500) & Rational quadratic & $l=0.0292$      & $+0.231$ & $\mathbf{+0.172
 \toprule
 Checkpoint & Kernel & Fitted param.\ & Sparsity $r$ (raw) & Sparsity $r$ (ratio) & Calib.\ $r$ & Mean NLL \\
 \midrule
-Dense (300k) & RBF                & $\sigma=0.0683$ & $\mathbf{+0.824}$ & $\mathbf{+0.750}$ & $+0.220$ & $\mathbf{13.7}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0193$   & $+0.427$          & $+0.609$          & $+0.037$ & $3281.8$ \\
-Dense (300k) & Rational quadratic & $l=0.0095$      & $+0.432$          & $+0.637$          & $+0.005$ & $5696.4$ \\
-Sparse (500) & RBF                & $\sigma=0.1346$ & $\mathbf{+0.760}$ & $\mathbf{+0.927}$ & $-0.012$ & $\mathbf{-0.43}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.0698$   & $+0.384$          & $+0.882$          & $-0.020$ & $3.92$ \\
-Sparse (500) & Rational quadratic & $l=0.0441$      & $+0.382$          & $+0.887$          & $-0.019$ & $3.50$ \\
+Dense (300k) & RBF                & $\sigma=0.1292$ & $+0.756$          & $\mathbf{+0.745}$ & $+0.179$ & $\mathbf{702.1}$ \\
+Dense (300k) & Mat\'ern-3/2       & $\rho=0.0583$   & $+0.647$          & $+0.724$          & $+0.160$ & $943.7$ \\
+Dense (300k) & Rational quadratic & $l=0.0210$      & $+0.508$          & $+0.660$          & $+0.069$ & $1459.7$ \\
+Sparse (500) & RBF                & $\sigma=0.1964$ & $+0.833$          & $+0.904$          & $-0.012$ & $\mathbf{-0.63}$ \\
+Sparse (500) & Mat\'ern-3/2       & $\rho=0.2272$   & $+0.806$          & $+0.912$          & $+0.002$ & $0.46$ \\
+Sparse (500) & Rational quadratic & $l=0.1201$      & $+0.759$          & $\mathbf{+0.926}$ & $-0.002$ & $0.39$ \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -676,49 +676,54 @@ No single family dominates every metric, checkpoint, or scene
 lego-only finding turns out to be fully universal and another turns out to
 be scene-dependent in an informative way.
 
-RBF is the best-calibrated family by the Gaussian-NLL score in
-\emph{every one} of the $14$ scene/checkpoint combinations, typically by
-two or more orders of magnitude and up to four in the worst case (mic,
-where all three families are in fact badly miscalibrated in absolute
-terms -- real held-out error there is large relative to any family's
-fitted variance -- but RBF is still the least catastrophic by roughly
-$1000\times$). Mat\'ern/rational quadratic's marginal-likelihood fits
+RBF is the best-calibrated family by the Gaussian-NLL score in $12$ of
+the $14$ scene/checkpoint combinations, typically by one to three orders
+of magnitude and by as much as $438\times$ in the best-separated case
+(chair, sparse checkpoint). The two exceptions are close calls on the
+dense checkpoint: Mat\'ern-3/2 edges RBF on lego ($476.6$ vs.\ $504.9$,
+a $6\%$ margin) and rational quadratic wins on hotdog by a real
+$10\times$ margin ($1.02\times 10^{4}$ vs.\ RBF's $1.07\times 10^{5}$).
+Elsewhere, Mat\'ern/rational quadratic's marginal-likelihood fits
 consistently land on tighter bandwidths that explain local color
 smoothness well but produce overconfident (too-small) variance at real
 held-out points, punished heavily by the $1/\text{var}$ term -- the same
-mechanism identified on lego alone, now confirmed project-wide. The
-calibration \emph{correlation} itself stays weak and sign-inconsistent
-across every family and every scene, exactly as on lego: none of the three
-families should be read as genuinely tracking held-out error in the
-correlation sense.
+mechanism identified on lego alone, now confirmed as the dominant but not
+completely universal project-wide pattern. The calibration
+\emph{correlation} itself stays weak and sign-inconsistent across every
+family and every scene, exactly as on lego: none of the three families
+should be read as genuinely tracking held-out error in the correlation
+sense.
 
 The sparsity-tracking story is less clean than lego alone suggested. On
 the sparse ($500$-splat) checkpoint, raw variance has the expected
 positive sign for every family on all $7$ scenes ($21/21$), and the
-amplitude-normalized ratio is won by rational quadratic on $6$ of $7$
-scenes (all but ship, where RBF is narrowly ahead, $+0.927$ vs.\ $+0.887$)
--- a broad, if not perfect, replication of the lego finding. On the dense
-($300$k-splat) checkpoint, however, lego's ``wrong sign for every family''
-result does \emph{not} generalize: raw variance keeps the intended
-positive sign on chair and ship, is split by family on ficus, and is
-wrong-signed for every family only on drums, hotdog, lego, and mic. This
+amplitude-normalized ratio is won by rational quadratic on $4$ of $7$
+scenes (ficus, hotdog, lego, ship) and by RBF on the other $3$ (chair,
+drums, mic) -- a real but more even split than lego alone suggested, not
+the near-sweep the single-scene result implied. On the dense
+($300$k-splat) checkpoint, lego's ``wrong sign for every family'' result
+does \emph{not} generalize uniformly: raw variance keeps the intended
+positive sign only on chair and ship, and is wrong-signed for every
+family on the other five scenes (drums, ficus, hotdog, lego, mic). This
 tracks a real per-scene difference we checked directly: the number of
 real neighbors inside a fixed-radius query window at this checkpoint's
 density ranges from a median of $\sim\!21$ (ficus) to $\sim\!9{,}000$
 (mic) even though every scene shares the same training recipe and window
-radius -- it is specifically the high-neighbor-count scenes that
+radius, and it is specifically the high-neighbor-count scenes that
 saturate the engine's neighbor cap and let local opacity confound raw
-variance, not a universal property of dense checkpoints. Reading via the
-ratio on the dense checkpoint accordingly gives a more mixed picture too:
-rational quadratic is best on $3$ of $7$ scenes (drums, ficus, lego),
-Mat\'ern on $2$ (chair, mic), and RBF on $2$ (hotdog, ship). We read this
-as the same genuine trade-off as before, now on firmer footing for
-calibration and a real but noisier one for sparsity-tracking: RBF where a
+variance -- ficus's low neighbor count is the one case that does not fit
+this story cleanly (wrong-signed despite little room to saturate), so the
+neighbor-cap mechanism is a strong contributor, not a complete
+explanation, for which scenes show the confound. Reading via the ratio on
+the dense checkpoint accordingly gives a more mixed picture too: rational
+quadratic is best on $4$ of $7$ scenes (chair, drums, hotdog, lego), RBF
+on the other $3$ (ficus, mic, ship), and Mat\'ern does not win any. We
+read this as the same genuine trade-off as before: RBF where a
 well-behaved, non-catastrophic variance estimate matters most (e.g.\ any
 NLL-style loss, including \S\ref{app:likelihood}'s), rational quadratic as
-the best single default where sparsity/coverage-tracking is the goal,
-particularly on genuinely sparse checkpoints -- but not a law that holds
-irrespective of scene content at high splat density.
+the more frequent (though not universal) choice where sparsity/coverage-
+tracking is the goal -- a real trade-off between kernel families, not a
+resolved, single-winner recommendation.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

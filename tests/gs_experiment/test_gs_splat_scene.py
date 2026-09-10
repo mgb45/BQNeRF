@@ -103,6 +103,113 @@ def test_load_from_gsplat_checkpoint_round_trips_a_synthetic_checkpoint(tmp_path
     assert n_observed >= n * 0.5
 
 
+def test_load_from_gsplat_checkpoint_fields_satisfy_their_documented_invariants(tmp_path):
+    """A real checkpoint's fields each cross a convention boundary on the
+    way in (ply_io's pre-sigmoid logit / log-scale / not-necessarily-unit
+    quaternion storage -> SplatScene's real-probability / real-scale /
+    unit-quaternion fields), and the colors bug (FINDINGS.md section 4)
+    passed 159 tests specifically because nothing checked a value like
+    this was semantically sane, only that the pipeline ran. Uses
+    deliberately non-unit-norm quaternions and opacities/scales spanning
+    several orders of magnitude, unlike the identity-quaternion,
+    middle-of-range round-trip test above, so a skipped or doubled
+    conversion anywhere in load_from_gsplat_checkpoint's path would show
+    up as an out-of-range value here, not just a wrong-but-plausible one."""
+    from gs_experiment.nerf_transforms import write_transforms_json
+    from gs_experiment.ply_io import write_3dgs_ply
+    from gs_experiment.spherical_harmonics import random_sh_coeffs
+
+    rng = np.random.default_rng(11)
+    n = 20
+    positions = rng.uniform(-2.0, 2.0, size=(n, 3))
+    scales = rng.uniform(1e-3, 2.0, size=(n, 3))  # spans orders of magnitude
+    rotations = rng.normal(size=(n, 4)) + np.array([1.0, 0.0, 0.0, 0.0])  # deliberately non-unit-norm
+    opacities = rng.uniform(0.001, 0.999, size=n)  # spans close to both (0, 1) boundaries
+    sh_coeffs = random_sh_coeffs(rng, n_splats=n, degree=2, scale=0.4)
+
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+    write_3dgs_ply(str(scene_dir / "splats.ply"), positions, scales, rotations, opacities, sh_coeffs, sh_degree=2)
+    cameras = turntable_ring(radius=6.0, n_views=4, phi_deg=30.0)
+
+    def _c2w(camera):
+        right = np.cross(camera.forward, camera.up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, camera.forward)
+        c2w = np.eye(4)
+        c2w[:3, 0] = right
+        c2w[:3, 1] = up
+        c2w[:3, 2] = -camera.forward
+        c2w[:3, 3] = camera.center
+        return c2w
+
+    frames = [{"file_path": f"images/r_{i:03d}", "transform_matrix": _c2w(c)} for i, c in enumerate(cameras)]
+    write_transforms_json(str(scene_dir / "transforms.json"), camera_angle_x=np.deg2rad(50.0), frames=frames)
+
+    scene = load_from_gsplat_checkpoint(str(scene_dir))
+
+    assert np.all(np.isfinite(scene.positions))
+    assert np.all(scene.opacities > 0.0) and np.all(scene.opacities < 1.0)
+    assert np.all(scene.scales > 0.0)
+    np.testing.assert_allclose(np.linalg.norm(scene.rotations, axis=1), 1.0, atol=1e-5)
+    # colors is the DC-only fallback (SH_C0 * raw + 0.5, see splat_scene.py) --
+    # sane for these non-adversarial SH coefficients, not the raw
+    # coefficient's much wider, sign-unrestricted range (this exact check,
+    # against a real checkpoint, is what caught the colors bug originally).
+    assert np.all(scene.colors > -0.5) and np.all(scene.colors < 1.5)
+
+
+def test_load_from_gsplat_checkpoint_colors_matches_eval_sh_degree_zero(tmp_path):
+    """Regression test for a real bug: `colors` was once the raw SH
+    coefficient (`sh_coeffs[:,:,0].mean(axis=1)`), not a real color -- 3DGS
+    stores SH coefficients as offsets from mid-gray (eval_sh's own "+ 0.5"
+    convention), so a real checkpoint's raw `colors` spanned [-2.39, 2.37]
+    and the marginal-likelihood-fitted RBF sigma changed by ~2x once
+    corrected (gs_experiment/results/FINDINGS.md's calibration-methodology
+    section). `colors` must always equal `eval_sh(sh_coeffs, *, degree=0)`
+    exactly (direction-independent at degree 0), not merely "look colorful"."""
+    from gs_experiment.nerf_transforms import write_transforms_json
+    from gs_experiment.ply_io import write_3dgs_ply
+    from gs_experiment.spherical_harmonics import random_sh_coeffs
+
+    rng = np.random.default_rng(7)
+    n = 12
+    positions = rng.uniform(-0.5, 0.5, size=(n, 3))
+    scales = rng.uniform(0.01, 0.05, size=(n, 3))
+    rotations = np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1))
+    opacities = rng.uniform(0.3, 0.9, size=n)
+    sh_coeffs = random_sh_coeffs(rng, n_splats=n, degree=1, scale=0.2)
+
+    scene_dir = tmp_path / "scene"
+    scene_dir.mkdir()
+    write_3dgs_ply(str(scene_dir / "splats.ply"), positions, scales, rotations, opacities, sh_coeffs, sh_degree=1)
+    cameras = turntable_ring(radius=6.0, n_views=4, phi_deg=30.0)
+
+    def _c2w(camera):
+        right = np.cross(camera.forward, camera.up)
+        right = right / np.linalg.norm(right)
+        up = np.cross(right, camera.forward)
+        c2w = np.eye(4)
+        c2w[:3, 0] = right
+        c2w[:3, 1] = up
+        c2w[:3, 2] = -camera.forward
+        c2w[:3, 3] = camera.center
+        return c2w
+
+    frames = [{"file_path": f"images/r_{i:03d}", "transform_matrix": _c2w(c)} for i, c in enumerate(cameras)]
+    write_transforms_json(str(scene_dir / "transforms.json"), camera_angle_x=np.deg2rad(50.0), frames=frames)
+
+    scene = load_from_gsplat_checkpoint(str(scene_dir))
+
+    dummy_directions = np.zeros((n, 3))  # degree 0 ignores direction entirely
+    expected = eval_sh(sh_coeffs, dummy_directions, degree=0).mean(axis=-1)
+    np.testing.assert_allclose(scene.colors, expected, atol=1e-8)
+    # A real color's DC-only approximation should land close to [0, 1] for
+    # typical (not adversarially large) SH coefficients -- not the raw
+    # coefficient's much wider, sign-unrestricted range.
+    assert scene.colors.min() > -0.5 and scene.colors.max() < 1.5
+
+
 def test_splat_observations_uses_sh_when_present_and_is_view_dependent():
     rng = np.random.default_rng(0)
     bounds = ((-5.0, 5.0), (-5.0, 5.0), (-1.0, 1.0))

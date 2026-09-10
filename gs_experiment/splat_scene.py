@@ -31,7 +31,7 @@ from typing import List, Optional
 import numpy as np
 
 from gs_experiment.camera import CameraPose, directions_from_positions_to_camera
-from gs_experiment.spherical_harmonics import eval_sh
+from gs_experiment.spherical_harmonics import SH_C0, eval_sh
 from gs_experiment.visibility_attribution import (
     attribute_observations,
     invert_to_observed_camera_idx,
@@ -398,7 +398,17 @@ def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_tar
     observed_camera_idx = invert_to_observed_camera_idx(per_camera, n_splats)
 
     sh_coeffs = random_sh_coeffs(rng, n_splats, degree=2)
-    colors = sh_coeffs[:, :, 0].mean(axis=1)  # unused fallback value, sh_coeffs takes priority
+    # Real (DC-only, view-independent) color, not the raw SH coefficient --
+    # 3DGS stores SH coefficients as offsets from a mid-gray baseline
+    # (eval_sh's own "+ 0.5" convention; see that function's docstring), so
+    # a raw sh_coeffs[:,:,0] value is not itself a color (a bug this exact
+    # line once had -- see gs_experiment/results/FINDINGS.md's calibration-
+    # methodology section for how it was caught: a real checkpoint's raw
+    # values spanned [-2.39, 2.37], and the marginal-likelihood-fitted RBF
+    # sigma changed by ~2x once corrected). This is a fallback used whenever
+    # sh_coeffs isn't queried directionally (see splat_observations), so it
+    # must be a real color on its own.
+    colors = SH_C0 * sh_coeffs[:, :, 0].mean(axis=1) + 0.5
 
     opacities = rng.uniform(0.5, 1.0, n_splats)
     scales = rng.uniform(0.02, 0.08, size=(n_splats, 3))
@@ -525,7 +535,14 @@ def load_from_gsplat_checkpoint(
         )
 
     sh_coeffs = checkpoint["sh_coeffs"]
-    colors = sh_coeffs[:, :, 0].mean(axis=1)  # unused fallback, sh_coeffs takes priority (see splat_observations)
+    # Real (DC-only, view-independent) color -- SH_C0 * raw + 0.5, matching
+    # eval_sh's own degree-0 formula exactly (see that function and this
+    # module's other `colors=` assignment for why the raw coefficient alone
+    # is not a color: this line was the actual bug behind a real checkpoint's
+    # `colors` spanning [-2.39, 2.37] and the marginal-likelihood-fitted RBF
+    # sigma changing by ~2x once corrected -- gs_experiment/results/
+    # FINDINGS.md's calibration-methodology section).
+    colors = SH_C0 * sh_coeffs[:, :, 0].mean(axis=1) + 0.5  # unused fallback, sh_coeffs takes priority (see splat_observations)
 
     return SplatScene(
         positions=positions,

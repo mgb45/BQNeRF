@@ -53,10 +53,12 @@ from gs_experiment.scripts.train_minimal_gsplat import mean_psnr, train
 
 # Real lego-scale BQ hyperparameters (marginal-likelihood-fitted, see
 # real_directional_coverage_experiment.py's LEGO_GAP_SIGMA/LEGO_GAP_WINDOW_RADIUS
-# comment for the fitting story) -- NOT train()'s own bq_sigma=0.9/
-# bq_window_radius=1.6 defaults, which train()'s docstring explicitly warns
-# match a different (thin-rod/cylinder) scene family's scale, not lego's.
-LEGO_BQ_SIGMA = 0.0694
+# comment for the fitting story, including the 2025-09 refit after a real
+# colors bug -- gs_experiment/results/FINDINGS.md section 4) -- NOT train()'s
+# own bq_sigma=0.9/bq_window_radius=1.6 defaults, which train()'s docstring
+# explicitly warns match a different (thin-rod/cylinder) scene family's
+# scale, not lego's.
+LEGO_BQ_SIGMA = 0.13926
 LEGO_BQ_WINDOW_RADIUS = 0.08
 
 # Common recipe: matches real_directional_coverage_experiment.py's established

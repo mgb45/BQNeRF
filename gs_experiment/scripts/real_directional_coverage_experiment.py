@@ -51,16 +51,23 @@ LEGO_GAP_TRAIN_KWARGS = dict(
     densify_end=15000, min_opacity=0.005, max_splats=300000, log_every=2000, position_lr_final=2e-5,
     background_color=(1.0, 1.0, 1.0),
 )
-# Marginal-likelihood-fitted (hyperparams.py::fit_kernel_param_pooled_nd), pooled across 9
-# real checkpoints spanning both this experiment's lego-gap checkpoints and the cross-scene
-# gallery figure's checkpoints -- not hand-picked. This replaces an old sigma=0.9/window_radius=1.6
-# pair that turned out to be catastrophically wrong for this data (held-out log marginal
-# likelihood -35.8 MILLION vs -8607 at the fitted value -- not merely suboptimal), inherited
-# from an older, unreconciled convention and never checked against the data until a cross-figure
-# magnitude comparison exposed it (see git history / conversation this was caught in). Matches
-# render_scene_gallery.py's SIGMA/WINDOW_RADIUS exactly, so results are comparable across both
-# figures, not just internally consistent within each.
-LEGO_GAP_SIGMA = 0.0694
+# Marginal-likelihood-fitted (hyperparams.py::fit_kernel_param_pooled_nd), pooled across the
+# 5 real lego-gap checkpoints this experiment itself produces -- one shared sigma across gap
+# conditions is deliberate (a different sigma per condition would confound "does variance grow
+# with the gap" with "did the bandwidth happen to fit differently this time"), not an oversight.
+# This value (2025-09) is a refit of an earlier pooled fit after a real bug was found and fixed:
+# `SplatScene.colors` (splat_scene.py) was the raw SH-DC coefficient, not a real color (3DGS
+# stores SH coefficients as offsets from mid-gray, real_color = SH_C0*raw + 0.5) -- see
+# gs_experiment/results/FINDINGS.md section 4 for the full story and the fitted-bandwidth deltas
+# this produced project-wide (roughly 1.7x-2.0x on every checkpoint spot-checked). The prior
+# value here (0.0694, pooled across 9 checkpoints including the gallery figure's, before that
+# bug was found) replaced an even older, more badly wrong sigma=0.9/window_radius=1.6 pair
+# (held-out log marginal likelihood -35.8 MILLION vs -8607 at the fitted value) -- see git
+# history for that story. This refit pools only the 5 gap checkpoints (not also the gallery
+# checkpoints, unlike the prior value) since that's a cleaner, directly-reproducible set and
+# render_scene_gallery.py now fits its own sigma per-checkpoint at runtime anyway (see that
+# script; it no longer shares a hardcoded constant with this one).
+LEGO_GAP_SIGMA = 0.13926
 LEGO_GAP_WINDOW_RADIUS = 0.08
 # Also marginal-likelihood-fitted (DirectionalKernel via fit_kernel_param_pooled_nd), pooled
 # across real per-splat multi-view (direction, color) observations from 7 real checkpoints.

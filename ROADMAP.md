@@ -65,6 +65,20 @@ differentiate the NLL term's variance through the BQ posterior itself
 (currently detached) rather than iterating further on the auxiliary-loss
 weighting as-is.
 
+**Status update (bug fix + re-run)**: this experiment's own `LEGO_BQ_SIGMA`
+constant was one of the stale, pre-`SplatScene.colors`-fix bandwidths
+(0.0694 -> 0.13926, `FINDINGS.md` section 4) and had not yet been re-run
+against. Now re-run in full (`FINDINGS.md` section 1's updated tables).
+Two of three headline claims hold essentially unchanged: BQ-variance
+densification's win is confirmed (+0.85dB train / +0.24dB held-out, was
++0.83/+0.29), and the NLL loss term's held-out mild-negative effect is
+confirmed (-0.14dB held-out, was -0.21dB — same sign, similar size). The
+opacity floor's claim is narrowed: "no held-out quality cost" still holds
+(62.4% fewer splats, essentially flat held-out PSNR), but the previously
+reported small held-out *gain* (+0.16dB) is now -0.02dB (flat, not a
+measured win) — that specific framing should not be repeated. Next
+untested step unchanged.
+
 ## 2. Alternative kernels
 
 `gs_experiment/kernels.py` currently has two families — `RBFKernel` and
@@ -120,6 +134,20 @@ scenes than the lego-only result suggested. Full per-scene numbers in
 `paper/main.tex`'s appendix (Tables II-VIII).
 Matern-3/2 did not win outright on any metric/checkpoint.
 
+**Status update (bug fix + re-run)**: a real bug (`SplatScene.colors` was
+raw SH coefficients, not real color — see `FINDINGS.md` section 4) was
+fixed and the whole ablation was re-run. Fitted bandwidths shifted up
+1.45x-2.00x (RBF sigma) to as much as 18.2x (Matern/RQ in one case); the
+"RBF wins NLL in all 14/14 checkpoints" claim is no longer strictly true
+(now 12/14, still the large majority, often by orders of magnitude) and
+"RQ wins the sparse-checkpoint sparsity-ratio in 6/7 scenes" weakened to
+4/7 (RBF now wins 3/7). Both general recommendations (RBF for NLL-safety,
+RQ for sparsity-tracking) still hold as the dominant pattern, just less
+cleanly than originally reported. `kernel_family_ablation_results.json`
+has been overwritten with the corrected numbers; `paper/main.tex`'s
+Tables II-VIII have **not** been updated (need review with the user
+first — see `FINDINGS.md` section 4a for full before/after deltas).
+
 ## 3. Floater-flagging follow-up experiment
 
 README already confirms the signal flags GS-training floaters but marks
@@ -157,6 +185,71 @@ B: ~1.6dB PSNR behind real alpha compositing on average, ~50% of its raw
 predictions out of `[0,1]` range, ~49% negative BQ weights) to replace
 alpha compositing as the deployed mean. Tables II-VIII have NOT yet been
 updated to reflect this — that edit needs review with the user first.
+
+**Status update 2 (bug fix + re-run)**: the same `SplatScene.colors` bug
+from item 2's update above also affected every number in this section.
+Re-run (`FINDINGS.md` section 4b) shows the core recommendation not only
+holds but is demonstrated more starkly: variant 1 (existing post-hoc)'s
+NLL on dense (`wide`) checkpoints got ~10-20x *worse* after the fix (a
+real, mechanistically-understood consequence of `u_BQ` shrinking 5x-16x
+at real query points while the real rendering error it's scored against
+stayed unchanged — see FINDINGS.md for the full explanation, this is not
+a regression from the fix), while variant 3 (`R_alpha`) held flat or
+improved on 6/7 of those same checkpoints and now even beats the trivial
+constant-variance baseline outright in 2/14 cases (previously 0/14) and
+wins AUSE in 8/14 (previously 3/14, now a majority). Separately, Phase
+B's "`C_BQ` does not render competitively" verdict is substantially
+overturned by the fix: the ~56% out-of-range rate drops to ~5% (confirming
+it was largely a units-bug artifact — a near-0 raw-SH prediction reads as
+real color ~0.5, not black), and `C_BQ` now *beats* real alpha compositing
+on PSNR in 8/8 checked views (was 1/8), though SSIM is only roughly on par
+(not a clean win). The ~49% negative-BQ-weight rate is unchanged — a real,
+values-independent structural property, not a units artifact. Tables
+II-VIII still have NOT been updated — needs review with the user, now
+with a larger, more nuanced set of deltas than before.
+
+**Status update (Tier 2 risk, now resolved by actually regenerating all
+three figures)**: all three headline PNGs have been regenerated with the
+corrected sigma/kappa/colors and measured directly — see `FINDINGS.md`
+section 6 (section 4c above is left in place as the original estimate,
+marked superseded). `scene_gallery.png` and `lego_splat_sweep.png`
+self-corrected on a bare re-run as expected (sigma now ~0.09-0.24 across
+checkpoints, PSNR numbers unchanged and confirmed to exactly match
+`paper/main.tex`'s quoted spatial-coverage figures). A real,
+pre-existing bug unrelated to the colors fix was found and fixed while
+regenerating `lego_splat_sweep.png` (`KeyError: 'budget_rows'` — the
+script's row-building was never updated to match a later refactor of
+`plot_gallery`'s row format; fixed in
+`gs_experiment/scripts/render_splat_sweep_gallery.py`).
+`coverage_uncertainty_sweep.png` picked up the corrected `LEGO_GAP_SIGMA`
+(0.13926) automatically (confirmed: it imports the constant directly from
+`real_directional_coverage_experiment.py`, no separate hardcoded value of
+its own) — its PSNR numbers also match the paper exactly
+(35.12/29.19/22.91/15.13/16.09dB vs. quoted 35.1/29.2/22.9/15.1/16.1dB),
+but **its mean raw-variance numbers moved in the opposite direction from
+the section-4c estimate**: measured $0.084 \to 1.254 \to 3.343 \to 8.886
+\to 11.769$ (was estimated to grow ~6-8x to something like
+$5$-$7 \to \dots \to 500$-$600$; instead it *shrank* ~6.6x-9.8x from the
+paper's currently-quoted $0.82 \to 8.54 \to 22.12 \to 59.45 \to 78.85$).
+Traced to a real, verified mechanism: `RBFKernel` is a normalized Gaussian
+*density* (`gs_experiment/kernels.py`), whose own self-covariance
+`k(x,x)=1/(sigma*sqrt(2*pi))` *shrinks* as sigma grows, and the 3D
+position kernel is a product of three of these — so self-covariance scales
+as `1/sigma^3`; the ~2.0x sigma correction predicts almost exactly the
+measured ~6.6x-9.8x variance decrease (`2.0^3≈8`). The qualitative
+"grows monotonically, roughly two orders of magnitude with the gap"
+framing in the paper is unaffected and, if anything, slightly
+strengthened (new max/min ratio ~140x vs. old ~96x). All four candidate
+PNGs (`scene_gallery.png`, `scene_gallery_500.png`, `lego_splat_sweep.png`,
+`coverage_uncertainty_sweep.png`) are git-tracked, not gitignored;
+three were regenerated and are now modified in the working tree (not
+committed, per this task's own scope);
+`scene_gallery_500.png` was left untouched — it is a stale, orphaned file
+from a superseded pipeline stage, produced by no current script path and
+not referenced anywhere in `paper/main.tex` (only `scene_gallery.png` is).
+`paper/main.tex`'s text has **not** been edited — the coverage-sweep's
+quoted absolute numbers need the user's own review given they moved in the
+opposite direction from what was previously estimated.
 
 ## 5. Next-best-view selection evaluation
 
