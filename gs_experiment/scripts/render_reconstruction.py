@@ -151,6 +151,9 @@ def compute_uncertainty_maps(
     attribution_angular_tol: float = 0.01,
     max_observations_per_splat: Optional[int] = None,
     return_raw_variance: bool = False,
+    noise_variance: Optional[float] = None,
+    fit_noise_variance: bool = False,
+    return_bq_mean: bool = False,
 ):
     """Real per-pixel BQ uncertainty at every view in `view_indices`, on
     the exact same checkpoint `render_views` just rendered RGB from -- real
@@ -200,6 +203,42 @@ def compute_uncertainty_maps(
     actually determines its host memory footprint at high splat counts
     (see that function's docstring). `None` (the default) keeps every
     observation, i.e. unchanged from before this parameter existed.
+
+    `noise_variance`/`fit_noise_variance`: real homoscedastic observation-
+    noise support (see `gs_experiment.quadrature._rendering_aware_moments`'s
+    docstring for the model/motivation, and
+    `splat_scene.fit_kernel_hyperparams_with_noise` for the fitting
+    procedure) -- default `noise_variance=None`, `fit_noise_variance=False`
+    reproduces the exact noiseless behavior every existing caller already
+    gets. Pass `fit_noise_variance=True` (with `sigma=None`, the default)
+    to jointly fit sigma and a real noise variance against this
+    checkpoint's own data instead of `fit_kernel_hyperparams`'s noiseless
+    fit -- found, on every real checkpoint checked so far, to fit
+    dramatically better (a real, large marginal-likelihood improvement,
+    not a close call) and to visibly reduce the negative-BQ-weight/
+    color-speckle artifacts the noiseless fit produces. Pass an explicit
+    `noise_variance` to opt out of fitting it (same "explicit value skips
+    fitting" convention `sigma`/`kappa` already use).
+
+    `return_bq_mean` (default False, unchanged behavior): if True, each
+    returned tuple gains one more element (appended after `raw_field`
+    when `return_raw_variance` is also True, otherwise appended right
+    after `dir_field`) -- `C_BQ`, the BQ posterior mean, as a real
+    (height, width, 3) RGB array at the same valid pixels as every other
+    field. This project's core GP machinery is single-channel by design
+    elsewhere (`scene.colors`/`obs_values`, the mean of the SH DC term
+    across RGB -- see `splat_scene.SplatScene.colors`), but a genuine
+    3-channel `C_BQ` is available for near-zero extra cost via
+    `splat_observations`'s `return_rgb=True` (the real per-channel SH
+    values `obs_values` is itself collapsed from) combined with
+    `compute_directional_variance_batched`'s own `values_rgb` parameter,
+    which solves all 3 channels through the SAME Cholesky factorization
+    the variance computation already performs (candidate gathering and
+    `Kxx` don't depend on color at all, only which right-hand-side column
+    does). This is `u_BQ`'s own mean, i.e. the *coherent* pairing --
+    unlike `C_alpha` (`render_views`'s real alpha-compositing output),
+    which `u_BQ` was never derived as a variance around (see
+    `gs_experiment/results/FINDINGS.md` section 3).
     """
     import gsplat
 
@@ -219,7 +258,23 @@ def compute_uncertainty_maps(
         max_observations_per_splat=max_observations_per_splat,
     )
 
-    if sigma is None or kappa is None:
+    if noise_variance is None and fit_noise_variance and sigma is None:
+        from gs_experiment.splat_scene import fit_kernel_hyperparams_with_noise
+
+        fitted_sigma, fitted_noise_variance, fitted_kappa = fit_kernel_hyperparams_with_noise(scene)
+        used_sigma = fitted_sigma if fitted_sigma is not None else FALLBACK_SIGMA
+        used_noise_variance = fitted_noise_variance if fitted_noise_variance is not None else 0.0
+        used_kappa = kappa if kappa is not None else (fitted_kappa if fitted_kappa is not None else FALLBACK_KAPPA)
+        print(
+            f"compute_uncertainty_maps: sigma={used_sigma:.4f}"
+            f"{' (fitted w/ noise)' if fitted_sigma is not None else ' (fallback)'}, "
+            f"noise_variance={used_noise_variance:.5f}"
+            f"{' (fitted)' if fitted_noise_variance is not None else ' (fallback: 0)'}, "
+            f"kappa={used_kappa:.4f}"
+            f"{' (fitted)' if kappa is None and fitted_kappa is not None else ' (fallback)' if kappa is None else ''}"
+        )
+        sigma, kappa, noise_variance = used_sigma, used_kappa, used_noise_variance
+    elif sigma is None or kappa is None:
         from gs_experiment.splat_scene import fit_kernel_hyperparams
 
         fitted_sigma, fitted_kappa = fit_kernel_hyperparams(scene)
@@ -233,8 +288,10 @@ def compute_uncertainty_maps(
         )
         sigma, kappa = used_sigma, used_kappa
 
-    obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations = splat_observations(
-        scene, include_render_attrs=True
+    noise_variance = noise_variance if noise_variance is not None else 0.0
+
+    obs_positions, obs_directions, obs_values, obs_opacities, obs_scales, obs_rotations, obs_values_rgb = (
+        splat_observations(scene, include_render_attrs=True, return_rgb=True)
     )
     bounds = tuple((obs_positions[:, d].min() - 1.0, obs_positions[:, d].max() + 1.0) for d in range(3))
 
@@ -276,6 +333,12 @@ def compute_uncertainty_maps(
         valid_up = np.array(valid_img.resize((width, height), Image.NEAREST)) > 127
         return np.where(valid_up, field_up, np.nan)
 
+    def upsample_rgb(field_rgb, valid):
+        # `upsample`'s PIL "F" mode is single-channel -- upsample each
+        # channel independently (same bilinear/nearest resize, same valid
+        # mask) and stack, rather than a separate RGB-aware implementation.
+        return np.stack([upsample(field_rgb[..., c], valid) for c in range(field_rgb.shape[-1])], axis=-1)
+
     maps = []
     with torch.no_grad():
         for i in view_indices:
@@ -300,13 +363,16 @@ def compute_uncertainty_maps(
             spatial_field = np.full((depth_height, depth_width), np.nan)
             dir_field = np.full((depth_height, depth_width), np.nan)
             raw_field = np.full((depth_height, depth_width), np.nan)
+            bq_mean_field = np.full((depth_height, depth_width, 3), np.nan)
             ys, xs = np.where(valid)
             points = world_points[ys, xs]
             to_camera = cam_center[None, :] - points
             query_directions = to_camera / np.linalg.norm(to_camera, axis=1, keepdims=True)
 
             for y, x, point in zip(ys, xs, points):
-                spatial_field[y, x] = spatial_engine.rendering_aware_variance(point, window_radius).variance
+                spatial_field[y, x] = spatial_engine.rendering_aware_variance(
+                    point, window_radius, noise_variance=noise_variance
+                ).variance
             # Batched over every valid pixel in this view at once (one GPU pass instead of one
             # Python call per pixel) -- see gpu_uncertainty.py's module docstring: this is the
             # same closed-form math rendering_aware_variance_along_ray_directional computes per
@@ -321,16 +387,25 @@ def compute_uncertainty_maps(
                 # across panels/scenes/figures; this ratio is much less sensitive to sigma
                 # (numerator and denominator scale together) and is bounded, so a reader can
                 # compare it directly across panels without a per-panel autoscaled colorbar.
-                variance, prior_variance = compute_directional_variance_batched(
+                batched_result = compute_directional_variance_batched(
                     directional_engine, camera_index, points, query_directions,
                     angular_tol=0.05, sigma_rbf=sigma, kappa=kappa, max_candidates=500, device=device,
+                    noise_variance=noise_variance,
+                    values_rgb=(obs_values_rgb if return_bq_mean else None),
                 )
+                if return_bq_mean:
+                    variance, prior_variance, bq_mean_rgb = batched_result
+                    bq_mean_field[ys, xs] = bq_mean_rgb
+                else:
+                    variance, prior_variance = batched_result
                 dir_field[ys, xs] = variance / np.maximum(prior_variance, 1e-300)
                 raw_field[ys, xs] = variance
 
             row = (upsample(spatial_field, valid), upsample(dir_field, valid))
             if return_raw_variance:
                 row = row + (upsample(raw_field, valid),)
+            if return_bq_mean:
+                row = row + (upsample_rgb(bq_mean_field, valid),)
             maps.append(row)
 
     return maps

@@ -114,7 +114,7 @@ def make_mock_scene(
     )
 
 
-def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
+def splat_observations(scene: SplatScene, include_render_attrs: bool = False, return_rgb: bool = False):
     """Expand a SplatScene into parallel (position, direction, value)
     arrays -- one row per (splat, observing-camera) pair -- the input
     format the directional kernel (DirectionalKernel, combined with a
@@ -126,6 +126,19 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
     splat, same as before SH support existed. The flat-color path is a
     known simplification (the same value regardless of viewing direction),
     kept only for scenes that don't set sh_coeffs.
+
+    `return_rgb` (default False, unchanged behavior): also returns
+    `values_rgb`, (n_rows, 3) -- the same `eval_sh` result `values_flat`
+    is itself collapsed from (`colors.mean(axis=-1)`), kept un-collapsed
+    this time. This project's scalar-valued GP machinery elsewhere is
+    genuinely single-channel by design (see `SplatScene.colors`'s own
+    comment) -- `values_rgb` exists only for callers that want a real
+    3-channel BQ posterior mean for visualization
+    (`gs_experiment.gpu_uncertainty.compute_directional_variance_batched`'s
+    own `values_rgb` parameter), not to make the rest of the pipeline
+    multi-channel. Falls back to `scene.colors[i]` broadcast to 3
+    identical channels when `scene.sh_coeffs` is unset (no real per-channel
+    signal exists in that path either way).
 
     `include_render_attrs=True` additionally returns `opacities`/`scales`/
     `rotations` arrays, each splat's own value repeated once per observing
@@ -156,6 +169,7 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
     positions_flat = scene.positions[splat_idx_flat]
     directions_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float)
     values_flat = np.empty(splat_idx_flat.shape[0], dtype=float) if scene.sh_coeffs is not None else None
+    values_rgb_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float) if scene.sh_coeffs is not None else None
     for c in np.unique(cam_idx_flat):
         rows = cam_idx_flat == c
         directions_flat[rows] = directions_from_positions_to_camera(positions_flat[rows], scene.cameras[c])
@@ -171,16 +185,20 @@ def splat_observations(scene: SplatScene, include_render_attrs: bool = False):
             # splats instead of the sum over all cameras.
             colors = eval_sh(scene.sh_coeffs[splat_idx_flat[rows]], directions_flat[rows], scene.sh_degree)
             values_flat[rows] = colors.mean(axis=-1)  # collapse channels to one scalar, matching the flat-color path
+            values_rgb_flat[rows] = colors
 
     if scene.sh_coeffs is None:
         values_flat = scene.colors[splat_idx_flat]
+        values_rgb_flat = np.tile(values_flat[:, None], (1, 3))
 
     if include_render_attrs:
-        return (
+        result = (
             positions_flat, directions_flat, values_flat,
             scene.opacities[splat_idx_flat], scene.scales[splat_idx_flat], scene.rotations[splat_idx_flat],
         )
-    return positions_flat, directions_flat, values_flat
+    else:
+        result = (positions_flat, directions_flat, values_flat)
+    return result + (values_rgb_flat,) if return_rgb else result
 
 
 # Two independent, additive costs make up load_from_gsplat_checkpoint's/
@@ -355,6 +373,112 @@ def fit_kernel_hyperparams(
         kappa = float(fit.param)
 
     return sigma, kappa
+
+
+def fit_kernel_hyperparams_with_noise(
+    scene: SplatScene,
+    sigma_bounds=(0.005, 1.0),
+    noise_bounds=(1e-5, 0.5),
+    kappa_bounds=(0.05, 20.0),
+    n_windows: int = 25,
+    max_window_size: int = 60,
+    window_radius: float = 0.08,
+    min_opacity: float = 0.1,
+    min_observations_for_kappa: int = 3,
+    seed: int = 0,
+):
+    """`fit_kernel_hyperparams`'s noise-aware sibling: fits the position
+    kernel's bandwidth (sigma) *jointly* with a real homoscedastic
+    observation-noise variance (`gs_experiment.hyperparams.
+    fit_kernel_param_and_noise_pooled_nd`), instead of the noiseless-
+    interpolation assumption `fit_kernel_hyperparams` makes. Motivation:
+    real splat positions routinely include near-duplicate points (observed
+    directly -- pairwise distances as small as 1e-4 units under a
+    ~0.1-unit noiseless-fit bandwidth), which forces the noiseless fit
+    toward an artificially short bandwidth just to keep exactly
+    interpolating through them, at a real, large marginal-likelihood cost
+    (confirmed directly: +180 to +780 log-likelihood units from adding
+    noise, across 8 real scene/checkpoint combinations checked, never a
+    close call) -- and a visibly worse-conditioned, speckle-prone posterior
+    downstream (the negative-BQ-weight rate this project already found and
+    reported, gs_experiment/results/FINDINGS.md's calibration-methodology
+    sections). See `gs_experiment.quadrature._rendering_aware_moments`'s
+    docstring for the full noise model and motivation, and
+    `fit_kernel_param_and_noise_pooled_nd`'s docstring for the fitting
+    procedure itself (a 2D marginal-likelihood grid search + local refine,
+    replacing `fit_kernel_param_pooled_nd`'s 1D one).
+
+    Kappa (the directional kernel's concentration) is fit exactly as in
+    `fit_kernel_hyperparams`, unchanged -- its own fitting path never went
+    through the noiseless-interpolation assumption sigma's does (see that
+    function's docstring), so there is no analogous fix to make there; RBF
+    plus a real observation-noise term is this project's current best-
+    supported combination (not yet extended to Matérn/rational quadratic,
+    kept intentionally scoped rather than speculatively generalized).
+
+    Returns `(sigma, noise_variance, kappa)`; `sigma`/`noise_variance` are
+    `None` together if there wasn't enough real data to fit them (same
+    condition `fit_kernel_hyperparams` uses for `sigma`), `kappa` is `None`
+    on its own separate condition, exactly as `fit_kernel_hyperparams`.
+    Deliberately a separate function rather than a `with_noise=` flag on
+    `fit_kernel_hyperparams` that would change its return arity
+    conditionally -- every existing caller of `fit_kernel_hyperparams`
+    keeps unpacking exactly `(sigma, kappa)`, untouched.
+    """
+    from scipy.spatial import cKDTree
+
+    from gs_experiment.hyperparams import fit_kernel_param_and_noise_pooled_nd, fit_kernel_param_pooled_nd
+    from gs_experiment.kernels import DirectionalKernel, ProductKernel, RBFKernel
+
+    rng = np.random.default_rng(seed)
+    keep = scene.opacities > min_opacity
+    positions = scene.positions[keep]
+    colors = scene.colors[keep]
+    opac_idx = np.nonzero(keep)[0]
+
+    sigma, noise_variance = None, None
+    if len(positions) >= 6:
+        tree = cKDTree(positions)
+        query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
+        sigma_datasets = []
+        for p in positions[query_idx]:
+            idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
+            if len(idx) < 6:
+                continue
+            if len(idx) > max_window_size:
+                idx = rng.choice(idx, size=max_window_size, replace=False)
+            sigma_datasets.append((positions[idx], colors[idx]))
+        if sigma_datasets:
+            fit = fit_kernel_param_and_noise_pooled_nd(
+                sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3),
+                bounds=sigma_bounds, noise_bounds=noise_bounds, n_grid=15,
+            )
+            sigma = float(fit.param)
+            noise_variance = float(fit.noise_variance)
+
+    kappa = None
+    eligible = [i for i in opac_idx if len(scene.observed_camera_idx[i]) >= min_observations_for_kappa]
+    if eligible:
+        chosen = rng.choice(eligible, size=min(n_windows, len(eligible)), replace=False)
+        kappa_datasets = []
+        for i in chosen:
+            cams = scene.observed_camera_idx[i]
+            if len(cams) > max_window_size:
+                cams = rng.choice(cams, size=max_window_size, replace=False)
+            directions = np.stack(
+                [directions_from_positions_to_camera(scene.positions[i][None, :], scene.cameras[c])[0] for c in cams]
+            )
+            if scene.sh_coeffs is not None:
+                colors_i = eval_sh(scene.sh_coeffs[i][None, :, :], directions, scene.sh_degree).mean(axis=-1)
+            else:
+                colors_i = np.full(len(cams), scene.colors[i])
+            kappa_datasets.append((directions, colors_i))
+        fit = fit_kernel_param_pooled_nd(
+            kappa_datasets, lambda k: DirectionalKernel(kappa=k), bounds=kappa_bounds, n_grid=25,
+        )
+        kappa = float(fit.param)
+
+    return sigma, noise_variance, kappa
 
 
 def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_target_splats: int = 40, n_cameras_per_side: int = 6):

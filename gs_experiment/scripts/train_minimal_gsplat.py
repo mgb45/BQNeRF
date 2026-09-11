@@ -191,7 +191,9 @@ def _build_uncertainty_engine(params: dict, sigma: float, max_neighbors: int) ->
     )
 
 
-def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: float, max_neighbors: int, device: str) -> torch.Tensor:
+def compute_per_splat_bq_variance(
+    params: dict, sigma: float, window_radius: float, max_neighbors: int, device: str, noise_variance: float = 0.0,
+) -> torch.Tensor:
     """Rendering-aware BQ variance at every current splat's own position --
     the closed-form, "uncertainty-driven" analogue of the standard 3DGS
     view-space-gradient densification signal (`avg_grad` in `train`):
@@ -202,10 +204,19 @@ def compute_per_splat_bq_variance(params: dict, sigma: float, window_radius: flo
     for it. Pure numpy/scipy (LocalUncertaintyEngine), so this detaches
     from the training graph entirely -- used only to pick *which* splats
     to split/clone, not backpropagated through.
+
+    `noise_variance` (default 0.0, unchanged behavior): real homoscedastic
+    observation-noise variance -- see
+    `gs_experiment.quadrature._rendering_aware_moments`'s docstring for the
+    model/motivation and `gs_experiment.splat_scene.
+    fit_kernel_hyperparams_with_noise` for how to fit it jointly with
+    `sigma` against a real checkpoint.
     """
     positions_np, _, _ = _splat_positions_and_colors(params)
     engine = _build_uncertainty_engine(params, sigma, max_neighbors)
-    variances = np.array([engine.rendering_aware_variance(p, window_radius).variance for p in positions_np])
+    variances = np.array(
+        [engine.rendering_aware_variance(p, window_radius, noise_variance=noise_variance).variance for p in positions_np]
+    )
     return torch.tensor(variances, dtype=torch.float32, device=device)
 
 
@@ -241,6 +252,7 @@ def compute_nll_loss_term(
     max_neighbors: int,
     alpha_threshold: float,
     variance_floor: float,
+    noise_variance: float = 0.0,
 ) -> Optional[torch.Tensor]:
     """Gaussian-NLL loss at a sparse grid of real ray-surface points,
     weighted by closed-form BQ position-only variance -- ROADMAP.md item
@@ -252,6 +264,11 @@ def compute_nll_loss_term(
     points on the query grid (e.g. very early in training, before any
     splat has opacity/coverage at this view) -- callers should skip adding
     the term for that iteration rather than treat this as an error.
+
+    `noise_variance` (default 0.0, unchanged behavior): see
+    `compute_per_splat_bq_variance`'s docstring -- same real
+    homoscedastic observation-noise extension, applied here too so both
+    of `train`'s BQ mechanisms share one consistent kernel assumption.
     """
     import gsplat
 
@@ -284,7 +301,12 @@ def compute_nll_loss_term(
 
         engine = _build_uncertainty_engine(params, sigma, max_neighbors)
         ys, xs = np.where(valid)
-        variances = np.array([engine.rendering_aware_variance(world_points[y, x], window_radius).variance for y, x in zip(ys, xs)])
+        variances = np.array(
+            [
+                engine.rendering_aware_variance(world_points[y, x], window_radius, noise_variance=noise_variance).variance
+                for y, x in zip(ys, xs)
+            ]
+        )
 
         rows = np.clip(((ys.astype(np.float64) + 0.5) * height / grid_res).astype(int), 0, height - 1)
         cols = np.clip(((xs.astype(np.float64) + 0.5) * width / grid_res).astype(int), 0, width - 1)
@@ -460,6 +482,7 @@ def train(
     bq_sigma: float = 0.9,
     bq_window_radius: float = 1.6,
     bq_max_neighbors: int = 150,
+    bq_noise_variance: float = 0.0,
     nll_weight: float = 0.0,
     nll_interval: int = 100,
     nll_grid_res: int = 12,
@@ -644,7 +667,7 @@ def train(
             nll_term = compute_nll_loss_term(
                 params, pred, gt, viewmats[view_idx].cpu().numpy(), Ks[view_idx].cpu().numpy(), width, height,
                 sh_degree, device, nll_grid_res, bq_sigma, bq_window_radius, bq_max_neighbors,
-                nll_alpha_threshold, nll_variance_floor,
+                nll_alpha_threshold, nll_variance_floor, noise_variance=bq_noise_variance,
             )
             if nll_term is not None:
                 loss = loss + nll_weight * nll_term
@@ -676,7 +699,9 @@ def train(
                     # gradient signal -- every splat has a well-defined
                     # variance, so (unlike the gradient path) there's no
                     # "never received a gradient yet" mask to apply.
-                    avg_grad = compute_per_splat_bq_variance(params, bq_sigma, bq_window_radius, bq_max_neighbors, device)
+                    avg_grad = compute_per_splat_bq_variance(
+                        params, bq_sigma, bq_window_radius, bq_max_neighbors, device, noise_variance=bq_noise_variance
+                    )
                     has_data = torch.ones_like(avg_grad, dtype=torch.bool)
                     if bq_densify_min_opacity > 0.0:
                         # BQ variance is high in genuinely empty space too
@@ -1051,6 +1076,11 @@ def main():
     parser.add_argument("--densify-criterion", choices=["gradient", "bq_variance"], default="gradient")
     parser.add_argument("--bq-sigma", type=float, default=0.9)
     parser.add_argument("--bq-window-radius", type=float, default=1.6)
+    parser.add_argument(
+        "--bq-noise-variance", type=float, default=0.0,
+        help="real homoscedastic observation-noise variance, added to K's diagonal alongside bq_sigma's kernel -- "
+        "0 (default) is the exact noiseless behavior; see splat_scene.fit_kernel_hyperparams_with_noise to fit it",
+    )
     parser.add_argument("--nll-weight", type=float, default=0.0, help="0 = off; see train()'s docstring")
     parser.add_argument("--nll-interval", type=int, default=None, help="default: 100, or 50 in --nll-experiment mode")
     parser.add_argument("--nll-grid-res", type=int, default=12)
@@ -1094,6 +1124,7 @@ def main():
         densify_criterion=args.densify_criterion,
         bq_sigma=args.bq_sigma,
         bq_window_radius=args.bq_window_radius,
+        bq_noise_variance=args.bq_noise_variance,
         nll_weight=args.nll_weight,
         nll_interval=args.nll_interval if args.nll_interval is not None else 100,
         nll_grid_res=args.nll_grid_res,

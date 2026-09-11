@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import gs_experiment.ply_io as ply_io
 from gs_experiment.nerf_transforms import load_transforms
+from gs_experiment.scripts.real_directional_coverage_experiment import LEGO_GAP_NOISE_VARIANCE
 from gs_experiment.scripts.train_minimal_gsplat import mean_psnr, train
 
 # Real lego-scale BQ hyperparameters (marginal-likelihood-fitted, see
@@ -60,6 +61,13 @@ from gs_experiment.scripts.train_minimal_gsplat import mean_psnr, train
 # scale, not lego's.
 LEGO_BQ_SIGMA = 0.13926
 LEGO_BQ_WINDOW_RADIUS = 0.08
+# Real homoscedastic observation-noise variance, jointly fit alongside sigma
+# and pooled across the same 5 real lego-gap checkpoints LEGO_GAP_SIGMA was
+# refit against -- see real_directional_coverage_experiment.py's
+# LEGO_GAP_NOISE_VARIANCE for the full fitting story/provenance. Used by the
+# `bq_densify_noise` variant below (see gs_experiment/results/FINDINGS.md's
+# noise-variance section).
+LEGO_BQ_NOISE_VARIANCE = LEGO_GAP_NOISE_VARIANCE
 
 # Common recipe: matches real_directional_coverage_experiment.py's established
 # lego convention (white background, position-LR decay, SSIM loss term) scaled
@@ -88,13 +96,21 @@ COMMON_KWARGS = dict(
 
 # The four variants ROADMAP.md item 1 asks for, plus a fifth exploring the
 # open bq_densify_min_opacity design question (does flooring the BQ-variance
-# densify score by opacity change the outcome vs. leaving it unset?).
+# densify score by opacity change the outcome vs. leaving it unset?), plus a
+# sixth (bq_densify_noise) testing whether the project's validated real
+# homoscedastic observation-noise extension (see
+# gs_experiment/results/FINDINGS.md's noise-variance section) also helps
+# *during* training, not just at post-hoc uncertainty query time -- same as
+# bq_densify (BQ-variance-driven densification, no NLL loss term) but with a
+# real noise_variance added to the BQ Gram matrix's diagonal used for the
+# per-splat variance the densify criterion itself reads.
 VARIANTS = {
     "baseline": dict(densify_criterion="gradient", nll_weight=0.0),
     "bq_densify": dict(densify_criterion="bq_variance", nll_weight=0.0),
     "nll_loss": dict(densify_criterion="gradient", nll_weight=0.02),
     "bq_densify+nll": dict(densify_criterion="bq_variance", nll_weight=0.02),
     "bq_densify_floor": dict(densify_criterion="bq_variance", nll_weight=0.0, bq_densify_min_opacity=0.05),
+    "bq_densify_noise": dict(densify_criterion="bq_variance", nll_weight=0.0, bq_noise_variance=LEGO_BQ_NOISE_VARIANCE),
 }
 
 

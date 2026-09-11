@@ -79,6 +79,21 @@ reported small held-out *gain* (+0.16dB) is now -0.02dB (flat, not a
 measured win) — that specific framing should not be repeated. Next
 untested step unchanged.
 
+**Status update (noise-variance extension, 6th variant)**: a real
+homoscedastic observation-noise variance was added to the BQ posterior
+project-wide (RBF only — see `FINDINGS.md` section 7). A 6th variant,
+`bq_densify_noise` (`densify_criterion="bq_variance"` plus a real,
+pooled-fit `bq_noise_variance=0.005532`), was added and the full 6-variant
+comparison re-run (`FINDINGS.md` section 7b, new output dir
+`likelihood_experiment_v3/`). Result: a genuine, if modest, win — the
+best held-out PSNR of all 6 variants (17.72dB, +0.42dB vs. baseline,
+beating plain `bq_densify`'s own +0.35dB), at a similar splat-growth cost
+(+221 vs. +192). Consistent with (not contradicted by) the same session's
+more mixed/negative NLL-calibration findings elsewhere (section 7a/7c):
+densification only needs BQ variance's *relative* ranking across splats,
+not a well-calibrated absolute scale, so the shrinking-self-covariance
+side effect that hurts Gaussian-NLL-style metrics doesn't apply here.
+
 ## 2. Alternative kernels
 
 `gs_experiment/kernels.py` currently has two families — `RBFKernel` and
@@ -147,6 +162,43 @@ cleanly than originally reported. `kernel_family_ablation_results.json`
 has been overwritten with the corrected numbers; `paper/main.tex`'s
 Tables II-VIII have **not** been updated (need review with the user
 first — see `FINDINGS.md` section 4a for full before/after deltas).
+
+**Status update (sparsity-correlation metric removed)**: the
+sparsity-correlation check (`sparsity_correlation` in
+`kernel_family_ablation.py` — does posterior variance at a splat's own
+position track local kNN distance?) was removed from this ablation, and
+every mention of its results has been stripped from
+`gs_experiment/results/FINDINGS.md` (not just caveated). It was
+introduced to test a noise-variance kernel extension and produced a
+clean-looking result (a 7/7-scene win on dense checkpoints), but on
+review it wasn't a sound experiment for two separable reasons:
+
+- **Confounds specific to this comparison**: the `rbf_noise` family
+  jointly refits *both* its bandwidth and its noise_variance, while plain
+  `rbf` only refits bandwidth, so the result couldn't be attributed to
+  noise modeling specifically vs. just a different fitted bandwidth; the
+  window_radius/knn_k used for the sparsity label were fixed constants
+  shared across kernel families whose own fitted lengthscales differ; and
+  the metric's self-exclusion-at-query-position design likely interacted
+  with the already-documented near-duplicate-position Gram-matrix
+  conditioning issue more than it measured genuine epistemic uncertainty
+  about sparsity.
+- **A more fundamental design problem, independent of those confounds**:
+  local kNN distance is one narrow, somewhat arbitrary proxy for
+  "sparsity," and this method's posterior variance is shaped by several
+  real, scene-specific factors at once (local opacity, real neighbor
+  count relative to the engine's `max_neighbors` cap, per-scene
+  splat-density distribution, fitted bandwidth) that a single scalar
+  label can't cleanly separate from genuine epistemic uncertainty. Even a
+  confound-free version of this metric would still be a weak, hard-to-
+  interpret way to compare kernel families or noise-variance variants.
+
+Rather than caveat an uninterpretable metric, it was deleted; item 2's
+remaining metric (calibration against real held-out rendering error,
+reported via a proper scoring rule and, per follow-up direction, AUSE)
+is unaffected and is a clean, apples-to-apples comparison across families
+since it doesn't depend on the query-neighbor self-exclusion design or a
+single sparsity proxy.
 
 ## 3. Floater-flagging follow-up experiment
 
@@ -250,6 +302,29 @@ not referenced anywhere in `paper/main.tex` (only `scene_gallery.png` is).
 `paper/main.tex`'s text has **not** been edited — the coverage-sweep's
 quoted absolute numbers need the user's own review given they moved in the
 opposite direction from what was previously estimated.
+
+**Status update (noise-variance extension, 6th variant — a genuinely
+negative result for this specific pairing)**: with the project-wide
+homoscedastic observation-noise extension in place (RBF only —
+`FINDINGS.md` section 7), a 6th Phase A variant,
+`existing_posthoc_noise`, was added: the same `(C_alpha, u_BQ)` pairing
+as variant 1, but with `u_BQ` computed under the noise-aware joint
+`(sigma, noise_variance)` fit instead of the noiseless one. Full 7-scene
+Phase A re-run (`FINDINGS.md` section 7c). Result: **noise-variance does
+NOT fix, and measurably worsens, variant 1's already-documented
+miscalibration** — loses to the noiseless pairing on mean NLL in 13/14
+checkpoints (median 94.0 -> 344.6, mean 410.9 -> 1265.7), and 1σ/2σ
+empirical coverage drops further (0.499 -> 0.203, 0.639 -> 0.340) —
+i.e. more overconfident, not less. Same mechanism as the calibration
+ablation's own negative result above: the noise-aware fit's much larger
+jointly-fit sigma shrinks this project's normalized-density RBF kernel's
+absolute variance scale. Variant 3 (`R_alpha`) is confirmed unaffected
+(bit-for-bit identical before/after, all 14 checkpoints, since it's
+computed independently of variant 6's new path) — **`R_alpha` remains
+the correct, already-established fix for variant 1's miscalibration;
+noise-variance alone does not substitute for it.** Full write-up,
+mechanism, and honest overall read (mixed, not uniformly positive) in
+`FINDINGS.md` section 7 (7a-7e).
 
 ## 5. Next-best-view selection evaluation
 

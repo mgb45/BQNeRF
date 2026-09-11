@@ -69,6 +69,29 @@ LEGO_GAP_TRAIN_KWARGS = dict(
 # script; it no longer shares a hardcoded constant with this one).
 LEGO_GAP_SIGMA = 0.13926
 LEGO_GAP_WINDOW_RADIUS = 0.08
+# Real homoscedastic observation-noise variance, jointly fit alongside a
+# bandwidth via hyperparams.fit_kernel_param_and_noise_pooled_nd (see that
+# function's docstring, and gs_experiment.quadrature._rendering_aware_moments
+# for the full model/motivation -- real splat positions routinely include
+# near-duplicate points that force a noiseless fit toward an artificially
+# short bandwidth), pooled across real local (position, color) windows
+# gathered via kernel_family_ablation.sample_sigma_windows(window_radius=
+# LEGO_GAP_WINDOW_RADIUS) from the SAME 5 real lego-gap checkpoints
+# LEGO_GAP_SIGMA above is pooled across (125 windows total, 25 per
+# checkpoint). This joint fit's own bandwidth (0.6121) differs substantially
+# from LEGO_GAP_SIGMA's noiseless one (0.1393) -- not a contradiction, the
+# noiseless fit is forced short specifically to keep exactly interpolating
+# through near-duplicate points, which this fit no longer needs to do -- and
+# is NOT used in place of LEGO_GAP_SIGMA anywhere (every existing caller of
+# LEGO_GAP_SIGMA/LEGO_GAP_KAPPA is left exactly as before); this noise
+# variance is instead layered ON TOP of the existing noiseless LEGO_GAP_SIGMA
+# fit's Gram-matrix diagonal by callers that opt in (see
+# render_coverage_uncertainty_sweep.py's `noise_variance` argument and
+# likelihood_training_experiment.py's `LEGO_BQ_NOISE_VARIANCE` alias). Real
+# marginal-likelihood gain from adding noise: log marginal likelihood
+# 5230.79 (noiseless) -> 7704.97 (noise-aware), +2474.17 units, not a close
+# call -- see gs_experiment/results/FINDINGS.md's noise-variance section.
+LEGO_GAP_NOISE_VARIANCE = 0.005532
 # Also marginal-likelihood-fitted (DirectionalKernel via fit_kernel_param_pooled_nd), pooled
 # across real per-splat multi-view (direction, color) observations from 7 real checkpoints.
 # Held-out log marginal likelihood 1413 at this value vs 202 at the old hardcoded 4.0 -- that

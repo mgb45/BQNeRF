@@ -215,7 +215,12 @@ class LocalUncertaintyEngine:
         return idx
 
     def rendering_aware_variance(
-        self, query_point: np.ndarray, radius: float, exclude_idx: Optional[int] = None, sigma_rbf: Optional[float] = None
+        self,
+        query_point: np.ndarray,
+        radius: float,
+        exclude_idx: Optional[int] = None,
+        sigma_rbf: Optional[float] = None,
+        noise_variance: float = 0.0,
     ) -> BQResult:
         """A renderer-aware local BQ variance: instead of integrating
         pos_kernel uniformly over an arbitrary box, this builds a real per-query a_q
@@ -241,6 +246,10 @@ class LocalUncertaintyEngine:
         closed form requires it -- pass sigma_rbf explicitly is not enough
         on its own since K itself is still built from `pos_kernel`, so a
         Matern pos_kernel would need the numerical mode, not wired up here).
+
+        `noise_variance` (default 0.0, unchanged behavior): a real
+        homoscedastic observation-noise variance added to K's diagonal --
+        see `gs_experiment.quadrature._rendering_aware_moments`'s docstring.
         """
         if self.opacities is None:
             raise ValueError("opacities not set on this engine -- construct with opacities= to use this method")
@@ -268,7 +277,9 @@ class LocalUncertaintyEngine:
         # `radius` choices -- see gs_experiment/render_weight.py's docstring.
         render_weight = GaussianRenderWeight.from_total_mass(total_mass=mean_opacity, center=query_point, covariance=covariance)
 
-        return bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+        return bayesian_quadrature_rendering_aware(
+            local_positions, local_values, render_weight, sigma_rbf=sigma_rbf, noise_variance=noise_variance
+        )
 
     def build_bearing_index(self, camera: CameraPose) -> CameraSplatIndex:
         """Build once per camera, reuse across every
@@ -291,6 +302,7 @@ class LocalUncertaintyEngine:
         angular_tol: float = 0.05,
         max_candidates: int = 500,
         sigma_rbf: Optional[float] = None,
+        noise_variance: float = 0.0,
     ) -> BQResult:
         """rendering_aware_variance's occlusion-aware upgrade: a_q's shape
         is built from real, depth-ordered alpha-compositing transmittance
@@ -330,7 +342,9 @@ class LocalUncertaintyEngine:
         idx, local_positions, local_values, render_weight, _alpha_weights = self._along_ray_local_data(
             query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates
         )
-        return bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+        return bayesian_quadrature_rendering_aware(
+            local_positions, local_values, render_weight, sigma_rbf=sigma_rbf, noise_variance=noise_variance
+        )
 
     def rendering_aware_alpha_risk_along_ray(
         self,
@@ -341,6 +355,7 @@ class LocalUncertaintyEngine:
         angular_tol: float = 0.05,
         max_candidates: int = 500,
         sigma_rbf: Optional[float] = None,
+        noise_variance: float = 0.0,
     ) -> "RenderingAwareAlphaRisk":
         """`rendering_aware_variance_along_ray`'s calibration-methodology
         companion: reports the *real* local alpha-compositing quadrature
@@ -365,15 +380,26 @@ class LocalUncertaintyEngine:
         this window's candidates) -- compare against a real rendered pixel
         value directly if that gap matters for a given use, don't assume
         equality.
+
+        `noise_variance` (default 0.0, unchanged behavior): a real
+        homoscedastic observation-noise variance added to the underlying
+        Gram matrix's diagonal -- see
+        `gs_experiment.quadrature._rendering_aware_moments`'s docstring.
+        Applied to both `mean`/`variance` (the BQ-optimal estimator) and
+        `alpha_risk` (evaluated under the same noisy-observation kernel
+        geometry, for a fair comparison); `alpha_mean` is unaffected
+        (`weights @ values` doesn't depend on K at all).
         """
         query_point = np.asarray(query_point, dtype=float)
         sigma_rbf = self._require_rbf_sigma("rendering_aware_alpha_risk_along_ray", sigma_rbf)
         idx, local_positions, local_values, render_weight, alpha_weights = self._along_ray_local_data(
             query_point, camera_index, radius, exclude_idx, angular_tol, max_candidates
         )
-        bq_result = bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+        bq_result = bayesian_quadrature_rendering_aware(
+            local_positions, local_values, render_weight, sigma_rbf=sigma_rbf, noise_variance=noise_variance
+        )
         alpha_mean, alpha_risk = rendering_aware_alternative_weight_risk(
-            local_positions, local_values, render_weight, alpha_weights, sigma_rbf=sigma_rbf
+            local_positions, local_values, render_weight, alpha_weights, sigma_rbf=sigma_rbf, noise_variance=noise_variance
         )
         return RenderingAwareAlphaRisk(
             mean=bq_result.mean, variance=bq_result.variance, alpha_mean=alpha_mean, alpha_risk=alpha_risk,
@@ -389,6 +415,7 @@ class LocalUncertaintyEngine:
         angular_tol: float = 0.05,
         max_candidates: int = 500,
         sigma_rbf: Optional[float] = None,
+        noise_variance: float = 0.0,
     ) -> BQResult:
         """rendering_aware_variance_along_ray, completed with the
         directional/epistemic term the original rendering-aware
@@ -420,7 +447,7 @@ class LocalUncertaintyEngine:
         local_directions = self.directions[idx]
         return bayesian_quadrature_rendering_aware_directional(
             local_positions, local_directions, local_values, render_weight, self.dir_kernel, query_direction,
-            sigma_rbf=sigma_rbf,
+            sigma_rbf=sigma_rbf, noise_variance=noise_variance,
         )
 
     def _require_rbf_sigma(self, method_name: str, sigma_rbf: Optional[float]) -> float:
@@ -462,6 +489,22 @@ class LocalUncertaintyEngine:
         idx = camera_index.query(reference_bearing, angular_tol, max_candidates=max_candidates, query_direction=query_direction)
         if exclude_idx is not None:
             idx = idx[idx != exclude_idx]
+        # Canonical (ascending global-index) order before any further processing --
+        # `idx` is a set of unique row indices, so this is a tie-free sort (safe,
+        # deterministic) that fixes a common baseline order for whichever candidate
+        # gathering path produced `idx` (this scalar path, or gpu_uncertainty.py's
+        # batched equivalent, which canonicalizes the same way). Matters downstream
+        # in ray_transmittance_weights: real candidate depths routinely tie exactly
+        # (many rows here are the same physical splat observed by different training
+        # cameras -- same position, same depth from any query point), and neither
+        # implementation's depth-argsort is stable against its OWN arrival order --
+        # without a shared canonical baseline first, tied candidates could get
+        # composited in a different order (hence a different transmittance-weighted
+        # color) between the scalar and batched paths even when both select the
+        # identical candidate SET (confirmed directly: candidate sets matched
+        # exactly on a real mismatching case, but resulting BQ color means differed
+        # by up to 0.11 in [0,1] color space before this fix).
+        idx = np.sort(idx)
 
         local_positions = self.positions[idx]
         local_values = self.values[idx]
@@ -572,6 +615,7 @@ class LocalUncertaintyEngine:
         max_candidates: int = 300,
         sigma_rbf: Optional[float] = None,
         device: str = "cuda",
+        noise_variance: float = 0.0,
     ) -> BQResult:
         """rendering_aware_variance_along_ray's most faithful version: a_q's
         shape comes from gsplat's own differentiable EWA-splatting
@@ -611,7 +655,9 @@ class LocalUncertaintyEngine:
         idx, local_positions, local_values, render_weight = self._via_gsplat_local_data(
             query_point, projection, radius, exclude_idx, pixel_radius, max_candidates, device
         )
-        return bayesian_quadrature_rendering_aware(local_positions, local_values, render_weight, sigma_rbf=sigma_rbf)
+        return bayesian_quadrature_rendering_aware(
+            local_positions, local_values, render_weight, sigma_rbf=sigma_rbf, noise_variance=noise_variance
+        )
 
     def rendering_aware_variance_via_gsplat_directional(
         self,
@@ -624,6 +670,7 @@ class LocalUncertaintyEngine:
         max_candidates: int = 300,
         sigma_rbf: Optional[float] = None,
         device: str = "cuda",
+        noise_variance: float = 0.0,
     ) -> BQResult:
         """rendering_aware_variance_via_gsplat, completed with the
         directional/epistemic term (see
@@ -647,7 +694,7 @@ class LocalUncertaintyEngine:
         local_directions = self.directions[idx]
         return bayesian_quadrature_rendering_aware_directional(
             local_positions, local_directions, local_values, render_weight, self.dir_kernel, query_direction,
-            sigma_rbf=sigma_rbf,
+            sigma_rbf=sigma_rbf, noise_variance=noise_variance,
         )
 
     def _via_gsplat_local_data(

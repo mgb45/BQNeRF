@@ -160,6 +160,8 @@ def _collect_phase_a_records(
     depth_width: int = 112,
     depth_height: int = 42,
     seed: int = 0,
+    noise_sigma_rbf: Optional[float] = None,
+    noise_variance: float = 0.0,
 ) -> List[dict]:
     """Per query point: real GT/C_alpha (channel-mean, `_macropixel_gray`)
     plus `rendering_aware_alpha_risk_along_ray`'s full (C_BQ, u_BQ,
@@ -169,6 +171,21 @@ def _collect_phase_a_records(
     kernel_family_ablation.calibration_metrics's own real-held-out-view
     pipeline) and the same up-to-`max_points_per_view`-per-view subsampling
     convention.
+
+    `noise_sigma_rbf`/`noise_variance` (both optional, `noise_sigma_rbf`
+    default None disables this entirely): when given, a SECOND
+    `rendering_aware_alpha_risk_along_ray` call is made per point at the
+    same candidate window/camera, using the noise-aware jointly-fit
+    (sigma, noise_variance) pair
+    (`gs_experiment.splat_scene.fit_kernel_hyperparams_with_noise`) instead
+    of the noiseless `sigma_rbf`, and its posterior variance is recorded as
+    `u_bq_noise` -- the 6th "existing post-hoc, noise-aware" variant this
+    module adds (see `compute_five_variants`): same (C_alpha, u_BQ)
+    pairing as variant 1, but with u_BQ computed under the noise-aware fit.
+    `sigma_rbf` overrides the engine's own pos_kernel bandwidth for a
+    single call (see `rendering_aware_alpha_risk_along_ray`'s own
+    docstring), so the SAME engine/camera_index is reused for both calls --
+    no second engine needed.
     """
     from gs_experiment.nerf_transforms import camera_pose_from_c2w, load_transforms
 
@@ -195,16 +212,21 @@ def _collect_phase_a_records(
         for y, x in zip(ys, xs):
             point = view["world_points"][y, x]
             result = engine.rendering_aware_alpha_risk_along_ray(point, camera_index, radius=radius, sigma_rbf=sigma_rbf)
-            records.append(
-                {
-                    "gt": float(gt_gray[y, x]),
-                    "c_alpha": float(recon_gray[y, x]),
-                    "c_bq": float(result.mean),
-                    "u_bq": float(result.variance),
-                    "c_alpha_local": float(result.alpha_mean),
-                    "alpha_risk": float(result.alpha_risk),
-                }
-            )
+            record = {
+                "gt": float(gt_gray[y, x]),
+                "c_alpha": float(recon_gray[y, x]),
+                "c_bq": float(result.mean),
+                "u_bq": float(result.variance),
+                "c_alpha_local": float(result.alpha_mean),
+                "alpha_risk": float(result.alpha_risk),
+            }
+            if noise_sigma_rbf is not None:
+                noise_result = engine.rendering_aware_alpha_risk_along_ray(
+                    point, camera_index, radius=radius, sigma_rbf=noise_sigma_rbf, noise_variance=noise_variance
+                )
+                record["c_bq_noise"] = float(noise_result.mean)
+                record["u_bq_noise"] = float(noise_result.variance)
+            records.append(record)
     return records
 
 
@@ -263,7 +285,19 @@ def _variant_metrics(se: np.ndarray, var: np.ndarray) -> dict:
 
 def compute_five_variants(records: List[dict]) -> dict:
     """The 5-variant table (see module docstring) from a list of per-point
-    records (each with gt/c_alpha/c_bq/u_bq/c_alpha_local/alpha_risk)."""
+    records (each with gt/c_alpha/c_bq/u_bq/c_alpha_local/alpha_risk), plus
+    a 6th variant when records also carry `u_bq_noise` (set by
+    `_collect_phase_a_records` when `noise_sigma_rbf` is passed):
+
+      6. existing post-hoc, noise-aware: same (mean, var) pairing as
+         variant 1 (mean=C_alpha real, var=u_BQ), but u_BQ is computed
+         under the noise-aware joint (sigma, noise_variance) fit
+         (`gs_experiment.splat_scene.fit_kernel_hyperparams_with_noise`)
+         instead of the noiseless fit every other variant here uses --
+         tests whether the real homoscedastic-observation-noise extension
+         also fixes/improves variant 1's own miscalibration, independent
+         of the R_alpha fix (variant 3).
+    """
     gt = np.array([r["gt"] for r in records])
     c_alpha = np.array([r["c_alpha"] for r in records])
     c_bq = np.array([r["c_bq"] for r in records])
@@ -286,6 +320,11 @@ def compute_five_variants(records: List[dict]) -> dict:
         "5_alpha_quadrature_own_risk": _variant_metrics(se_alpha_local, alpha_risk),
     }
     variants["4_constant_baseline"]["fitted_constant_variance"] = const_var
+
+    if records and "u_bq_noise" in records[0]:
+        u_bq_noise = np.array([r["u_bq_noise"] for r in records])
+        variants["6_existing_posthoc_noise"] = _variant_metrics(se_alpha, u_bq_noise)
+
     return variants
 
 
@@ -302,8 +341,19 @@ def run_checkpoint_phase_a(scene_name: str, checkpoint_name: str, seed: int = 0)
     print(f"  {len(scene.positions)} splats, {int((scene.opacities > 0.1).sum())} above opacity 0.1")
 
     fitted = fit_all_families(scene, window_radius=radius, seed=seed)
-    sigma_rbf = fitted["rbf"]
+    sigma_rbf = fitted["rbf"]["param"]
     print(f"  fitted rbf sigma = {sigma_rbf:.5f}")
+
+    from gs_experiment.splat_scene import fit_kernel_hyperparams_with_noise
+
+    noise_sigma_rbf, noise_variance, _kappa = fit_kernel_hyperparams_with_noise(scene, window_radius=radius, seed=seed)
+    if noise_sigma_rbf is None:
+        # not enough real data to fit the noise-aware model at this
+        # checkpoint's density -- fall back to the noiseless fit with
+        # noise_variance=0.0 (variant 6 degenerates to variant 1 exactly,
+        # rather than crashing this checkpoint's whole run).
+        noise_sigma_rbf, noise_variance = sigma_rbf, 0.0
+    print(f"  fitted (noise-aware) rbf sigma = {noise_sigma_rbf:.5f}, noise_variance = {noise_variance:.6f}")
 
     engine = _build_engine(scene, sigma_rbf, seed=seed)
 
@@ -311,7 +361,10 @@ def run_checkpoint_phase_a(scene_name: str, checkpoint_name: str, seed: int = 0)
     n_frames = len(eval_frames)
     view_indices = list(range(0, n_frames, max(1, n_frames // 6)))[:6]
 
-    records = _collect_phase_a_records(engine, sigma_rbf, radius, checkpoint_dir, eval_dir, view_indices, seed=seed)
+    records = _collect_phase_a_records(
+        engine, sigma_rbf, radius, checkpoint_dir, eval_dir, view_indices, seed=seed,
+        noise_sigma_rbf=noise_sigma_rbf, noise_variance=noise_variance,
+    )
     variants = compute_five_variants(records)
 
     for name, m in variants.items():
@@ -321,7 +374,10 @@ def run_checkpoint_phase_a(scene_name: str, checkpoint_name: str, seed: int = 0)
             f"sharp={m['sharpness_mean_var']:.4g} ause={m['ause']:+.4g}"
         )
 
-    return {"sigma_rbf": sigma_rbf, "window_radius": radius, "variants": variants, "records": records}
+    return {
+        "sigma_rbf": sigma_rbf, "window_radius": radius, "variants": variants, "records": records,
+        "noise_sigma_rbf": noise_sigma_rbf, "noise_variance": noise_variance,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +555,7 @@ def run_scene_phase_b(scene_name: str, seed: int = 0, n_views: int = PHASE_B_N_V
     print(f"\n=== phase B: {scene_name}/wide ({checkpoint_dir}) ===")
     scene = load_from_gsplat_checkpoint(str(checkpoint_dir), use_gpu_attribution=True, attribution_min_opacity=0.1)
     fitted = fit_all_families(scene, window_radius=radius, seed=seed)
-    sigma_rbf = fitted["rbf"]
+    sigma_rbf = fitted["rbf"]["param"]
     engine = _build_engine(scene, sigma_rbf, seed=seed)
 
     _, eval_frames = load_transforms(str(eval_dir / "transforms.json"))

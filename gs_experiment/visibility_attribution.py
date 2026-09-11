@@ -280,7 +280,15 @@ def ray_transmittance_weights(
     if on_ray_idx.size == 0:
         return weights
 
-    depth_order = on_ray_idx[np.argsort(depth[on_ray_idx])]
+    # kind='stable' so tied depths (routine here -- see this project's caller,
+    # pixel_uncertainty.LocalUncertaintyEngine._along_ray_local_data, which now
+    # canonicalizes `idx` to ascending global-index order before calling this
+    # function specifically so a stable sort resolves ties the same way every
+    # time, matching gpu_uncertainty.py's batched equivalent's own canonicalize-
+    # then-stable-sort) preserve that canonical order instead of an
+    # implementation-defined (and here, non-matching-across-implementations)
+    # arbitrary order.
+    depth_order = on_ray_idx[np.argsort(depth[on_ray_idx], kind="stable")]
     transmittance = 1.0
     for i in depth_order:
         alpha = float(np.clip(opacities[i], 0.0, 1.0))

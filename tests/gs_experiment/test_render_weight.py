@@ -258,6 +258,59 @@ def test_alternative_weight_risk_is_never_smaller_than_bq_variance():
         assert risk >= result.variance - 1e-9
 
 
+def test_noise_variance_zero_matches_pre_noise_behavior_exactly():
+    """noise_variance=0.0 (the default) must reproduce every existing
+    caller's behavior bit-for-bit -- the homoscedastic-noise extension
+    (gs_experiment.hyperparams.fit_kernel_param_and_noise_pooled_nd's
+    query-time counterpart) is additive on K's diagonal, on top of the
+    existing rel_jitter numerical term, never a replacement for it."""
+    w = GaussianRenderWeight(amplitude=0.8, center=[0.3], covariance=[[0.1]])
+    nodes = np.array([[0.05], [0.2], [0.5], [0.8]])
+    values = np.array([1.0, 0.7, 0.3, 0.9])
+    sigma_rbf = 0.2
+
+    default = bayesian_quadrature_rendering_aware(nodes, values, w, sigma_rbf=sigma_rbf)
+    explicit_zero = bayesian_quadrature_rendering_aware(nodes, values, w, sigma_rbf=sigma_rbf, noise_variance=0.0)
+    assert default.mean == explicit_zero.mean
+    assert default.variance == explicit_zero.variance
+
+
+def test_noise_variance_relaxes_near_duplicate_point_oscillation():
+    """The motivating case: two near-duplicate nodes with conflicting
+    observed values force a noiseless GP to swing to extreme, opposite-sign
+    weights to satisfy both exactly. A real observation-noise variance
+    should relax that -- and, as noise_variance grows without bound, the
+    posterior mean must approach the simple noise-weighted (here: uniform,
+    since amplitude/kernel context is symmetric) average of the observed
+    values, not keep chasing an exact fit."""
+    w = GaussianRenderWeight(amplitude=1.0, center=[0.5], covariance=[[0.3]])
+    # two near-duplicate points with sharply conflicting values, plus a
+    # third, well-separated point -- the near-duplicate pair is what
+    # forces extreme weights under noiseless interpolation.
+    nodes = np.array([[0.50], [0.501], [0.9]])
+    values = np.array([1.0, -1.0, 0.2])
+    sigma_rbf = 0.3
+
+    from gs_experiment.quadrature import _rendering_aware_moments
+
+    _, kxx, z, z0 = _rendering_aware_moments(nodes, w, sigma_rbf, None, None, "closed_form", 1e-4, 0.0)
+    w_star_noiseless = np.linalg.solve(kxx, z)
+
+    _, kxx_noisy, z_noisy, _ = _rendering_aware_moments(nodes, w, sigma_rbf, None, None, "closed_form", 1e-4, 0.05)
+    w_star_noisy = np.linalg.solve(kxx_noisy, z_noisy)
+
+    # the noiseless solve is forced to nearly-exactly separate the two
+    # conflicting near-duplicate observations -- large-magnitude,
+    # opposite-signed weights on that pair.
+    assert w_star_noiseless[0] * w_star_noiseless[1] < 0
+    assert abs(w_star_noiseless[0]) > 2.0 or abs(w_star_noiseless[1]) > 2.0
+
+    # a real noise variance shrinks the magnitude of every weight relative
+    # to the noiseless case (the standard ridge-regression-style shrinkage
+    # a noise/nugget term on K's diagonal produces).
+    assert np.abs(w_star_noisy).max() < np.abs(w_star_noiseless).max()
+
+
 def test_rendering_aware_with_zero_nodes_returns_prior():
     w = GaussianRenderWeight(amplitude=1.0, center=[0.0], covariance=[[0.2]])
     sigma_rbf = 0.3

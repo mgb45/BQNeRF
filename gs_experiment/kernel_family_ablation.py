@@ -9,12 +9,27 @@ held-out view stays visibly hazy under this project's vanilla-3DGS training
 recipe, an honestly-reported limitation unrelated to this ablation, not
 re-litigated here), each at very different splat densities
 (`local_runs/<scene>_prepared/wide`, ~300k splats, vs.
-`.../budget_500`, 500 splats), on two honestly-measured properties:
+`.../budget_500`, 500 splats), on one honestly-measured property:
+calibration -- does posterior variance track real held-out rendering
+error (from gsplat's own reconstruction of held-out eval views)? Reported
+via a proper scoring rule (Gaussian-NLL, `mean_nll`) and a ranking-quality
+metric (AUSE -- does sorting held-out points by predicted variance
+actually order them by true error, `ause`), plus the correlation
+coefficients both are built from.
 
-  1. Sparsity correlation: does posterior variance track local splat
-     density (denser -> lower variance, if the signal works as intended)?
-  2. Calibration: does posterior variance track real held-out rendering
-     error (from gsplat's own reconstruction of held-out eval views)?
+(An earlier version of this script also reported a "sparsity correlation"
+check -- does posterior variance track local splat density at each
+splat's own position? -- but that comparison was confounded across kernel
+families in a way that made its result uninterpretable: the `rbf_noise`
+family jointly refits both its bandwidth and its noise_variance against
+plain `rbf`, which only refits bandwidth, so any difference in that
+metric couldn't be attributed to noise modeling specifically vs. just a
+different fitted bandwidth; the fixed window_radius/knn_k shared across
+families interacted with each family's own fitted lengthscale
+differently; and the metric's self-exclusion-at-query-position design
+interacted with the already-documented near-duplicate-position
+conditioning issue in a way that likely dominated the result. Removed
+rather than caveated.)
 
 No such quantitative-eval script currently exists in this repo (an older
 one was deleted when the project was trimmed to its three kept qualitative
@@ -90,7 +105,7 @@ from scipy import integrate
 from scipy.spatial import cKDTree
 from scipy.stats import norm, pearsonr, spearmanr
 
-from gs_experiment.hyperparams import fit_kernel_param_pooled_nd
+from gs_experiment.hyperparams import fit_kernel_param_and_noise_pooled_nd, fit_kernel_param_pooled_nd
 from gs_experiment.kernels import Kernel, MaternKernel, ProductKernel, RationalQuadraticKernel, RBFKernel
 from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine
 from gs_experiment.quadrature import BQResult, _posterior_mean_variance
@@ -146,6 +161,22 @@ FAMILIES: Dict[str, dict] = {
         "bounds": (0.005, 1.0),
         "param_name": "l",
     },
+    # 4th variant: RBF (same factory/bounds as "rbf" above) but jointly
+    # fit with a real homoscedastic observation-noise variance instead of
+    # the implicit noiseless fit the other three families use -- see
+    # `fit_all_families`'s `fit_noise` branch and this project's
+    # already-validated noise extension (gs_experiment/quadrature.py's
+    # `noise_variance` parameter, gs_experiment/hyperparams.py's
+    # `fit_kernel_param_and_noise_pooled_nd`). Tests whether adding real
+    # observation noise to the safest/best-understood family (RBF) beats
+    # all three noiseless families outright, not just RBF-noiseless.
+    "rbf_noise": {
+        "factory": lambda p: ProductKernel([RBFKernel(sigma=p)] * 3),
+        "bounds": (0.005, 1.0),
+        "param_name": "sigma",
+        "fit_noise": True,
+        "noise_bounds": (1e-6, 1.0),
+    },
 }
 
 
@@ -179,9 +210,18 @@ def sample_sigma_windows(scene, n_windows=25, max_window_size=60, window_radius=
     return datasets
 
 
-def fit_all_families(scene, window_radius, n_windows=25, max_window_size=60, min_opacity=0.1, seed=0) -> Dict[str, float]:
+def fit_all_families(scene, window_radius, n_windows=25, max_window_size=60, min_opacity=0.1, seed=0) -> Dict[str, dict]:
     """Fits every family in `FAMILIES` against the same real windows from
-    `scene`. Returns {family_name: fitted_param}."""
+    `scene`. Returns {family_name: {"param": fitted_param,
+    "noise_variance": fitted_or_zero}} -- families without a `fit_noise`
+    flag in `FAMILIES` keep the existing noiseless bandwidth-only fit
+    (`fit_kernel_param_pooled_nd`, `noise_variance` fixed at 0.0); the
+    `rbf_noise` family (`fit_noise: True`) instead jointly fits bandwidth
+    *and* a real homoscedastic observation-noise variance
+    (`fit_kernel_param_and_noise_pooled_nd`) against the identical windows,
+    so every family is compared on the same real data -- only the model
+    assumption differs.
+    """
     datasets = sample_sigma_windows(
         scene, n_windows=n_windows, max_window_size=max_window_size, window_radius=window_radius,
         min_opacity=min_opacity, seed=seed,
@@ -191,8 +231,15 @@ def fit_all_families(scene, window_radius, n_windows=25, max_window_size=60, min
 
     fitted = {}
     for name, spec in FAMILIES.items():
-        fit = fit_kernel_param_pooled_nd(datasets, spec["factory"], bounds=spec["bounds"], n_grid=25)
-        fitted[name] = fit.param
+        if spec.get("fit_noise", False):
+            fit = fit_kernel_param_and_noise_pooled_nd(
+                datasets, spec["factory"], bounds=spec["bounds"], noise_bounds=spec.get("noise_bounds", (1e-6, 1.0)),
+                n_grid=15,
+            )
+            fitted[name] = {"param": fit.param, "noise_variance": fit.noise_variance}
+        else:
+            fit = fit_kernel_param_pooled_nd(datasets, spec["factory"], bounds=spec["bounds"], n_grid=25)
+            fitted[name] = {"param": fit.param, "noise_variance": 0.0}
     return fitted
 
 
@@ -326,10 +373,9 @@ def _axis_prior_variance(kernel: Kernel, s: float, n_sigma: float = 8.0) -> floa
 
 def _generalized_rendering_aware_moments(
     engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], query_point: np.ndarray, radius: float,
-    exclude_idx: Optional[int] = None,
+    exclude_idx: Optional[int] = None, noise_variance: float = 0.0,
 ) -> Tuple[float, float, float]:
-    """Shared computation for `generalized_rendering_aware_variance` and
-    `sparsity_correlation`'s amplitude-normalized ratio check: returns
+    """Shared computation for `generalized_rendering_aware_variance`: returns
     `(mean, variance, z0)` -- `z0` (the prior variance, before conditioning
     on any real data) is exposed because it scales with the local mean
     opacity `amplitude` the exact same way `variance` does (both `z0` and
@@ -343,6 +389,17 @@ def _generalized_rendering_aware_moments(
     function's docstring: raw variance's magnitude is dominated by
     whatever amplitude/bandwidth happens to apply at one query, not
     comparable across queries with different local opacity on its own).
+
+    `noise_variance` (default 0.0): a real, homoscedastic observation-noise
+    variance added to `kxx`'s diagonal on top of (not instead of) the
+    existing numerical `jitter` term -- the same additive extension as
+    every other Gram-matrix construction in this project (see
+    `gs_experiment.quadrature._rendering_aware_moments`'s docstring for the
+    motivation and `gs_experiment.hyperparams.log_marginal_likelihood_nd`
+    for the identical pattern applied to the fitting objective). This
+    module builds its own Gram matrix from scratch (to support kernel
+    families beyond RBF -- see this module's own docstring), so it needs
+    its own copy of the extension rather than reusing `quadrature.py`'s.
     """
     query_point = np.asarray(query_point, dtype=float)
     idx = engine.local_neighbors(query_point, radius, exclude_idx=exclude_idx)
@@ -369,7 +426,7 @@ def _generalized_rendering_aware_moments(
     pos_kernel = ProductKernel(kernels_per_axis)
     kxx = pos_kernel.k(local_positions, local_positions)
     jitter = 1e-4 * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
 
     mean, variance = _posterior_mean_variance(kxx, local_values, z, z0)
     return mean, variance, z0
@@ -377,7 +434,7 @@ def _generalized_rendering_aware_moments(
 
 def generalized_rendering_aware_variance(
     engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], query_point: np.ndarray, radius: float,
-    exclude_idx: Optional[int] = None,
+    exclude_idx: Optional[int] = None, noise_variance: float = 0.0,
 ) -> BQResult:
     """`LocalUncertaintyEngine.rendering_aware_variance`, generalized to
     any 1D `Kernel` family per axis (not just RBF) -- same local-neighbor
@@ -389,9 +446,11 @@ def generalized_rendering_aware_variance(
     RationalQuadratic too -- see this module's docstring for why that's
     exact here (isotropic, axis-aligned weight; the along-ray/gsplat
     variants' non-diagonal moment-matched weights are NOT covered by this
-    function).
+    function). `noise_variance`: see `_generalized_rendering_aware_moments`.
     """
-    mean, variance, _ = _generalized_rendering_aware_moments(engine, kernels_per_axis, query_point, radius, exclude_idx)
+    mean, variance, _ = _generalized_rendering_aware_moments(
+        engine, kernels_per_axis, query_point, radius, exclude_idx, noise_variance=noise_variance
+    )
     return BQResult(mean=mean, variance=variance)
 
 
@@ -401,60 +460,7 @@ def make_kernels_per_axis(family: str, param: float) -> List[Kernel]:
 
 
 # ---------------------------------------------------------------------------
-# 3. Sparsity correlation.
-# ---------------------------------------------------------------------------
-
-
-def sparsity_correlation(
-    engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], radius: float, query_indices: np.ndarray,
-    knn_k: int = 8,
-) -> dict:
-    """For each of `query_indices` (indices into `engine.positions`),
-    computes this family's posterior variance at that splat's own position
-    (excluding itself as a neighbor, so it isn't trivially "observed") and
-    a local-sparsity measure (distance to its `knn_k`-th nearest neighbor --
-    larger means sparser). Reports Pearson/Spearman correlation between the
-    two: a working signal should show variance *increasing* with knn
-    distance (denser -> smaller knn distance -> lower variance), i.e. a
-    positive correlation here -- reported as measured, not assumed.
-
-    Also reports the same two correlations against `variance / z0` (the
-    amplitude-normalized ratio -- see `_generalized_rendering_aware_moments`'s
-    docstring): raw variance is gated by each window's local mean opacity
-    (`amplitude`) as well as by sparsity (confirmed directly on the `wide`
-    checkpoint: knn distance anti-correlates with local mean opacity at
-    r=-0.49, and opacity correlates with raw variance at r=+0.49 -- a real
-    confound, not noise), so the ratio is reported alongside the raw
-    correlation as a deconfounded second read on the same question, not a
-    replacement for it.
-    """
-    dists, _ = engine.tree.query(engine.positions[query_indices], k=knn_k + 1)  # +1: includes the point itself at dist 0
-    knn_dist = dists[:, -1]
-
-    variances = np.empty(len(query_indices))
-    ratios = np.empty(len(query_indices))
-    for i, idx in enumerate(query_indices):
-        mean, variance, z0 = _generalized_rendering_aware_moments(
-            engine, kernels_per_axis, engine.positions[idx], radius, exclude_idx=int(idx)
-        )
-        variances[i] = variance
-        ratios[i] = variance / max(z0, 1e-300)
-
-    pearson_r, pearson_p = pearsonr(knn_dist, variances)
-    spearman_r, spearman_p = spearmanr(knn_dist, variances)
-    ratio_pearson_r, ratio_pearson_p = pearsonr(knn_dist, ratios)
-    ratio_spearman_r, ratio_spearman_p = spearmanr(knn_dist, ratios)
-    return {
-        "n": len(query_indices),
-        "pearson_r": float(pearson_r), "pearson_p": float(pearson_p),
-        "spearman_r": float(spearman_r), "spearman_p": float(spearman_p),
-        "ratio_pearson_r": float(ratio_pearson_r), "ratio_pearson_p": float(ratio_pearson_p),
-        "ratio_spearman_r": float(ratio_spearman_r), "ratio_spearman_p": float(ratio_spearman_p),
-    }
-
-
-# ---------------------------------------------------------------------------
-# 4. Calibration against real held-out rendering error.
+# 3. Calibration against real held-out rendering error.
 # ---------------------------------------------------------------------------
 
 
@@ -531,9 +537,36 @@ def _downsample_squared_error(gt: np.ndarray, recon: np.ndarray, depth_width: in
     return se_full[np.ix_(ys, xs)]
 
 
+def _ause(uncertainty: np.ndarray, se: np.ndarray) -> float:
+    """AUSE-style risk-coverage area: sort ascending by `uncertainty` (most
+    confident first), compute the cumulative mean squared error over the k
+    most-confident points for every k=1..n (the sparsification curve), and
+    compare against the oracle curve (the same construction, sorted by the
+    TRUE `se` instead). Returned as the trapezoidal-integrated area between
+    the two curves over fraction-of-data-retained in [0,1] -- near 0 means
+    the predicted uncertainty ranks points almost as well as the true error
+    itself would; lower is better. Same construction as
+    `rendering_aware_calibration_experiment._ause`; duplicated here rather
+    than imported, matching this module's own convention of building its
+    metric/Gram-matrix machinery from scratch (see this module's docstring)
+    instead of reaching into another experiment script's private helpers.
+    """
+    n = len(se)
+    if n < 2:
+        return float("nan")
+    order_pred = np.argsort(uncertainty)
+    order_oracle = np.argsort(se)
+    pred_curve = np.cumsum(se[order_pred]) / np.arange(1, n + 1)
+    oracle_curve = np.cumsum(se[order_oracle]) / np.arange(1, n + 1)
+    fractions = np.arange(1, n + 1) / n
+    trapezoid = getattr(np, "trapezoid", None) or np.trapz  # numpy>=2.0 renamed trapz -> trapezoid
+    return float(trapezoid(pred_curve - oracle_curve, fractions))
+
+
 def calibration_metrics(
     engine: LocalUncertaintyEngine, kernels_per_axis: List[Kernel], radius: float, checkpoint_dir: Path, eval_dir: Path,
     view_indices, max_points_per_view: int = 80, depth_width: int = 112, depth_height: int = 42, seed: int = 0,
+    noise_variance: float = 0.0,
 ) -> dict:
     """Real held-out calibration: for each held-out eval view, gets GT vs.
     reconstruction + depth-unprojected world points (`_render_and_unproject`),
@@ -561,7 +594,9 @@ def calibration_metrics(
             ys, xs = ys[keep], xs[keep]
         for y, x in zip(ys, xs):
             point = view["world_points"][y, x]
-            result = generalized_rendering_aware_variance(engine, kernels_per_axis, point, radius)
+            result = generalized_rendering_aware_variance(
+                engine, kernels_per_axis, point, radius, noise_variance=noise_variance
+            )
             all_variance.append(result.variance)
             all_squared_error.append(se[y, x])
 
@@ -577,11 +612,12 @@ def calibration_metrics(
         "pearson_r": float(pearson_r), "pearson_p": float(pearson_p),
         "spearman_r": float(spearman_r), "spearman_p": float(spearman_p),
         "mean_nll": float(np.mean(nll)),
+        "ause": _ause(variance, squared_error),
     }
 
 
 # ---------------------------------------------------------------------------
-# 5. Driver.
+# 4. Driver.
 # ---------------------------------------------------------------------------
 
 
@@ -596,19 +632,16 @@ def run_checkpoint(name: str, checkpoint_dir: Path, eval_dir: Path, window_radiu
     print(f"  {len(scene.positions)} splats, {int((scene.opacities > 0.1).sum())} above opacity 0.1")
 
     fitted = fit_all_families(scene, window_radius=window_radius, seed=seed)
-    for family, param in fitted.items():
-        print(f"  fitted {family}: {FAMILIES[family]['param_name']} = {param:.5f}")
+    for family, spec in fitted.items():
+        noise_note = f", noise_variance = {spec['noise_variance']:.6f}" if FAMILIES[family].get("fit_noise") else ""
+        print(f"  fitted {family}: {FAMILIES[family]['param_name']} = {spec['param']:.5f}{noise_note}")
 
     engine = LocalUncertaintyEngine(
-        positions=scene.positions, values=scene.colors, pos_kernel=ProductKernel([RBFKernel(sigma=fitted["rbf"])] * 3),
+        positions=scene.positions, values=scene.colors,
+        pos_kernel=ProductKernel([RBFKernel(sigma=fitted["rbf"]["param"])] * 3),
         scene_bounds=tuple((scene.positions[:, d].min(), scene.positions[:, d].max()) for d in range(3)),
         opacities=scene.opacities, max_neighbors=60, seed=seed,
     )
-
-    keep_idx = np.nonzero(scene.opacities > 0.1)[0]
-    rng = np.random.default_rng(seed)
-    n_sparsity_queries = min(150, len(keep_idx))
-    query_idx = rng.choice(keep_idx, size=n_sparsity_queries, replace=False)
 
     # held-out view count read from this scene's own eval/transforms.json
     # (confirmed 30 for every scene in the 7-scene set, but read it directly
@@ -618,18 +651,21 @@ def run_checkpoint(name: str, checkpoint_dir: Path, eval_dir: Path, window_radiu
     view_indices = list(range(0, n_frames, max(1, n_frames // 6)))[:6]
 
     results = {}
-    for family, param in fitted.items():
+    for family, spec in fitted.items():
+        param = spec["param"]
+        noise_variance = spec["noise_variance"]
         kernels_per_axis = make_kernels_per_axis(family, param)
-        sparsity = sparsity_correlation(engine, kernels_per_axis, window_radius, query_idx)
         calibration = calibration_metrics(
-            engine, kernels_per_axis, window_radius, checkpoint_dir, eval_dir, view_indices, seed=seed
+            engine, kernels_per_axis, window_radius, checkpoint_dir, eval_dir, view_indices, seed=seed,
+            noise_variance=noise_variance,
         )
-        results[family] = {"param": param, "sparsity": sparsity, "calibration": calibration}
+        results[family] = {
+            "param": param, "noise_variance": noise_variance, "calibration": calibration,
+        }
         print(
-            f"  [{family:20s}] sparsity: raw_var pearson={sparsity['pearson_r']:+.3f} spearman={sparsity['spearman_r']:+.3f}"
-            f"  ratio pearson={sparsity['ratio_pearson_r']:+.3f} spearman={sparsity['ratio_spearman_r']:+.3f} "
-            f"(n={sparsity['n']})  |  calibration: pearson={calibration['pearson_r']:+.3f} "
-            f"spearman={calibration['spearman_r']:+.3f} mean_nll={calibration['mean_nll']:.3f} (n={calibration['n']})"
+            f"  [{family:20s}] calibration: pearson={calibration['pearson_r']:+.3f} "
+            f"spearman={calibration['spearman_r']:+.3f} mean_nll={calibration['mean_nll']:.3f} "
+            f"ause={calibration['ause']:.3f} (n={calibration['n']})"
         )
     return results
 
@@ -638,44 +674,30 @@ def print_summary_table(all_results: dict):
     print("\n" + "=" * 100)
     print("SUMMARY")
     print("=" * 100)
-    print(
-        "(sparsity correlation is between knn-distance -- larger = sparser -- and posterior variance;"
-        " a working signal is POSITIVE: sparser -> higher variance. 'ratio' = variance/prior_variance,"
-        " amplitude-normalized -- see sparsity_correlation's docstring.)"
-    )
     header = (
-        f"{'checkpoint':12s} {'family':20s} {'param':>10s} {'spars.var r':>11s} {'spars.ratio r':>13s} "
-        f"{'calib r':>9s} {'calib rho':>10s} {'mean NLL':>9s}"
+        f"{'checkpoint':12s} {'family':20s} {'param':>10s} "
+        f"{'calib r':>9s} {'calib rho':>10s} {'mean NLL':>9s} {'AUSE':>9s}"
     )
     print(header)
     for checkpoint_name, results in all_results.items():
         for family, r in results.items():
             print(
                 f"{checkpoint_name:12s} {family:20s} {r['param']:10.5f} "
-                f"{r['sparsity']['pearson_r']:11.3f} {r['sparsity']['ratio_pearson_r']:13.3f} "
                 f"{r['calibration']['pearson_r']:9.3f} {r['calibration']['spearman_r']:10.3f} "
-                f"{r['calibration']['mean_nll']:9.3f}"
+                f"{r['calibration']['mean_nll']:9.3f} {r['calibration']['ause']:9.3f}"
             )
     print("=" * 100)
 
     print("\nPer-checkpoint winners:")
     for checkpoint_name, results in all_results.items():
-        # "best sparsity" = closest to the intended positive-correlation
-        # direction (sparser -> higher variance) and strongest in that
-        # direction -- i.e. the largest signed pearson_r, not the largest
-        # magnitude regardless of sign.
-        best_sparsity = max(results, key=lambda f: results[f]["sparsity"]["pearson_r"])
-        best_sparsity_ratio = max(results, key=lambda f: results[f]["sparsity"]["ratio_pearson_r"])
         best_calib_corr = max(results, key=lambda f: results[f]["calibration"]["pearson_r"])
         best_nll = min(results, key=lambda f: results[f]["calibration"]["mean_nll"])
+        best_ause = min(results, key=lambda f: results[f]["calibration"]["ause"])
         print(
-            f"  {checkpoint_name}: best sparsity signal (raw variance) = {best_sparsity} "
-            f"(r={results[best_sparsity]['sparsity']['pearson_r']:+.3f}); "
-            f"best sparsity signal (ratio) = {best_sparsity_ratio} "
-            f"(r={results[best_sparsity_ratio]['sparsity']['ratio_pearson_r']:+.3f}); "
-            f"best calibration correlation = {best_calib_corr} "
+            f"  {checkpoint_name}: best calibration correlation = {best_calib_corr} "
             f"(r={results[best_calib_corr]['calibration']['pearson_r']:+.3f}); "
-            f"best (lowest) NLL = {best_nll} ({results[best_nll]['calibration']['mean_nll']:.3f})"
+            f"best (lowest) NLL = {best_nll} ({results[best_nll]['calibration']['mean_nll']:.3f}); "
+            f"best (lowest) AUSE = {best_ause} ({results[best_ause]['calibration']['ause']:.3f})"
         )
 
 

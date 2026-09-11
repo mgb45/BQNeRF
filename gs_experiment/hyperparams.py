@@ -135,7 +135,9 @@ def fit_kernel_param_pooled(
     return _grid_search_then_refine(objective, bounds, n_grid)
 
 
-def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter: float = 1e-4) -> float:
+def log_marginal_likelihood_nd(
+    nodes, values, kernel: ProductKernel, rel_jitter: float = 1e-4, noise_variance: float = 0.0
+) -> float:
     """Same objective as `log_marginal_likelihood`, generalized to a
     `ProductKernel` over a D-dimensional domain (real splat positions, not
     a 1D ray-depth domain) -- what ROADMAP.md item 2 asks for: this module
@@ -149,6 +151,16 @@ def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter:
     `nodes`: (N, D), used directly with `kernel.k(nodes, nodes)` -- unlike
     the 1D functions above, no `.reshape(-1, 1)` convention, since
     `ProductKernel.k` already expects (N, D) inputs.
+
+    `noise_variance` (default 0.0): a real, homoscedastic observation-noise
+    variance added to K's diagonal on top of (not instead of) `rel_jitter`'s
+    numerical term -- the standard noisy-observation GP marginal likelihood,
+    used to jointly fit it alongside the bandwidth (see
+    `fit_kernel_param_and_noise_pooled_nd`) rather than leaving every splat
+    color treated as an exact constraint. See
+    `gs_experiment.quadrature._rendering_aware_moments`'s docstring for the
+    full motivation (this is the same noise model, applied here to the
+    fitting objective instead of the query-time posterior).
     """
     nodes = np.atleast_2d(np.asarray(nodes, dtype=float))
     values = np.asarray(values, dtype=float).reshape(-1)
@@ -158,7 +170,7 @@ def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter:
 
     kxx = kernel.k(nodes, nodes)
     jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
 
     try:
         L = np.linalg.cholesky(kxx)
@@ -172,16 +184,16 @@ def log_marginal_likelihood_nd(nodes, values, kernel: ProductKernel, rel_jitter:
     return quad_term + logdet_term + const_term
 
 
-def pooled_log_marginal_likelihood_nd(datasets, kernel: ProductKernel) -> float:
+def pooled_log_marginal_likelihood_nd(datasets, kernel: ProductKernel, noise_variance: float = 0.0) -> float:
     """ND analogue of `pooled_log_marginal_likelihood`: sum of
     `log_marginal_likelihood_nd` across many (positions, colors) local
     windows sampled from one (or several) real checkpoints, under one
     shared bandwidth -- the practical fitting objective at GS scale, since
     a single window rarely has enough points on its own to pin down a
-    bandwidth precisely."""
+    bandwidth precisely. `noise_variance`: see `log_marginal_likelihood_nd`."""
     total = 0.0
     for nodes, values in datasets:
-        lml = log_marginal_likelihood_nd(nodes, values, kernel)
+        lml = log_marginal_likelihood_nd(nodes, values, kernel, noise_variance=noise_variance)
         if not np.isfinite(lml):
             return -np.inf
         total += lml
@@ -200,3 +212,75 @@ def fit_kernel_param_pooled_nd(
     `ProductKernel([RBFKernel(sig)] * 3)`."""
     objective = lambda p: pooled_log_marginal_likelihood_nd(datasets, kernel_factory(p))
     return _grid_search_then_refine(objective, bounds, n_grid)
+
+
+@dataclass
+class NoisyFitResult:
+    param: float
+    noise_variance: float
+    log_marginal_likelihood: float
+
+
+def fit_kernel_param_and_noise_pooled_nd(
+    datasets,
+    kernel_factory: Callable[[float], ProductKernel],
+    bounds=(1e-3, 5.0),
+    noise_bounds=(1e-6, 1.0),
+    n_grid: int = 15,
+) -> NoisyFitResult:
+    """Joint marginal-likelihood fit of the kernel bandwidth *and* a real
+    homoscedastic observation-noise variance (see `log_marginal_likelihood_nd`'s
+    `noise_variance` docstring for the model and motivation), instead of
+    `fit_kernel_param_pooled_nd`'s bandwidth-only fit against an implicitly
+    noiseless model. Two free parameters now, so this does a 2D log-spaced
+    grid search (`n_grid` x `n_grid`, kept smaller than the 1D fitters'
+    default since cost is quadratic in `n_grid`) followed by a local
+    `scipy.optimize.minimize` (L-BFGS-B, bounded) refine from the best grid
+    cell -- the natural 2D generalization of `_grid_search_then_refine`'s
+    "grid pre-search, then local refine" discipline (a marginal-likelihood
+    surface in a single lengthscale can already have more than one local
+    optimum; two free parameters makes a pure local optimizer from one
+    arbitrary starting point even less trustworthy on its own).
+
+    `noise_bounds` defaults to a much smaller range than `bounds`: even a
+    homoscedastic noise variance that is small relative to the kernel's own
+    signal variance can meaningfully relax the near-duplicate-point
+    ill-conditioning this exists to fix (see
+    `gs_experiment.quadrature._rendering_aware_moments`) -- there is no a
+    priori reason to search as wide a range for it as for the bandwidth
+    itself.
+    """
+    log_lo, log_hi = np.log(bounds[0]), np.log(bounds[1])
+    log_nlo, log_nhi = np.log(noise_bounds[0]), np.log(noise_bounds[1])
+    param_grid = np.exp(np.linspace(log_lo, log_hi, n_grid))
+    noise_grid = np.exp(np.linspace(log_nlo, log_nhi, n_grid))
+
+    def objective(log_p, log_nv):
+        p, nv = float(np.exp(log_p)), float(np.exp(log_nv))
+        return pooled_log_marginal_likelihood_nd(datasets, kernel_factory(p), noise_variance=nv)
+
+    best_val = -np.inf
+    best_log_p, best_log_nv = np.log(param_grid[0]), np.log(noise_grid[0])
+    for lp in np.log(param_grid):
+        for lnv in np.log(noise_grid):
+            val = objective(lp, lnv)
+            if val > best_val:
+                best_val, best_log_p, best_log_nv = val, lp, lnv
+
+    result = optimize.minimize(
+        lambda x: -objective(x[0], x[1]),
+        x0=[best_log_p, best_log_nv],
+        bounds=[(log_lo, log_hi), (log_nlo, log_nhi)],
+        method="L-BFGS-B",
+    )
+    if -float(result.fun) >= best_val:
+        final_log_p, final_log_nv, final_val = result.x[0], result.x[1], -float(result.fun)
+    else:
+        # local refine can, rarely, undershoot the grid optimum near a
+        # boundary -- fall back to the grid point itself if so, same
+        # convention as _grid_search_then_refine's 1D case.
+        final_log_p, final_log_nv, final_val = best_log_p, best_log_nv, best_val
+
+    return NoisyFitResult(
+        param=float(np.exp(final_log_p)), noise_variance=float(np.exp(final_log_nv)), log_marginal_likelihood=final_val
+    )

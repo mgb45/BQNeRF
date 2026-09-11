@@ -199,7 +199,7 @@ def numerical_rendering_prior_variance(render_weight, base_kernel, domain) -> fl
     return val
 
 
-def _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter):
+def _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter, noise_variance=0.0):
     """Shared plumbing for bayesian_quadrature_rendering_aware and
     renderer_centered_residual_variance: builds K (from k_base alone --
     nodes are noiseless observations of the radiance field c, not of
@@ -207,7 +207,29 @@ def _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domai
     Gaussian path (`mode="closed_form"`) or the numerical fallback
     (`mode="numerical"`). Returns (base_kernel_used, kxx_or_None, z, z0);
     kxx is None when there are zero nodes (nothing to solve against -- the
-    posterior collapses to the prior, variance = z0)."""
+    posterior collapses to the prior, variance = z0).
+
+    `noise_variance` (default 0.0, i.e. unchanged behavior): a real,
+    homoscedastic observation-noise variance added to K's diagonal on top
+    of (not instead of) `rel_jitter`'s tiny numerical-conditioning term --
+    the standard GP-regression noisy-observation model, `y_i = f(x_i) +
+    eps_i`, `eps_i ~ N(0, noise_variance)` iid, rather than treating every
+    splat color as an exact, noiseless constraint. `rel_jitter` alone
+    (~1e-4 relative to the diagonal) exists purely to keep K numerically
+    SPD; it is not a real noise model and was never intended to absorb the
+    role `noise_variance` plays here. Motivation: real splat positions
+    routinely include near-duplicate points (observed directly on a real
+    checkpoint -- pairwise distances as small as 1e-4 units under a
+    ~0.1-unit kernel bandwidth), which makes the noiseless K badly
+    ill-conditioned and forces the posterior mean to exactly interpolate
+    near-duplicate, possibly-conflicting color observations -- a classic
+    Runge's-phenomenon-style oscillation, empirically visible as
+    per-channel color speckle in `C_BQ` renders even where the
+    reconstructed structure is otherwise sharp. A positive `noise_variance`
+    relaxes the exact-interpolation constraint, trading a small amount of
+    fit-to-data for a much better-conditioned, less-oscillatory posterior
+    -- see `hyperparams.fit_kernel_param_and_noise` for fitting it (jointly
+    with sigma) via marginal likelihood rather than picking it by hand."""
     nodes = np.atleast_2d(np.asarray(nodes, dtype=float))
     n = nodes.shape[0]
     d = render_weight.dim
@@ -232,7 +254,7 @@ def _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domai
 
     kxx = base.k(nodes, nodes)
     jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
     return base, kxx, z, float(z0)
 
 
@@ -245,6 +267,7 @@ def bayesian_quadrature_rendering_aware(
     domain=None,
     rel_jitter: float = 1e-4,
     mode: str = "closed_form",
+    noise_variance: float = 0.0,
 ) -> BQResult:
     """Formulation 1 ("renderer-aware Bayesian quadrature"): the rendering-
     aware BQ posterior mean/variance itself supplies both the rendering
@@ -262,12 +285,18 @@ def bayesian_quadrature_rendering_aware(
     "numerical"` requires `base_kernel` (a ProductKernel, e.g. Matern) and
     `domain` (integration bounds, see numerical_rendering_moment_vector).
 
+    `noise_variance` (default 0.0): see `_rendering_aware_moments`'s
+    docstring -- a real homoscedastic observation-noise term, K -> K +
+    noise_variance*I, in place of treating every observed color as exact.
+
     This mean need not reproduce standard alpha compositing -- see
     renderer_centered_residual_variance for the alternative formulation that
     keeps alpha compositing as the mean and uses only this same variance.
     """
     values = np.asarray(values, dtype=float).reshape(-1)
-    _, kxx, z, z0 = _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter)
+    _, kxx, z, z0 = _rendering_aware_moments(
+        nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter, noise_variance
+    )
     if kxx is None:
         return BQResult(mean=0.0, variance=max(z0, 0.0))
 
@@ -283,6 +312,7 @@ def renderer_centered_residual_variance(
     domain=None,
     rel_jitter: float = 1e-4,
     mode: str = "closed_form",
+    noise_variance: float = 0.0,
 ) -> float:
     """Formulation 2 ("renderer-centred probabilistic quadrature"): keeps
     ordinary alpha compositing as the predictive mean, and uses only this
@@ -296,9 +326,11 @@ def renderer_centered_residual_variance(
     (same _rendering_aware_moments call) -- the two formulations differ only
     in which mean the variance is paired with, per the prompt's own "there
     are two possible formulations" framing; neither is picked as uniquely
-    correct here.
+    correct here. `noise_variance`: see `_rendering_aware_moments`'s docstring.
     """
-    _, kxx, z, z0 = _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter)
+    _, kxx, z, z0 = _rendering_aware_moments(
+        nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter, noise_variance
+    )
     if kxx is None:
         return max(z0, 0.0)
 
@@ -320,6 +352,7 @@ def rendering_aware_alternative_weight_risk(
     domain=None,
     rel_jitter: float = 1e-4,
     mode: str = "closed_form",
+    noise_variance: float = 0.0,
 ) -> tuple[float, float]:
     """Formulation 3 ("BQ risk of an arbitrary quadrature rule"): evaluates
     *any* real, literal weight vector `weights` (aligned 1:1 with `nodes`)
@@ -368,7 +401,9 @@ def rendering_aware_alternative_weight_risk(
     """
     values = np.asarray(values, dtype=float).reshape(-1)
     weights = np.asarray(weights, dtype=float).reshape(-1)
-    _, kxx, z, z0 = _rendering_aware_moments(nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter)
+    _, kxx, z, z0 = _rendering_aware_moments(
+        nodes, render_weight, sigma_rbf, base_kernel, domain, mode, rel_jitter, noise_variance
+    )
 
     mean = float(weights @ values) if weights.shape[0] == values.shape[0] and values.shape[0] > 0 else 0.0
     if kxx is None:
@@ -390,6 +425,7 @@ def bayesian_quadrature_rendering_aware_directional(
     domain=None,
     rel_jitter: float = 1e-4,
     mode: str = "closed_form",
+    noise_variance: float = 0.0,
 ) -> BQResult:
     """The full rendering-aware construction the original prompt specified
     and this module only partially implemented until now: a JOINT
@@ -422,6 +458,10 @@ def bayesian_quadrature_rendering_aware_directional(
     (splat, observing-direction) pair -- a splat needs to be observed from
     *multiple* directions during training for this term to carry any
     signal at all; one row per splat with a single direction each cannot.
+
+    `noise_variance` (default 0.0, unchanged behavior): a real
+    homoscedastic observation-noise variance added to K's diagonal -- see
+    `_rendering_aware_moments`'s docstring for the model and motivation.
     """
     positions = np.atleast_2d(np.asarray(positions, dtype=float))
     directions = np.asarray(directions, dtype=float)
@@ -449,10 +489,299 @@ def bayesian_quadrature_rendering_aware_directional(
 
     kxx = pos_kernel.k(positions, positions) * dir_kernel.k(directions, directions)
     jitter = rel_jitter * np.mean(np.diag(kxx))
-    kxx = kxx + jitter * np.eye(n)
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
 
     v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
     z = z_pos * v_dir
 
     mean, variance = _posterior_mean_variance(kxx, values, z, float(z0))
     return BQResult(mean=mean, variance=variance)
+
+
+def bayesian_quadrature_rendering_aware_mixture_directional(
+    positions,
+    directions,
+    values,
+    weights,
+    dir_kernel: DirectionalKernel,
+    query_direction,
+    sigma_rbf: float,
+    local_covariances=None,
+    rel_jitter: float = 1e-4,
+    noise_variance: float = 0.0,
+) -> BQResult:
+    """Scalar (numpy) reference for `gpu_uncertainty.
+    compute_directional_variance_batched_mixture`/`_solve_batched_mixture` --
+    the mixture-a_q alternative to `bayesian_quadrature_rendering_aware_directional`.
+
+    Motivation (see the conversation this was built for): moment-matching
+    a_q into one Gaussian (`bayesian_quadrature_rendering_aware_directional`'s
+    `render_weight`) discards which real candidate is which, so the
+    resulting BQ weight vector w* = Kxx^-1 z has no structural relationship
+    to the real alpha-compositing weights `weights` (w_i = T_i*alpha_i) for
+    ANY kernel choice. Keeping a_q as the exact mixture of each candidate's
+    own real (weight, position, covariance) instead:
+
+        a_q(x)   = sum_k w_k * N(x; x_k, Sigma_k)
+        K_ij     = k_pos(x_i, x_j) * k_dir(d_i, d_j)          -- unsmeared, same K as the single-Gaussian path
+        z_i      = [sum_k w_k * N(x_k; x_i, Sigma_k + sigma_rbf^2 I)] * k_dir(d_i, d_query)
+        z_0      = sum_k sum_l w_k*w_l * N(x_k; x_l, Sigma_k+Sigma_l+sigma_rbf^2 I)
+
+    makes w* = weights EXACTLY whenever K is built the same (unsmeared) way
+    z is -- i.e. in the point-splat limit `local_covariances -> 0`. With
+    real (non-degenerate) `local_covariances`, w* is a *controlled*
+    approximation to `weights` (the mismatch is O(Sigma_k) relative to the
+    fully-consistent-but-invalid asymmetric kernel that would give exact
+    equality -- see the conversation's derivation), not an unrelated
+    quantity the way the single-Gaussian moment-matched a_q's w* is.
+
+    `local_covariances` (N, 3, 3), optional: each candidate's own real 3D
+    covariance (from scale/rotation). `None` (default) treats every
+    candidate as a point (Sigma_k=0 for all k) -- the degenerate case that
+    gives EXACT `w* = weights` for any sigma_rbf (see docstring above),
+    included as a real, checkable special case, not just a fallback.
+
+    Mirrors `gpu_uncertainty._solve_batched_mixture`'s math exactly (same
+    variable names/formula structure) so a discrepancy between this and the
+    batched path points at an actual implementation bug, not a difference
+    in what's being computed -- see
+    tests/gs_experiment/test_gpu_uncertainty_mixture.py for the
+    cross-validation this enables.
+    """
+    n = np.atleast_2d(np.asarray(positions, dtype=float)).shape[0]
+    if n == 0:
+        return BQResult(mean=0.0, variance=0.0)
+
+    z0, z, kxx = _mixture_directional_moments(
+        positions, directions, weights, dir_kernel, query_direction, sigma_rbf, local_covariances, rel_jitter,
+        noise_variance,
+    )
+    values = np.asarray(values, dtype=float).reshape(-1)
+    mean, variance = _posterior_mean_variance(kxx, values, z, float(z0))
+    return BQResult(mean=mean, variance=variance)
+
+
+def _mixture_directional_moments(
+    positions, directions, weights, dir_kernel: DirectionalKernel, query_direction, sigma_rbf: float,
+    local_covariances=None, rel_jitter: float = 1e-4, noise_variance: float = 0.0,
+):
+    """Shared z0/z/kxx construction for
+    `bayesian_quadrature_rendering_aware_mixture_directional` (solves for
+    the BQ-optimal weights) and
+    `rendering_aware_alternative_weight_risk_mixture_directional` (evaluates
+    the risk of a FIXED weight vector, no solve at all) -- see the former's
+    docstring for the formulas. Not part of the public API of this module
+    (leading underscore) since callers always want one of those two
+    finished results, never these raw pieces on their own.
+    """
+    positions = np.atleast_2d(np.asarray(positions, dtype=float))
+    directions = np.asarray(directions, dtype=float)
+    weights = np.asarray(weights, dtype=float).reshape(-1)
+    query_direction = np.asarray(query_direction, dtype=float)
+    n, d = positions.shape
+
+    if local_covariances is None:
+        local_covariances = np.zeros((n, d, d))
+    local_covariances = np.asarray(local_covariances, dtype=float)
+
+    eye_d = np.eye(d)
+
+    # z_0 = sum_k sum_l w_k*w_l*N(x_k;x_l,Sigma_k+Sigma_l+sigma_rbf^2 I).
+    z0 = 0.0
+    for k in range(n):
+        for l in range(n):
+            cov_kl = local_covariances[k] + local_covariances[l] + (sigma_rbf**2) * eye_d
+            z0 += weights[k] * weights[l] * float(multivariate_normal(mean=positions[l], cov=cov_kl).pdf(positions[k]))
+
+    # z_i = [sum_k w_k*N(x_k;x_i,Sigma_k+sigma_rbf^2 I)] * k_dir(d_i,d_query).
+    z_pos = np.zeros(n)
+    for i in range(n):
+        total = 0.0
+        for k in range(n):
+            cov_k = local_covariances[k] + (sigma_rbf**2) * eye_d
+            total += weights[k] * float(multivariate_normal(mean=positions[k], cov=cov_k).pdf(positions[i]))
+        z_pos[i] = total
+    v_dir = dir_kernel.k(directions, query_direction).reshape(-1)
+    z = z_pos * v_dir
+
+    pos_kernel = ProductKernel([RBFKernel(sigma_rbf)] * d)
+    kxx = pos_kernel.k(positions, positions) * dir_kernel.k(directions, directions)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
+    return float(z0), z, kxx
+
+
+def rendering_aware_alternative_weight_risk_mixture_directional(
+    positions,
+    directions,
+    values,
+    weights,
+    dir_kernel: DirectionalKernel,
+    query_direction,
+    sigma_rbf: float,
+    w=None,
+    local_covariances=None,
+    rel_jitter: float = 1e-4,
+    noise_variance: float = 0.0,
+) -> tuple[float, float]:
+    """The mixture-a_q, joint-position+direction-kernel analogue of
+    `rendering_aware_alternative_weight_risk` -- evaluates the RKHS
+    worst-case-squared-error `e(w)^2 = z0 - 2 w^T z + w^T K w` at a real
+    weight vector `w`, NOT the BQ-optimal weights -- no Cholesky
+    factorization/solve at all, since `w` is already given, just three
+    quadratic-form evaluations.
+
+    `weights` defines the mixture a_q (`a_q(x) = sum_k weights_k *
+    N(x;x_k,Sigma_k)`, the target measure -- always the real
+    alpha-compositing weights `T_i*alpha_i` in this project) and therefore
+    z0/z/Kxx; `w` (default `None`, meaning `w := weights`) is the SEPARATE
+    vector actually being scored by e(w)^2. These are two different roles
+    played by one array in the common case (score alpha compositing's own
+    weights, which are also what a_q is built from -- the only way this
+    function is actually invoked in this project) but must stay
+    independent parameters for the general RKHS theory to hold at all --
+    conflating them silently breaks the "reduces to BQ variance at
+    w*=Kxx^-1 z" identity, since changing `w` would also change a_q (hence
+    z0/z/Kxx) instead of scoring a different vector against the SAME fixed
+    target measure. See
+    tests/gs_experiment/test_quadrature_mixture_risk.py's
+    test_risk_reduces_to_bq_variance_and_mean_at_bq_optimal_weights, which
+    exercises `w != weights` specifically to check this.
+
+    Why this exists (see the conversation this was built for): the plain
+    directional BQ construction's weights (`bayesian_quadrature_rendering_
+    aware_mixture_directional`'s w* = Kxx^-1 z) cannot equal `weights`
+    once the directional kernel genuinely varies (z's k_dir(d_i,d_query)
+    and Kxx's k_dir(d_i,d_j) play structurally different roles -- proven
+    directly in tests/gs_experiment/test_gpu_uncertainty_mixture.py's
+    test_directional_kernel_breaks_exact_recovery_at_realistic_kappa). But
+    real alpha-compositing weights don't need to be *solved for* -- they're
+    already known. This function keeps them fixed and asks the coherent
+    question instead: "how good is the real renderer's own quadrature rule,
+    under a kernel that DOES genuinely account for real directional
+    coverage" -- i.e. does the actual real-per-splat mixture-and-direction
+    kernel geometry (not the single-Gaussian moment-matched a_q the
+    original `rendering_aware_alternative_weight_risk`/variant-5 comparison
+    used) make alpha compositing's own risk a better-behaved, more
+    informative calibration signal than the original single-Gaussian
+    version found. `variant 5` (section 3/FINDINGS.md) underperformed
+    `R_alpha` using the single-Gaussian a_q for its own z0/K/z geometry --
+    this function retests that specific comparison with the corrected
+    (mixture) geometry, not a new idea, a fairer version of an old one.
+
+    Returns `(mean, risk)`: `mean = w @ values` (the estimator's own
+    predicted value under `w` -- identical to `rendering_aware_
+    alternative_weight_risk`'s own `mean`, unaffected by which kernel
+    geometry scores the risk), `risk = max(e(w)^2, 0)`.
+    """
+    positions_arr = np.atleast_2d(np.asarray(positions, dtype=float))
+    values = np.asarray(values, dtype=float).reshape(-1)
+    weights = np.asarray(weights, dtype=float).reshape(-1)
+    w = weights if w is None else np.asarray(w, dtype=float).reshape(-1)
+    n = positions_arr.shape[0]
+
+    mean = float(w @ values) if w.shape[0] == values.shape[0] and n > 0 else 0.0
+    if n == 0:
+        return mean, 0.0
+
+    z0, z, kxx = _mixture_directional_moments(
+        positions, directions, weights, dir_kernel, query_direction, sigma_rbf, local_covariances, rel_jitter,
+        noise_variance,
+    )
+    risk = float(z0 - 2.0 * (w @ z) + w @ kxx @ w)
+    return mean, max(risk, 0.0)
+
+
+def _mixture_moments(positions, weights, sigma_rbf: float, local_covariances=None, rel_jitter: float = 1e-4, noise_variance: float = 0.0):
+    """Position-only (no direction at all) analogue of
+    `_mixture_directional_moments` -- the special case that achieves EXACT
+    `w*=weights` recovery (up to `rel_jitter`'s own tiny regularization),
+    per this module's mixture-directional docstring's own derivation:
+    without a directional kernel factor at all, z_i = (K_pos @ weights)_i
+    identically (both z and Kxx use the plain, symmetric k_pos(x_i,x_j)
+    structure, nothing asymmetric enters), so w* = K_pos^-1 z = weights
+    exactly in the point-splat limit, and closely for real (small) splat
+    footprints. See
+    tests/gs_experiment/test_quadrature_mixture_risk.py's
+    test_position_only_recovers_alpha_compositing_weights_exactly for the
+    direct numeric confirmation this claim gets (unlike the directional
+    case, which does NOT recover exactly -- see
+    tests/gs_experiment/test_gpu_uncertainty_mixture.py's own negative
+    result for that case).
+    """
+    positions = np.atleast_2d(np.asarray(positions, dtype=float))
+    weights = np.asarray(weights, dtype=float).reshape(-1)
+    n, d = positions.shape
+
+    if local_covariances is None:
+        local_covariances = np.zeros((n, d, d))
+    local_covariances = np.asarray(local_covariances, dtype=float)
+
+    eye_d = np.eye(d)
+
+    z0 = 0.0
+    for k in range(n):
+        for l in range(n):
+            cov_kl = local_covariances[k] + local_covariances[l] + (sigma_rbf**2) * eye_d
+            z0 += weights[k] * weights[l] * float(multivariate_normal(mean=positions[l], cov=cov_kl).pdf(positions[k]))
+
+    z = np.zeros(n)
+    for i in range(n):
+        total = 0.0
+        for k in range(n):
+            cov_k = local_covariances[k] + (sigma_rbf**2) * eye_d
+            total += weights[k] * float(multivariate_normal(mean=positions[k], cov=cov_k).pdf(positions[i]))
+        z[i] = total
+
+    pos_kernel = ProductKernel([RBFKernel(sigma_rbf)] * d)
+    kxx = pos_kernel.k(positions, positions)
+    jitter = rel_jitter * np.mean(np.diag(kxx))
+    kxx = kxx + (jitter + noise_variance) * np.eye(n)
+    return float(z0), z, kxx
+
+
+def bayesian_quadrature_rendering_aware_mixture(
+    positions, values, weights, sigma_rbf: float, local_covariances=None, rel_jitter: float = 1e-4,
+    noise_variance: float = 0.0,
+) -> BQResult:
+    """Position-only mixture BQ (no directional kernel at all) -- see
+    `_mixture_moments`'s docstring for why this is the variant that
+    achieves EXACT `w*=weights` recovery, unlike
+    `bayesian_quadrature_rendering_aware_mixture_directional`."""
+    n = np.atleast_2d(np.asarray(positions, dtype=float)).shape[0]
+    if n == 0:
+        return BQResult(mean=0.0, variance=0.0)
+    z0, z, kxx = _mixture_moments(positions, weights, sigma_rbf, local_covariances, rel_jitter, noise_variance)
+    values = np.asarray(values, dtype=float).reshape(-1)
+    mean, variance = _posterior_mean_variance(kxx, values, z, z0)
+    return BQResult(mean=mean, variance=variance)
+
+
+def rendering_aware_alternative_weight_risk_mixture(
+    positions, values, weights, sigma_rbf: float, w=None, local_covariances=None, rel_jitter: float = 1e-4,
+    noise_variance: float = 0.0,
+) -> tuple[float, float]:
+    """Position-only mixture analogue of
+    `rendering_aware_alternative_weight_risk_mixture_directional` -- see
+    that function's docstring for the `weights` (defines a_q) vs `w`
+    (scored vector, defaults to `weights`) distinction, identical here.
+    The point of this specific (position-only) variant: at `w=weights`
+    (the real alpha-compositing weights, the default and only way this
+    project actually calls it), `risk` is the EXACT BQ variance (not an
+    approximation needing R_alpha's bias-correction term), because
+    `_mixture_moments` gives exact `w*=weights` recovery -- unlike the
+    directional variant, whose risk is a genuinely different, larger
+    quantity than its own BQ-optimal variance once kappa>0."""
+    positions_arr = np.atleast_2d(np.asarray(positions, dtype=float))
+    values = np.asarray(values, dtype=float).reshape(-1)
+    weights = np.asarray(weights, dtype=float).reshape(-1)
+    w = weights if w is None else np.asarray(w, dtype=float).reshape(-1)
+    n = positions_arr.shape[0]
+
+    mean = float(w @ values) if w.shape[0] == values.shape[0] and n > 0 else 0.0
+    if n == 0:
+        return mean, 0.0
+
+    z0, z, kxx = _mixture_moments(positions, weights, sigma_rbf, local_covariances, rel_jitter, noise_variance)
+    risk = float(z0 - 2.0 * (w @ z) + w @ kxx @ w)
+    return mean, max(risk, 0.0)

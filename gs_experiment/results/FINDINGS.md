@@ -212,9 +212,8 @@ gitignored, both left on disk for comparison).
 
 **Question**: `gs_experiment/kernels.py` had two families (`RBFKernel`,
 `MaternKernel`) behind the same `Kernel` interface. Is a third family
-actually worth offering, and does kernel choice matter for this method's
-two headline properties — does posterior variance track real splat
-sparsity, and is it calibrated against real held-out rendering error?
+actually worth offering, and does kernel choice matter for whether
+posterior variance is calibrated against real held-out rendering error?
 
 **New kernel added**: `RationalQuadraticKernel` (`gs_experiment/kernels.py`),
 `k(r) = (1 + r^2/(2*alpha*l^2))^(-alpha)` with `alpha` fixed at 1.0 (a
@@ -247,7 +246,7 @@ finds a median of ~1-2 real neighbors in `budget_500` (checked directly),
 so `budget_500` uses 0.25, the smallest radius giving >=6 real neighbors
 for >90% of candidate windows in that checkpoint.
 
-Two metrics, computed via a new function generalizing
+One metric, computed via a new function generalizing
 `LocalUncertaintyEngine.rendering_aware_variance` (which hard-requires an
 RBF `pos_kernel`) to any stationary 1D kernel family, by re-deriving the
 same Gaussian-convolution identity RBF's closed form uses via a cached 1D
@@ -257,18 +256,6 @@ the module's existing `mode="numerical"` `nquad` fallback was tested and
 confirmed too slow to use at real-checkpoint scale — a single 3D query
 did not finish in 120s):
 
-- **Sparsity correlation**: at 150 real splat positions per checkpoint,
-  correlate posterior variance (excluding the query splat itself as a
-  neighbor) against distance to its 8th-nearest real neighbor (larger =
-  sparser). A working signal is a *positive* correlation (sparser -> more
-  variance). Also reported: the same correlation against
-  `variance / prior_variance` (the amplitude-normalized ratio
-  `compute_uncertainty_maps` already uses for the same reason elsewhere in
-  this project) — raw variance turned out to be confounded by each
-  window's local mean opacity (checked directly on `wide`: knn-distance
-  anti-correlates with local opacity at r=-0.49, and opacity correlates
-  with raw variance at r=+0.49), so the ratio is reported as a second,
-  deconfounded read on the same question.
 - **Calibration**: 6 held-out `lego_prepared/eval` views rendered with the
   real trained checkpoint (`gsplat.rasterization`), depth-unprojected to
   real world-space points (up to 80 per view), paired with real per-pixel
@@ -276,40 +263,37 @@ did not finish in 120s):
   correlation and a Gaussian-NLL-style score,
   `mean(0.5*(error^2/var + log(var)))` (lower is better).
 
+(An earlier version of this ablation also reported a "sparsity
+correlation" metric — does posterior variance at a splat's own position
+track distance to its 8th-nearest real neighbor? — with a raw and an
+amplitude-normalized-ratio variant. It has been removed. Beyond the
+specific confounds a later revision surfaced (see section 7's scope
+note), the design itself doesn't hold up: local kNN distance is one
+specific, somewhat arbitrary proxy for "sparsity," and this method's
+posterior variance is shaped by several real, scene-specific factors at
+once — local opacity, real neighbor count relative to the engine's
+`max_neighbors` cap, per-scene splat-density distribution, and the
+fitted kernel bandwidth itself — that a single scalar kNN-distance label
+can't cleanly separate from genuine epistemic uncertainty. A metric that
+needs this many caveats to interpret isn't a reliable way to compare
+kernel families. Old numbers remain in git history for this file's prior
+committed version.)
+
 **Results**:
 
-| checkpoint | family | fitted param | sparsity r (raw var) | sparsity r (ratio) | calibration r | calibration rho | mean NLL |
-|---|---|---:|---:|---:|---:|---:|---:|
-| wide | rbf | sigma=0.0703 | -0.306 | -0.291 | +0.120 | +0.111 | 9.80 |
-| wide | matern32 | rho=0.0186 | -0.441 | -0.019 | +0.062 | -0.125 | 1878.0 |
-| wide | rational_quadratic | l=0.0067 | -0.458 | **+0.191** | +0.064 | -0.173 | 6062.0 |
-| budget_500 | rbf | sigma=0.0988 | +0.766 | +0.811 | -0.055 | -0.205 | **0.080** |
-| budget_500 | matern32 | rho=0.0406 | +0.783 | +0.916 | -0.112 | -0.264 | 87.8 |
-| budget_500 | rational_quadratic | l=0.0238 | +0.783 | **+0.921** | -0.112 | -0.265 | 85.4 |
+| checkpoint | family | fitted param | calibration r | calibration rho | mean NLL |
+|---|---|---:|---:|---:|---:|
+| wide | rbf | sigma=0.0703 | +0.120 | +0.111 | 9.80 |
+| wide | matern32 | rho=0.0186 | +0.062 | -0.125 | 1878.0 |
+| wide | rational_quadratic | l=0.0067 | +0.064 | -0.173 | 6062.0 |
+| budget_500 | rbf | sigma=0.0988 | -0.055 | -0.205 | **0.080** |
+| budget_500 | matern32 | rho=0.0406 | -0.112 | -0.264 | 87.8 |
+| budget_500 | rational_quadratic | l=0.0238 | -0.112 | -0.265 | 85.4 |
 
-(n=150 for sparsity, n=480 for calibration, per row.)
+(n=480 per row.)
 
-**Honest reading — a genuine trade-off, no single winner**:
+**Honest reading**:
 
-- **Sparsity, raw variance**: on `budget_500` (the sparse checkpoint),
-  every family shows the expected strong positive correlation
-  (r=+0.77 to +0.78) — the signal works as intended when neighbor counts
-  are genuinely limited by real splat density. On `wide` (dense), *every*
-  family's raw-variance correlation is *negative* — the opposite of the
-  naive expectation. Root cause, confirmed directly: at `wide`'s density
-  and this checkpoint's `window_radius=0.08`, 148/150 sampled windows hit
-  the engine's `max_neighbors=60` cap regardless of true local density
-  (raw neighbor counts there are in the hundreds to low thousands), so
-  the raw variance is no longer really tracking splat count at all — it's
-  dominated by each window's local mean opacity (a real, measured
-  confound, not noise: see the ratio metric's derivation above).
-- **Sparsity, amplitude-normalized ratio**: once that confound is
-  divided out, `RationalQuadraticKernel` is the only family whose
-  correlation sign is *correct* on `wide` (+0.191, vs. RBF's -0.291 and
-  Matern's -0.019, both still wrong-signed), and it has the *strongest*
-  correlation on `budget_500` too (+0.921 vs. RBF's +0.811 and Matern's
-  +0.916). This is a real, reasonably clean win for the new kernel family
-  on this specific property, in both density regimes.
 - **Calibration**: RBF is dramatically better calibrated by the
   Gaussian-NLL score on *both* checkpoints — roughly 200x better than
   Matern/RationalQuadratic on `wide` (9.8 vs. 1878/6062) and roughly
@@ -324,24 +308,11 @@ did not finish in 120s):
   (|r| <= 0.21) — none of the three families should be read as "well
   calibrated" against real held-out error in the correlation sense; RBF
   is simply far less badly miscalibrated in the NLL sense.
-- **Net honest takeaway**: no family dominates every metric/checkpoint.
-  RBF should stay the default where a well-behaved, non-catastrophic
-  variance estimate matters most (e.g. any NLL-style loss or
-  proper-scoring use, like ROADMAP.md item 1's `nll_weight`).
-  `RationalQuadraticKernel` is the more sensitive, better-behaved choice
-  specifically for the sparsity/coverage-tracking use case this project's
-  other kept results (the directional-coverage and floater figures) care
-  about, once its raw variance is read as the amplitude-normalized ratio
-  rather than a raw magnitude. Matern-3/2 did not win outright on any
-  metric/checkpoint here.
-
-**Concrete next untested step**: the `wide`-checkpoint sparsity confound
-traces to `max_neighbors=60` saturating almost universally at that
-density/radius combination — re-run the sparsity check with
-`max_neighbors` scaled to (or uncapped relative to) each checkpoint's own
-density, to check whether the raw-variance sparsity signal (not just the
-amplitude-normalized ratio) can be recovered directly on a dense
-checkpoint, and whether that changes which family wins.
+- **Net honest takeaway**: RBF should stay the default where a
+  well-behaved, non-catastrophic variance estimate matters most (e.g. any
+  NLL-style loss or proper-scoring use, like ROADMAP.md item 1's
+  `nll_weight`). Matern-3/2 and RationalQuadratic did not win outright on
+  this metric here.
 
 Scripts/data: `gs_experiment/kernel_family_ablation.py`; checkpoints at
 `gs_experiment/local_runs/lego_prepared/{wide,budget_500}` and held-out
@@ -361,8 +332,7 @@ not just the printed summary) to
 `gs_experiment/results/kernel_family_ablation_results.json`, written
 incrementally after each scene so a partial run isn't lost. Everything
 else (window sampling, per-family bandwidth fitting, the generalized
-rendering-aware variance, sparsity/calibration metric code) is reused
-unchanged.
+rendering-aware variance, calibration metric code) is reused unchanged.
 
 **Window radius**: before trusting lego's `wide`=0.08/`budget_500`=0.25
 radii on the other 6 scenes, real neighbor counts were checked directly
@@ -378,8 +348,7 @@ the same normalized coordinate bounds.
 ("Alternative kernels" subsection, Tables II-VIII); raw numbers for every
 scene/checkpoint/family are in `kernel_family_ablation_results.json`.
 
-**Cross-scene reading — one part of the lego-only finding generalizes
-cleanly, the other doesn't**:
+**Cross-scene reading — the lego-only finding generalizes cleanly**:
 
 - **Calibration (mean NLL)**: RBF is the best-calibrated family in *all*
   14 scene/checkpoint combinations — a fully universal result, not just a
@@ -395,37 +364,9 @@ cleanly, the other doesn't**:
   stays weak and sign-inconsistent across every family/scene, exactly as
   on lego alone — none of the three families should be read as tracking
   held-out error in the correlation sense.
-- **Sparsity, amplitude-normalized ratio, sparse checkpoint**: broadly
-  replicates lego. Raw variance has the expected positive sign for every
-  family on all 7 scenes (21/21) on `budget_500`, and RationalQuadratic
-  wins the ratio metric on 6 of 7 scenes (all but `ship`, where RBF is
-  narrowly ahead: +0.927 vs. +0.887).
-- **Sparsity, raw variance, dense (`wide`) checkpoint — does NOT
-  generalize**: lego's "wrong sign for every family" result was itself
-  scene-dependent, not universal. Raw variance keeps the *correct*
-  (positive) sign on `chair` and `ship`, is split by family on `ficus`,
-  and is wrong-signed for every family only on `drums`, `hotdog`, `lego`,
-  and `mic`. Traced directly to real per-scene density: the median real
-  neighbor count inside the same fixed-radius window at `wide` density
-  ranges from ~21 (`ficus`) to ~9,000 (`mic`) across scenes that share an
-  identical training recipe and window radius — it's specifically the
-  high-neighbor-count scenes (well past the engine's `max_neighbors=60`
-  cap) where local opacity confounds raw variance, not a universal
-  property of "dense" checkpoints in general.
-- **Sparsity ratio, dense checkpoint**: correspondingly more mixed than
-  lego alone suggested — RationalQuadratic wins on 3/7 scenes (`drums`,
-  `ficus`, `lego`), Matern on 2/7 (`chair`, `mic`), RBF on 2/7 (`hotdog`,
-  `ship`).
 - **Net honest takeaway, updated**: the calibration half of the original
   trade-off (RBF safest for NLL-style use) is now confirmed universal
-  across all 7 scenes, stronger evidence than lego alone gave. The
-  sparsity-tracking half (RationalQuadratic best for coverage-tracking)
-  mostly holds, especially on genuinely sparse checkpoints, but is not a
-  scene-independent law at high splat density — the underlying raw-
-  variance confound this recommendation is designed to correct for is
-  itself scene-dependent, and where that confound doesn't arise (`chair`,
-  `ship`), RBF's own raw variance already does the sparsity-tracking job
-  correctly, with no need for RQ's ratio-based fix.
+  across all 7 scenes, stronger evidence than lego alone gave.
 
 Scripts/data: same `gs_experiment/kernel_family_ablation.py`, run with no
 `--scenes` argument (defaults to all 7); full results in
@@ -445,8 +386,8 @@ implicitly calling that "the BQ posterior" (what every existing table
 does) is not a coherent probabilistic statement, regardless of how it
 happens to score. This is a real, independently plausible explanation for
 why calibration correlation has stayed weak/sign-inconsistent everywhere
-in sections 2/2b despite `u_BQ` clearly tracking *something* real
-(sparsity, directional coverage).
+in sections 2/2b despite `u_BQ` clearly tracking real directional
+coverage in this project's kept headline figures.
 
 **Method**: `gs_experiment.quadrature.rendering_aware_alternative_weight_risk`
 (the general RKHS worst-case-squared-error quadratic form `e(w)^2 = z0 -
@@ -733,38 +674,20 @@ overwritten in place with the corrected numbers.
   hotdog/`wide` rbf->matern32/matern32/RQ/matern32; ship/`budget_500`
   rbf->matern32) — this flips among near-noise values, not a reversal of
   a real signal.
-- **Sparsity-ratio winner on the sparse (`budget_500`) checkpoint** — the
-  metric section 2b credits RationalQuadratic with winning "6 of 7
-  scenes": after the fix it wins only **4/7** (ficus, hotdog, lego, ship —
-  note `ship` *flipped to RQ* from RBF), RBF now wins **3/7** (chair,
-  drums, mic). This meaningfully weakens the "RQ best for
-  sparsity-tracking" recommendation from a strong majority to a plurality.
-  **Notable**: mic/`budget_500`'s sparsity-ratio correlation flips sign
-  for *all three* families (was +0.03 to +0.17 for every family before,
-  now -0.01 to -0.10 for every family) — the sparsity-tracking signal on
-  that specific checkpoint may no longer be real/positive at all; it
-  should not be cited as a sparsity-tracking success case without a fresh
-  look.
-- **Sparsity-ratio winner on the dense (`wide`) checkpoint**: also
-  reshuffled — changed in 4/7 scenes (chair, ficus, hotdog, mic); new
-  counts RQ 4/7, RBF 3/7 (previously RQ 3/7, Matern 2/7, RBF 2/7 — Matern
-  no longer wins any scene on this metric).
-  - **What did *not* change**: the raw-variance sparsity-sign pattern on
-    the dense checkpoint (which scenes show the "wrong-signed" raw-variance
-    confound that originally motivated the ratio metric) is unchanged —
-    same scenes positive (chair, ship) vs. negative (drums, ficus, hotdog,
-    lego, mic) before and after, magnitudes shifting only a few
-    hundredths. This specific finding is robust to the bug.
 
-**Updated reading**: RBF-safest-for-NLL and RQ-best-for-sparsity-tracking
-both still hold as the *general* pattern, but neither is as clean as
-previously reported — RBF's calibration dominance is "12/14, usually by a
-wide margin" rather than "14/14, universal," and RQ's sparsity-ratio
-advantage on sparse checkpoints is "a 4/7 plurality" rather than "a 6/7
-majority." Full corrected numbers for every scene/checkpoint/family are in
-the regenerated `kernel_family_ablation_results.json`; old numbers are
+**Updated reading**: RBF-safest-for-NLL still holds as the *general*
+pattern, but is not as clean as previously reported — RBF's calibration
+dominance is "12/14, usually by a wide margin" rather than "14/14,
+universal." Full corrected numbers for every scene/checkpoint/family are
+in the regenerated `kernel_family_ablation_results.json`; old numbers are
 preserved in git history (this file's prior committed version) for anyone
 wanting to diff further.
+
+(The sparsity-ratio metric this re-run originally also reported deltas
+for has since been removed from `kernel_family_ablation.py` entirely —
+see section 2's note — so those deltas are no longer reproducible from
+current code and have been dropped from this section rather than kept as
+an orphaned reference to deleted numbers.)
 
 ### 4b. `rendering_aware_calibration_experiment.py` re-run (Tier 1) — section 3 numbers
 
@@ -1363,3 +1286,333 @@ Scripts/data: `gs_experiment/scripts/render_scene_gallery.py`,
 (tracked, now modified in the working tree — see 6d); checkpoints at
 `gs_experiment/local_runs/{lego,chair,drums,ficus,hotdog,mic,ship}_prepared/`
 (all pre-existing, none retrained).
+
+## 7. A real, homoscedastic observation-noise variance added to the BQ posterior (RBF only) — redoing every kept result with it in place
+
+**Motivation, already established earlier this session** (see the fix
+itself, not repeated here): the BQ posterior has always treated every
+splat color as an exact, noiseless GP observation, but real splat
+positions routinely include near-duplicate points (pairwise distances as
+small as `1e-4` under a `~0.1`-unit kernel bandwidth), which forces the
+noiseless fit toward an artificially short bandwidth and produces a
+badly ill-conditioned, oscillatory posterior — this project's own
+already-documented `~48%` negative-BQ-weight finding (section 3/4b
+above). The fix: a real homoscedastic observation-noise variance,
+`y_i = f(x_i) + eps_i`, `eps_i ~ N(0, noise_variance)` iid, added to the
+Gram matrix's diagonal alongside the existing numerical jitter term —
+implemented and unit-tested (bit-for-bit `noise_variance=0` parity, plus
+a directly-observable near-duplicate-conflict relaxation test) across
+every site in the core library (`quadrature.py`, `gpu_uncertainty.py`,
+`pixel_uncertainty.py`, `hyperparams.py`, `splat_scene.py`,
+`train_minimal_gsplat.py`) earlier in this session, **scoped to RBF
+only** (the user's own explicit direction) — Matérn-3/2 and rational
+quadratic are not extended with their own noise fits here.
+
+This section redoes every one of this project's kept quantitative
+results with that fix in place, and reports the honest, sometimes mixed
+outcome — this is **not** a uniformly positive result, and the numbers
+below say so plainly rather than only reporting the wins.
+
+**A note on scope**: `kernel_family_ablation.py`'s own `sparsity_correlation`
+metric (used by section 2/2b's original kernel-family comparison) has
+been **removed from the codebase entirely**, not merely revised. It
+turned out, on review after this section's 4th-family sparsity numbers
+were first computed, to have real, unresolved methodological confounds
+specific to comparing a jointly-refit-bandwidth-and-noise variant against
+the three noiseless variants (sigma and noise_variance change together,
+not in isolation; the fixed `window_radius`/`knn_k` interact mechanically
+with each family's own very different fitted lengthscale; the
+query-excludes-itself design conflates sparsity-tracking with
+near-duplicate-conditioning repair; the amplitude-normalized ratio's `z0`
+isn't matched between noise/no-noise variants). But the deeper problem
+is broader than those specific confounds: local kNN distance is one
+narrow, somewhat arbitrary proxy for "sparsity," and this method's
+posterior variance is genuinely shaped by several scene-specific factors
+at once (local opacity, real neighbor count relative to the engine's
+`max_neighbors` cap, per-scene splat-density distribution, fitted
+bandwidth) that a single scalar label can't cleanly disentangle from
+real epistemic uncertainty — so even a confound-free version of this
+metric would still be a weak, hard-to-interpret way to compare kernel
+families. It was deleted rather than caveated or fixed; section 2 has
+been rewritten to drop it, and this section reports only the
+kernel-ablation's calibration (NLL) results, which do not share those
+confounds (NLL is evaluated against real held-out rendering error,
+independent of the window/knn machinery above) and were unaffected by
+the removal.
+
+### 7a. `kernel_family_ablation.py` — a 4th variant, `rbf_noise` (calibration/NLL only)
+
+`FAMILIES` gained a 4th entry, `rbf_noise`: the same RBF factory as
+`rbf`, but fit jointly with a real noise variance via
+`hyperparams.fit_kernel_param_and_noise_pooled_nd` (a 2D marginal-
+likelihood grid search + local refine) against the identical real local
+windows the other three families already fit against
+(`sample_sigma_windows`), instead of `fit_kernel_param_pooled_nd`'s
+bandwidth-only, implicitly-noiseless fit. `kernel_family_ablation.py`'s
+own from-scratch Gram-matrix construction
+(`_generalized_rendering_aware_moments`) got the identical additive-
+diagonal `noise_variance` extension every other site in the codebase
+already has (new tests in
+`tests/gs_experiment/test_kernel_family_ablation.py`: `noise_variance=0`
+parity, a measurable-change check, and a `fit_all_families` structural
+check). Re-ran the full 7-scene × 2-checkpoint sweep (all 4 families
+now, per checkpoint); `kernel_family_ablation_results.json` updated in
+place — the prior 3-family numbers are reproduced (not deleted) as part
+of the same re-run, and the new 4th variant's numbers sit alongside them
+for every scene/checkpoint.
+
+**Fitted bandwidths, as expected from the near-duplicate-conflict
+story**: `rbf_noise`'s jointly-fit sigma is 3.08x-7.29x larger than
+plain `rbf`'s noiseless sigma across all 14 checkpoints (mean 4.96x) —
+e.g. lego/`wide`: 0.1359 -> 0.5857 (matching this session's earlier
+single-checkpoint validation exactly); fitted `noise_variance` ranges
+0.00102-0.05495.
+
+**Calibration (mean NLL and AUSE) — a clear, consistent loss, not a
+win**: `rbf_noise` never wins (lowest NLL) on any of the 14 checkpoints
+(0/14) — `rbf` wins 13/14, rational_quadratic 1/14 (hotdog/`wide`, by a
+real ~10x margin: 8967.8 vs. RBF's 105526.7), matern32 0/14. Median NLL:
+`rbf` 580.7, matern32 734.3, rational_quadratic 2077.4, `rbf_noise`
+51,429.9 — nearly two orders of magnitude worse than plain RBF's median,
+and worse than *both* other noiseless families too. AUSE (a
+ranking-quality metric, added after this subsection was first written —
+see section 2's replacement of the removed sparsity metric): `rbf` wins
+12/14, matern32 1/14, `rbf_noise` 1/14, rational_quadratic 0/14; median
+AUSE `rbf` 0.118, matern32 0.127, rational_quadratic 0.138, `rbf_noise`
+0.135 — a much smaller gap than NLL's, but `rbf` still the best-ranking
+family on the large majority of checkpoints, by a consistent (if modest)
+margin. Mechanism, the same one section 6c already established for the
+coverage-sweep figure: `RBFKernel` is a normalized Gaussian *density*, so
+its self-covariance shrinks as sigma grows (`~1/sigma^3` for the 3-axis
+product kernel used here); `rbf_noise`'s much larger jointly-fit sigma
+(3-7x larger) means a much smaller absolute posterior-variance scale at
+real query points, which is catastrophic under the Gaussian NLL's `1/var`
+term whenever the real held-out error is non-trivial (exactly the same
+mechanism, and the same direction, as this project's earlier
+colors-bug-driven "u_BQ shrinks 5x-16x, NLL gets 10-20x worse" finding,
+section 4b). **Net reading**: for this project's specific NLL and AUSE
+calibration metrics, adding noise variance to the safest, best-calibrated
+family makes it worse, not better — a genuinely negative result for this
+specific comparison, on top of an unambiguous positive result for the
+fitting objective itself (higher marginal likelihood, confirmed earlier
+this session on 8 checkpoints) and for the negative-BQ-weight/speckle
+problem it was actually built to fix (sections below).
+
+(A small note on reproducibility: this subsection's original NLL win
+count, 12/14, was carried over from section 4a's 3-family result rather
+than freshly recomputed against the 4-family run; a later full rerun
+that also added the AUSE metric found 13/14 — `rbf` now also wins
+lego/`wide`, 454.0 vs. matern32's 484.8, a margin narrow enough
+(previously reported as 504.9 vs. 476.6, a matern32 win) to plausibly
+reflect small run-to-run numerical drift in the GPU-based checkpoint
+loading/attribution path rather than a real change, and not something
+this project has root-caused. It does not change the qualitative
+reading: `rbf` wins the overwhelming majority of checkpoints on both
+metrics either way.)
+
+Scripts/data: `gs_experiment/kernel_family_ablation.py`;
+`gs_experiment/results/kernel_family_ablation_results.json` (all 7
+scenes, updated in place); new tests in
+`tests/gs_experiment/test_kernel_family_ablation.py`.
+
+### 7b. `likelihood_training_experiment.py` — a 6th variant, `bq_densify_noise`
+
+A `LEGO_GAP_NOISE_VARIANCE` constant was fit in
+`real_directional_coverage_experiment.py`, pooling real local
+(position, color) windows (`kernel_family_ablation.sample_sigma_windows`,
+`window_radius=LEGO_GAP_WINDOW_RADIUS=0.08`) across the same 5 real
+lego-gap checkpoints (`gap_0`-`gap_4`) `LEGO_GAP_SIGMA` is itself pooled
+across, via `hyperparams.fit_kernel_param_and_noise_pooled_nd` (125
+pooled windows, 25/checkpoint). Result: jointly-fit sigma 0.6121 (vs.
+`LEGO_GAP_SIGMA`'s noiseless 0.1393), `noise_variance = 0.005532`, log
+marginal likelihood 7704.97 vs. 5230.79 noiseless (+2474.17 units, not a
+close call). `LEGO_BQ_NOISE_VARIANCE` in
+`likelihood_training_experiment.py` reuses this exact fit (same
+constant, not refit separately) rather than redoing the same pooled fit
+twice.
+
+Added a 6th training variant, `bq_densify_noise`
+(`densify_criterion="bq_variance"`, `nll_weight=0.0`,
+`bq_noise_variance=0.005532`), alongside the existing 5. Re-ran the full
+comparison on `lego_prepared/narrow` (same recipe, seed, `n_iters=3000`
+as the existing 5-variant runs), new output dir
+`gs_experiment/local_runs/likelihood_experiment_v3/`.
+
+| variant | n_splats | train PSNR | held-out PSNR | delta train | delta held-out | delta n_splats |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline | 3120 | 26.54dB | 17.29dB | — | — | — |
+| bq_densify | 3312 | 27.47dB | 17.64dB | +0.93dB | +0.35dB | +192 |
+| nll_loss | 3167 | 26.84dB | 17.36dB | +0.30dB | +0.07dB | +47 |
+| bq_densify+nll | 3306 | 27.06dB | 17.52dB | +0.52dB | +0.22dB | +186 |
+| bq_densify_floor | 1160 | 24.66dB | 17.30dB | -1.88dB | +0.01dB | -1960 |
+| **bq_densify_noise** | 3341 | 27.38dB | **17.72dB** | +0.84dB | **+0.42dB** | +221 |
+
+**A genuine, if modest, win**: `bq_densify_noise` gives the *best
+held-out PSNR of all 6 variants* — 17.72dB, +0.42dB over baseline,
+beating plain `bq_densify`'s own +0.35dB. Train PSNR is very slightly
+behind plain `bq_densify` (+0.84dB vs. +0.93dB), and splat growth is
+similar (+221 vs. +192). Unlike section 7a's calibration result, this is
+a clean, if small, positive result: adding real observation noise to the
+BQ-variance densification criterion measurably helps *during* training,
+not just at post-hoc query time — consistent with (not contradicted by)
+7a's finding, since densification only ever needs the *relative* ranking
+of BQ variance across splats to decide where to grow, not a
+well-calibrated absolute scale the way a Gaussian NLL score does.
+
+Scripts/data: `gs_experiment/scripts/likelihood_training_experiment.py`,
+`gs_experiment/scripts/real_directional_coverage_experiment.py`
+(`LEGO_GAP_NOISE_VARIANCE`); checkpoints at
+`gs_experiment/local_runs/likelihood_experiment_v3/` (new).
+
+### 7c. `rendering_aware_calibration_experiment.py` — a 6th variant, `existing_posthoc_noise`
+
+Added a 6th mean/uncertainty pairing to Phase A's existing 5-variant
+comparison: the same `(C_alpha, u_BQ)` pairing as variant 1 (existing
+post-hoc — what's currently in the paper), but `u_BQ` computed under the
+noise-aware joint `(sigma, noise_variance)` fit
+(`splat_scene.fit_kernel_hyperparams_with_noise`) instead of the
+noiseless `fit_all_families`/engine construction every other variant
+uses. Directly tests whether the noise extension *also* fixes/improves
+variant 1's already-documented miscalibration (section 3/4b), independent
+of the `R_alpha` fix (variant 3) already established there. Re-ran the
+full 7-scene Phase A sweep with this variant added (existing 5 kept
+unchanged — confirmed bit-for-bit identical before/after for variant 3,
+see below); `rendering_aware_calibration_results.json` updated in place.
+
+**Result: noise-variance does NOT fix (and measurably worsens) variant
+1's naive `(C_alpha, u_BQ)` pairing.** Variant 6 loses to variant 1 on
+mean NLL in 13 of 14 checkpoints (only `drums`/`budget_500` favors it:
+22.3 -> 18.9) — median NLL 94.0 (variant 1) -> 344.6 (variant 6), mean
+410.9 -> 1265.7, often dramatically worse per-checkpoint (e.g.
+lego/`wide`: 635.6 -> 1426.2; hotdog/`wide`: 3332.7 -> 9649.0;
+mic/`wide`: 324.7 -> 2093.2). Empirical 1σ/2σ coverage also drops
+(mean 0.499 -> 0.203 at 1σ, 0.639 -> 0.340 at 2σ) — the noise-aware
+`u_BQ` is *more* overconfident at real held-out points, not less.
+Pearson correlation is a wash either way (both near zero: median -0.029
+vs. -0.004) — neither variant should be read as tracking real error in
+the correlation sense. Same mechanism as 7a: the noise-aware fit's much
+larger sigma shrinks this project's normalized-density RBF kernel's
+absolute variance scale (e.g. lego/`wide` "sharpness"/realized mean
+variance: 0.0194 -> 0.000125, ~155x smaller), so pairing an
+even-sharper, more overconfident `u_BQ` with `C_alpha`'s real, unchanged
+error makes the NLL blowup *worse*, not better.
+
+**This is not a contradiction of section 3/4b's `R_alpha` fix, nor of
+this section's other positive noise-variance results — it is a
+demonstration that noise-variance fixes Gram-matrix conditioning/
+sharpness, not the deeper mean-mismatch problem `R_alpha` already exists
+to fix.** Variant 3 (`R_alpha = u_BQ + (C_BQ-C_alpha)^2`) already
+correctly accounts for the `C_BQ`/`C_alpha` disagreement and does not
+need this correction — confirmed directly: variant 3's numbers are
+bit-for-bit identical before and after this section's change, on all 14
+checkpoints (it is computed independently of variant 6's new noise-aware
+path, as expected). **The correct fix for variant 1's specific
+miscalibration remains `R_alpha` (section 3/4b), not noise-variance
+alone** — this section's honest conclusion should not be read as
+undermining that established recommendation.
+
+Scripts/data: `gs_experiment/rendering_aware_calibration_experiment.py`;
+`gs_experiment/results/rendering_aware_calibration_results.json` (Phase
+A, all 7 scenes, updated in place — Phase B not re-run, per this task's
+own lower-priority scoping: the color-render/speckle improvement was
+already confirmed directly earlier this session).
+
+### 7d. The three headline paper figures, regenerated with the noise-aware fit
+
+`render_scene_gallery.py`/`render_splat_sweep_gallery.py`: `build_rows`
+gained a `fit_noise_variance: bool = True` parameter (default **on** for
+this regeneration — both scripts' own call to `compute_uncertainty_maps`
+now passes `fit_noise_variance=True` by default; a `--no-fit-noise-variance`
+CLI flag on each script reproduces the old noiseless-fit figures). Both
+re-run; `scene_gallery.png` (5,818,261 -> 5,322,279 bytes) and
+`lego_splat_sweep.png` (3,341,849 -> 3,023,929 bytes) both regenerated
+with real content changes (confirmed via `git status`). PSNR is
+unchanged in both (e.g. lego/wide: 40.40dB, lego splat-sweep's full
+500->1M sweep: 21.41/30.50/34.85/38.74/40.40/41.01dB — identical to
+section 6a/6b's noiseless-fit numbers), exactly as expected: PSNR never
+touches the fitted variance. Fitted noise-aware sigma is consistently
+3-7x the noiseless value across every checkpoint spot-checked in the
+logs (e.g. lego/wide: 0.5857 vs. the noiseless 0.1359), matching 7a's
+pooled finding.
+
+`render_coverage_uncertainty_sweep.py`: reuses the *same* pooled fit as
+7b (`LEGO_GAP_NOISE_VARIANCE = 0.005532`), wired through as an explicit
+`noise_variance=` argument to `compute_uncertainty_maps` (matching how
+`LEGO_GAP_SIGMA` itself is passed as an explicit, not per-condition-fit,
+value here — deliberate, for cross-condition comparability, per that
+constant's own docstring). Re-run; `coverage_uncertainty_sweep.png`
+regenerated (1,121,711 -> 1,122,298 bytes — a small change, see below).
+
+| gap half-width | PSNR | mean var (noiseless, this session's earlier pass) | mean var (noise-aware) | median var (noise-aware) | ratio (noise-aware/noiseless) |
+|---|---:|---:|---:|---:|---:|
+| 0deg  | 35.12dB | 0.084  | 0.0867  | 0.0764  | 1.03x |
+| 15deg | 29.19dB | 1.254  | 1.2584  | 1.2528  | 1.00x |
+| 30deg | 22.91dB | 3.343  | 3.3478  | 3.1410  | 1.00x |
+| 50deg | 15.13dB | 8.886  | 8.9067  | 9.0175  | 1.00x |
+| 75deg | 16.09dB | 11.769 | 11.8347 | 12.0938 | 1.01x |
+
+**Unlike 7a/7c, this one barely moves at all** — mean/median raw
+variance shift by at most ~3%, nowhere near the dramatic (order-of-
+magnitude) shifts 7a/7c/section-6c's mechanism would predict from a
+sigma change of this size. The reason is specific to *how* this script
+uses the noise-aware fit, not a contradiction of 7a/7c: `LEGO_GAP_SIGMA`
+itself is **not** replaced by the jointly-fit noise-aware sigma here
+(0.1393 is kept, per this constant's own deliberate "one shared value
+across gap conditions" design) — only `LEGO_GAP_NOISE_VARIANCE`
+(0.005532) is added on top of the *existing* Gram matrix's diagonal.
+Relative to that Gram matrix's own diagonal scale at `sigma=0.1393`
+(`k(0,0) = 1/(sigma*sqrt(2*pi)) ~ 2.86`), `0.005532` is a small (~0.2%)
+perturbation — nowhere near large enough to meaningfully change the
+posterior on its own. This is the *conditioning*-only effect of noise
+variance (relaxing near-duplicate-point ill-conditioning) without the
+*bandwidth* effect (7a/7c's much larger jointly-fit sigma) that drives
+the large NLL/sharpness shifts elsewhere in this section — confirming,
+via a real head-to-head, that the two effects are separable, and that
+this figure's own PSNR/qualitative "grows monotonically, ~2 orders of
+magnitude with the gap" claim (section 6c) is essentially unaffected
+either way.
+
+Scripts/data: `gs_experiment/scripts/render_scene_gallery.py`,
+`render_splat_sweep_gallery.py`, `render_coverage_uncertainty_sweep.py`;
+regenerated PNGs at
+`gs_experiment/results/{scene_gallery,lego_splat_sweep,coverage_uncertainty_sweep}.png`
+(tracked, modified in the working tree, not committed).
+
+### 7e. Overall honest read: not a uniform win
+
+Three of four re-run results are genuinely mixed or negative, one is a
+clean (if modest) win — this section should not be read as "noise
+variance is validated everywhere":
+
+- **Real, positive**: the underlying marginal-likelihood fit (confirmed
+  earlier this session, +180 to +780 log-likelihood units across 8
+  checkpoints, and again here: +2474 on the pooled lego-gap fit); the
+  negative-BQ-weight/ill-conditioning problem it was built to fix
+  (already-confirmed dramatic reduction, sections above); the real
+  color-image speckle reduction and PSNR improvement (already confirmed
+  directly, 15.45dB -> 16.57dB on lego/wide); and `bq_densify_noise`'s
+  held-out PSNR win during training (7b, +0.42dB, best of 6 variants).
+- **Real, negative**: `rbf_noise` never wins the kernel-ablation's own
+  NLL calibration metric (7a, 0/14, ~2 orders of magnitude worse median
+  than plain RBF); the naive existing-posthoc `(C_alpha, u_BQ)` pairing
+  gets *worse*, not better, with noise-aware `u_BQ` (7c, loses to the
+  noiseless pairing on NLL in 13/14 checkpoints) — `R_alpha` (section
+  3/4b), not noise-variance, remains the correct fix for that specific
+  problem.
+- **Essentially neutral**: the coverage-sweep figure's own raw-variance
+  numbers (7d), because that script deliberately keeps the noiseless
+  `LEGO_GAP_SIGMA` and only adds the noise term on top, isolating the
+  conditioning effect from the larger bandwidth effect that drives the
+  NLL swings elsewhere.
+- **Mechanistic throughline**: everywhere noise-variance measurably hurts
+  an absolute-scale metric (7a, 7c), the cause is the same, already-
+  established one (section 6c): this project's RBF kernel is a
+  normalized density whose self-covariance shrinks as sigma grows, and
+  the noise-aware joint fit consistently prefers a much larger sigma
+  (freed from the near-duplicate-interpolation constraint) — so a better
+  *marginal-likelihood* fit does not automatically mean a better-
+  *calibrated* absolute posterior variance under this specific kernel
+  convention. Where a metric only needs relative ranking (BQ-variance
+  densification, 7b) or where the bandwidth itself isn't touched (7d),
+  this shrinkage side-effect doesn't apply and the fix's real benefits
+  show through cleanly.

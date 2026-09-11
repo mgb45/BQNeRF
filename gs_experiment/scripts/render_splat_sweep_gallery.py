@@ -47,7 +47,7 @@ def budget_label(b) -> str:
     return "wide (300,000)" if b == "wide" else f"{b:,}"
 
 
-def run(scene: str = SCENE, view_idx: int = VIEW_IDX, budgets=BUDGETS, out_path=None):
+def run(scene: str = SCENE, view_idx: int = VIEW_IDX, budgets=BUDGETS, out_path=None, fit_noise_variance=True):
     import gc
 
     import torch
@@ -60,6 +60,7 @@ def run(scene: str = SCENE, view_idx: int = VIEW_IDX, budgets=BUDGETS, out_path=
         print(f"=== budget={b} (max_observations_per_splat={max_obs}) ===", flush=True)
         scene_rows = build_rows(
             scene_views={scene: view_idx}, checkpoint_subdir=checkpoint_subdir, max_observations_per_splat=max_obs,
+            fit_noise_variance=fit_noise_variance,
         )
         label = budget_label(b)
         for r in scene_rows:
@@ -85,9 +86,17 @@ def main():
     parser.add_argument("--view-idx", type=int, default=VIEW_IDX)
     parser.add_argument("--budgets", nargs="+", default=BUDGETS, help='e.g. --budgets 500 10000 wide 1000000')
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--no-fit-noise-variance", action="store_true",
+        help="disable the noise-aware joint sigma/noise_variance fit (default: enabled) -- "
+        "reproduces the old noiseless-fit figure.",
+    )
     args = parser.parse_args()
     budgets = [int(b) if b != "wide" else b for b in args.budgets]
-    run(scene=args.scene, view_idx=args.view_idx, budgets=budgets, out_path=args.out)
+    run(
+        scene=args.scene, view_idx=args.view_idx, budgets=budgets, out_path=args.out,
+        fit_noise_variance=not args.no_fit_noise_variance,
+    )
 
 
 if __name__ == "__main__":
