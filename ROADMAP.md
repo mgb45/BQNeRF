@@ -1,335 +1,64 @@
-# Roadmap
+# ROADMAP
 
-For the theory, see [`README.md`](README.md). For results, see
-`gs_experiment/results/FINDINGS.md`. This document is the forward
-experiment plan: what to try next, in priority order. Training directly
-under the likelihood and alternative kernels are next up — everything
-else in README's "What's been tested" list follows behind them.
+Forward experiment plan for the renderer-consistent sparse-GP
+decomposition (see [`README.md`](README.md) for the theory and
+[`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md)
+for what's already been built and shown). Ordered by priority.
 
-## 1. Train directly under the likelihood
+## 1. Calibration against real held-out error
 
-Every result so far computes BQ variance *after* training, read off a
-checkpoint trained by ordinary photometric loss and gradient-triggered
-densification. The open question: does the BQ posterior help *during*
-training, not just diagnose a finished checkpoint?
+`u_spatial_BQ(q) + u_SH(q)` has been shown to produce visually distinct,
+sensible-looking spatial patterns (`gs_experiment/results/
+sparse_gp_uncertainty.png`), but not yet checked quantitatively against
+real held-out rendering error (correlation, a Gaussian-NLL-style proper
+scoring rule, AUSE). The project's own established convention
+(`rendering_aware_alternative_weight_risk`'s docstring; the retired
+kernel-family-ablation work) is to score this honestly and report a
+negative result if it comes out that way, rather than assume a
+theoretically-motivated construction is automatically well-calibrated.
 
-`gs_experiment/scripts/train_minimal_gsplat.py` already exposes the hooks
-needed to test this without new trainer code:
+## 2. Fitting `lam`, the SH-coefficient prior precision
 
-- `densify_criterion="bq_variance"` — swap the densification trigger from
-  gsplat's view-space positional gradient to closed-form BQ position-only
-  variance, queried at each splat's own position via
-  `compute_per_splat_bq_variance`.
-- `nll_weight` — an uncertainty-weighted Gaussian-NLL auxiliary loss,
-  evaluated on a grid of real ray-surface points at `nll_interval`
-  cadence.
-- `bq_densify_min_opacity` — floors the BQ-variance densification score so
-  splats in empty, low-opacity space don't outscore splats near real,
-  under-resolved geometry.
+`gs_experiment/sh_directional_uncertainty.py`'s `Sigma_theta_i^-1 = lam*I
++ sum_p beta_{p,i}^2 phi(d_p)phi(d_p)^T` currently takes `lam` as a
+hand-picked scalar (see `render_sparse_gp_uncertainty.py`'s own `LAM`
+constant). A marginal-likelihood fit (mirroring `hyperparams.
+fit_kernel_param_and_noise_pooled_nd`'s pattern, but over per-splat SH
+regression instead of the position kernel) would replace that guess with
+a real, data-driven value -- and is a prerequisite for priority 1's
+calibration check to mean much.
 
-**Plan**: a new `gs_experiment/scripts/likelihood_training_experiment.py`
-that trains matched variants on one real scene (same seed, same other
-hyperparameters, reusing `train_minimal_gsplat.train()`'s kwargs) and
-evaluates on both training views and a genuinely disjoint held-out set:
+## 3. `accumulate_sh_precision` performance
 
-- baseline: gradient densify, no NLL term
-- BQ-variance densify, NLL off
-- gradient densify, NLL on
-- BQ-variance densify, NLL on
+Rerendering every real training camera currently takes 8-11 minutes per
+300k-splat scene (see `render_sparse_gp_uncertainty.py`'s own timing
+prints) -- tractable for a one-off figure, not for an interactive or
+per-training-step use. The per-camera loop in
+`gpu_sh_directional_uncertainty.accumulate_sh_precision` is a natural
+target: batching multiple cameras' gathers together (mirroring
+`gpu_visibility_attribution.batched_attribute_observations`'s own
+per-camera-chunked batching) rather than one Python-level camera at a
+time.
 
-Design questions to resolve empirically rather than assume:
+## 4. Next-best-view selection
 
-- Does `bq_densify_min_opacity` need tuning per-scene, and does it trade
-  off splat-count growth against held-out quality (a floor that's too
-  loose can let densification grow unboundedly; too tight starves it)?
-- Is the NLL grid resolution/frequency (`nll_grid_res`, `nll_interval`)
-  fine/frequent enough to actually move training, or does it need to be
-  denser at real compute cost?
-- Compare against `train_with_reference_strategy`'s gsplat-native
-  densification as a stronger baseline than this project's from-scratch
-  gradient path, so a win or loss isn't an artifact of a weak baseline.
+Use `u_q(pixel)`, aggregated per candidate next training view (e.g. mean
+or a high percentile over that view's own visible pixels), to pick which
+unobserved view to add next, and check whether it reduces held-out error
+faster than a round-robin/random view schedule. Depends on priority 1
+(a signal not yet shown to correlate with real error is a weak basis for
+choosing views).
 
-Report whichever way this comes out — improvement, no effect, or
-regression — in `gs_experiment/results/FINDINGS.md`, with the concrete
-next untested step named explicitly rather than left as a vague "needs
-more work."
+## 5. Training under the likelihood
 
-**Status**: done, first installment — see `gs_experiment/results/FINDINGS.md`
-section 1. Mixed, honest result on the lego `narrow` (12-view) pool at
-matched splat budget: `bq_variance` densification is a real but modest win
-(+0.83dB train / +0.29dB held-out PSNR vs. gradient densification), the
-`nll_weight` auxiliary loss term alone is a no-op-to-mild-negative
-(-0.14dB / -0.21dB), and `bq_densify_min_opacity` is a genuine efficiency
-lever (62% fewer splats, no held-out quality cost). Next untested step:
-differentiate the NLL term's variance through the BQ posterior itself
-(currently detached) rather than iterating further on the auxiliary-loss
-weighting as-is.
-
-**Status update (bug fix + re-run)**: this experiment's own `LEGO_BQ_SIGMA`
-constant was one of the stale, pre-`SplatScene.colors`-fix bandwidths
-(0.0694 -> 0.13926, `FINDINGS.md` section 4) and had not yet been re-run
-against. Now re-run in full (`FINDINGS.md` section 1's updated tables).
-Two of three headline claims hold essentially unchanged: BQ-variance
-densification's win is confirmed (+0.85dB train / +0.24dB held-out, was
-+0.83/+0.29), and the NLL loss term's held-out mild-negative effect is
-confirmed (-0.14dB held-out, was -0.21dB — same sign, similar size). The
-opacity floor's claim is narrowed: "no held-out quality cost" still holds
-(62.4% fewer splats, essentially flat held-out PSNR), but the previously
-reported small held-out *gain* (+0.16dB) is now -0.02dB (flat, not a
-measured win) — that specific framing should not be repeated. Next
-untested step unchanged.
-
-**Status update (noise-variance extension, 6th variant)**: a real
-homoscedastic observation-noise variance was added to the BQ posterior
-project-wide (RBF only — see `FINDINGS.md` section 7). A 6th variant,
-`bq_densify_noise` (`densify_criterion="bq_variance"` plus a real,
-pooled-fit `bq_noise_variance=0.005532`), was added and the full 6-variant
-comparison re-run (`FINDINGS.md` section 7b, new output dir
-`likelihood_experiment_v3/`). Result: a genuine, if modest, win — the
-best held-out PSNR of all 6 variants (17.72dB, +0.42dB vs. baseline,
-beating plain `bq_densify`'s own +0.35dB), at a similar splat-growth cost
-(+221 vs. +192). Consistent with (not contradicted by) the same session's
-more mixed/negative NLL-calibration findings elsewhere (section 7a/7c):
-densification only needs BQ variance's *relative* ranking across splats,
-not a well-calibrated absolute scale, so the shrinking-self-covariance
-side effect that hurts Gaussian-NLL-style metrics doesn't apply here.
-
-## 2. Alternative kernels
-
-`gs_experiment/kernels.py` currently has two families — `RBFKernel` and
-`MaternKernel` — behind the same `Kernel` interface, with bandwidths fit
-by GP log marginal likelihood (`hyperparams.py`). The method's posterior/
-variance machinery is kernel-agnostic by design; the open question is
-which kernel families are actually worth offering and what each one buys.
-
-**Plan**:
-
-1. Add at least one more kernel family as a new `Kernel` subclass — e.g.
-   a rational-quadratic kernel (a continuous mixture of RBF bandwidths,
-   which may handle scenes with mixed fine/coarse structure better than a
-   single-bandwidth RBF) or a periodic kernel (relevant for any scene
-   content with repeating structure). Fit its bandwidth the same way as
-   RBF/Matérn.
-2. Build a small `gs_experiment/kernel_family_ablation.py` that, per
-   checkpoint (the lego wide/500 and coverage-gap checkpoints already
-   used by the kept results), fits every kernel family's hyperparameters
-   and computes a clearly-defined comparison metric — sparsity
-   correlation (does variance track deliberately sparse regions) and/or
-   calibration against real held-out rendering error. This metric code
-   doesn't exist in the current repo and needs to be written fresh, kept
-   small and single-purpose rather than resurrecting a large multi-check
-   eval script.
-3. Report per-checkpoint winners honestly — expect a trade-off (different
-   kernels may be better for different properties or scene geometry)
-   rather than assuming a single universally-best kernel, and say so
-   plainly if that's what the data shows.
-4. Keep kernel/bandwidth choice a pluggable, exposed parameter throughout
-   (already true via `pixel_uncertainty.LocalUncertaintyEngine` and
-   `splat_scene.fit_kernel_hyperparams`) — this is a strength of the
-   method, not a loose end to resolve into one hardcoded default.
-
-**Status**: done — see `gs_experiment/results/FINDINGS.md` section 2 (and
-its 2b addendum). Added `RationalQuadraticKernel` (alpha fixed at 1.0) and
-ran the ablation on the real `wide`/`budget_500` checkpoints of all 7
-NeRF-Synthetic scenes this project's other kept results use (chair,
-drums, ficus, hotdog, lego, mic, ship — `materials` excluded, same
-documented reason as `scripts/render_scene_gallery.py`), not just lego.
-Genuine trade-off, partially universal: RBF is dramatically better
-calibrated (Gaussian-NLL score) in *all* 14 scene/checkpoint combinations,
-not just lego's 2 — a fully universal result. RationalQuadratic gives the
-best sparsity-tracking signal (amplitude-normalized `variance/prior_variance`
-ratio) on the sparse checkpoint in 6 of 7 scenes, but the dense-checkpoint
-raw-variance confound that motivated the ratio metric in the first place
-turns out to be scene-dependent, not universal (present on drums/hotdog/
-lego/mic, absent on chair/ship, mixed on ficus, tracking each scene's own
-real local splat density relative to the engine's `max_neighbors=60`
-cap) — so the dense-checkpoint sparsity-ratio winner is more mixed across
-scenes than the lego-only result suggested. Full per-scene numbers in
-`gs_experiment/results/kernel_family_ablation_results.json` and
-`paper/main.tex`'s appendix (Tables II-VIII).
-Matern-3/2 did not win outright on any metric/checkpoint.
-
-**Status update (bug fix + re-run)**: a real bug (`SplatScene.colors` was
-raw SH coefficients, not real color — see `FINDINGS.md` section 4) was
-fixed and the whole ablation was re-run. Fitted bandwidths shifted up
-1.45x-2.00x (RBF sigma) to as much as 18.2x (Matern/RQ in one case); the
-"RBF wins NLL in all 14/14 checkpoints" claim is no longer strictly true
-(now 12/14, still the large majority, often by orders of magnitude) and
-"RQ wins the sparse-checkpoint sparsity-ratio in 6/7 scenes" weakened to
-4/7 (RBF now wins 3/7). Both general recommendations (RBF for NLL-safety,
-RQ for sparsity-tracking) still hold as the dominant pattern, just less
-cleanly than originally reported. `kernel_family_ablation_results.json`
-has been overwritten with the corrected numbers; `paper/main.tex`'s
-Tables II-VIII have **not** been updated (need review with the user
-first — see `FINDINGS.md` section 4a for full before/after deltas).
-
-**Status update (sparsity-correlation metric removed)**: the
-sparsity-correlation check (`sparsity_correlation` in
-`kernel_family_ablation.py` — does posterior variance at a splat's own
-position track local kNN distance?) was removed from this ablation, and
-every mention of its results has been stripped from
-`gs_experiment/results/FINDINGS.md` (not just caveated). It was
-introduced to test a noise-variance kernel extension and produced a
-clean-looking result (a 7/7-scene win on dense checkpoints), but on
-review it wasn't a sound experiment for two separable reasons:
-
-- **Confounds specific to this comparison**: the `rbf_noise` family
-  jointly refits *both* its bandwidth and its noise_variance, while plain
-  `rbf` only refits bandwidth, so the result couldn't be attributed to
-  noise modeling specifically vs. just a different fitted bandwidth; the
-  window_radius/knn_k used for the sparsity label were fixed constants
-  shared across kernel families whose own fitted lengthscales differ; and
-  the metric's self-exclusion-at-query-position design likely interacted
-  with the already-documented near-duplicate-position Gram-matrix
-  conditioning issue more than it measured genuine epistemic uncertainty
-  about sparsity.
-- **A more fundamental design problem, independent of those confounds**:
-  local kNN distance is one narrow, somewhat arbitrary proxy for
-  "sparsity," and this method's posterior variance is shaped by several
-  real, scene-specific factors at once (local opacity, real neighbor
-  count relative to the engine's `max_neighbors` cap, per-scene
-  splat-density distribution, fitted bandwidth) that a single scalar
-  label can't cleanly separate from genuine epistemic uncertainty. Even a
-  confound-free version of this metric would still be a weak, hard-to-
-  interpret way to compare kernel families or noise-variance variants.
-
-Rather than caveat an uninterpretable metric, it was deleted; item 2's
-remaining metric (calibration against real held-out rendering error,
-reported via a proper scoring rule and, per follow-up direction, AUSE)
-is unaffected and is a clean, apples-to-apples comparison across families
-since it doesn't depend on the query-neighbor self-exclusion design or a
-single sparsity proxy.
-
-## 3. Floater-flagging follow-up experiment
-
-README already confirms the signal flags GS-training floaters but marks
-this "needs an experiment." The floater mechanism is: a floater is, by
-construction, a splat whose local render-weight spread (`Sigma_q`) is
-anomalously large relative to its neighbors. Test whether that spread can
-be used *during* training as a targeted regularizer or pruning criterion
-— narrower in scope than item 1's general likelihood-training question,
-since it targets one specific known failure mode rather than training
-quality broadly.
-
-## 4. Calibration experiment
-
-README also marks "is the number calibrated" as tested-but-"needs an
-experiment" — quantify whether posterior variance is calibrated against
-real held-out rendering error (not just correlated with sparsity), across
-the standard NeRF-Synthetic scenes already used elsewhere in this
-project. Reuse whatever calibration metric gets built for item 2's kernel
-ablation rather than writing a second, separate metric.
-
-**Status update**: item 2's calibration metric (and every number in
-`paper/main.tex`'s Tables II-VIII) turned out to rest on an incoherent
-pairing — `u_BQ` (the variance around the BQ posterior mean `C_BQ`)
-scored against the squared error of a *different* quantity, the real
-alpha-compositing renderer's `C_alpha`. See
-`gs_experiment/results/FINDINGS.md` section 3 for the fix (a proper RKHS
-risk formulation, `rendering_aware_alternative_weight_risk`, applied to
-5 coherent mean/uncertainty pairings across all 7 scenes × 2 checkpoints)
-and its result: none of the real (non-null-baseline) variants beat a
-trivial constant-variance model on Gaussian NLL, but pairing the real
-`C_alpha` with `R_alpha = u_BQ + (C_BQ-C_alpha)^2` (variant 3) is
-measurably more robust and better-calibrated (coverage sense) than the
-existing practice, and `C_BQ` itself does not render well enough (Phase
-B: ~1.6dB PSNR behind real alpha compositing on average, ~50% of its raw
-predictions out of `[0,1]` range, ~49% negative BQ weights) to replace
-alpha compositing as the deployed mean. Tables II-VIII have NOT yet been
-updated to reflect this — that edit needs review with the user first.
-
-**Status update 2 (bug fix + re-run)**: the same `SplatScene.colors` bug
-from item 2's update above also affected every number in this section.
-Re-run (`FINDINGS.md` section 4b) shows the core recommendation not only
-holds but is demonstrated more starkly: variant 1 (existing post-hoc)'s
-NLL on dense (`wide`) checkpoints got ~10-20x *worse* after the fix (a
-real, mechanistically-understood consequence of `u_BQ` shrinking 5x-16x
-at real query points while the real rendering error it's scored against
-stayed unchanged — see FINDINGS.md for the full explanation, this is not
-a regression from the fix), while variant 3 (`R_alpha`) held flat or
-improved on 6/7 of those same checkpoints and now even beats the trivial
-constant-variance baseline outright in 2/14 cases (previously 0/14) and
-wins AUSE in 8/14 (previously 3/14, now a majority). Separately, Phase
-B's "`C_BQ` does not render competitively" verdict is substantially
-overturned by the fix: the ~56% out-of-range rate drops to ~5% (confirming
-it was largely a units-bug artifact — a near-0 raw-SH prediction reads as
-real color ~0.5, not black), and `C_BQ` now *beats* real alpha compositing
-on PSNR in 8/8 checked views (was 1/8), though SSIM is only roughly on par
-(not a clean win). The ~49% negative-BQ-weight rate is unchanged — a real,
-values-independent structural property, not a units artifact. Tables
-II-VIII still have NOT been updated — needs review with the user, now
-with a larger, more nuanced set of deltas than before.
-
-**Status update (Tier 2 risk, now resolved by actually regenerating all
-three figures)**: all three headline PNGs have been regenerated with the
-corrected sigma/kappa/colors and measured directly — see `FINDINGS.md`
-section 6 (section 4c above is left in place as the original estimate,
-marked superseded). `scene_gallery.png` and `lego_splat_sweep.png`
-self-corrected on a bare re-run as expected (sigma now ~0.09-0.24 across
-checkpoints, PSNR numbers unchanged and confirmed to exactly match
-`paper/main.tex`'s quoted spatial-coverage figures). A real,
-pre-existing bug unrelated to the colors fix was found and fixed while
-regenerating `lego_splat_sweep.png` (`KeyError: 'budget_rows'` — the
-script's row-building was never updated to match a later refactor of
-`plot_gallery`'s row format; fixed in
-`gs_experiment/scripts/render_splat_sweep_gallery.py`).
-`coverage_uncertainty_sweep.png` picked up the corrected `LEGO_GAP_SIGMA`
-(0.13926) automatically (confirmed: it imports the constant directly from
-`real_directional_coverage_experiment.py`, no separate hardcoded value of
-its own) — its PSNR numbers also match the paper exactly
-(35.12/29.19/22.91/15.13/16.09dB vs. quoted 35.1/29.2/22.9/15.1/16.1dB),
-but **its mean raw-variance numbers moved in the opposite direction from
-the section-4c estimate**: measured $0.084 \to 1.254 \to 3.343 \to 8.886
-\to 11.769$ (was estimated to grow ~6-8x to something like
-$5$-$7 \to \dots \to 500$-$600$; instead it *shrank* ~6.6x-9.8x from the
-paper's currently-quoted $0.82 \to 8.54 \to 22.12 \to 59.45 \to 78.85$).
-Traced to a real, verified mechanism: `RBFKernel` is a normalized Gaussian
-*density* (`gs_experiment/kernels.py`), whose own self-covariance
-`k(x,x)=1/(sigma*sqrt(2*pi))` *shrinks* as sigma grows, and the 3D
-position kernel is a product of three of these — so self-covariance scales
-as `1/sigma^3`; the ~2.0x sigma correction predicts almost exactly the
-measured ~6.6x-9.8x variance decrease (`2.0^3≈8`). The qualitative
-"grows monotonically, roughly two orders of magnitude with the gap"
-framing in the paper is unaffected and, if anything, slightly
-strengthened (new max/min ratio ~140x vs. old ~96x). All four candidate
-PNGs (`scene_gallery.png`, `scene_gallery_500.png`, `lego_splat_sweep.png`,
-`coverage_uncertainty_sweep.png`) are git-tracked, not gitignored;
-three were regenerated and are now modified in the working tree (not
-committed, per this task's own scope);
-`scene_gallery_500.png` was left untouched — it is a stale, orphaned file
-from a superseded pipeline stage, produced by no current script path and
-not referenced anywhere in `paper/main.tex` (only `scene_gallery.png` is).
-`paper/main.tex`'s text has **not** been edited — the coverage-sweep's
-quoted absolute numbers need the user's own review given they moved in the
-opposite direction from what was previously estimated.
-
-**Status update (noise-variance extension, 6th variant — a genuinely
-negative result for this specific pairing)**: with the project-wide
-homoscedastic observation-noise extension in place (RBF only —
-`FINDINGS.md` section 7), a 6th Phase A variant,
-`existing_posthoc_noise`, was added: the same `(C_alpha, u_BQ)` pairing
-as variant 1, but with `u_BQ` computed under the noise-aware joint
-`(sigma, noise_variance)` fit instead of the noiseless one. Full 7-scene
-Phase A re-run (`FINDINGS.md` section 7c). Result: **noise-variance does
-NOT fix, and measurably worsens, variant 1's already-documented
-miscalibration** — loses to the noiseless pairing on mean NLL in 13/14
-checkpoints (median 94.0 -> 344.6, mean 410.9 -> 1265.7), and 1σ/2σ
-empirical coverage drops further (0.499 -> 0.203, 0.639 -> 0.340) —
-i.e. more overconfident, not less. Same mechanism as the calibration
-ablation's own negative result above: the noise-aware fit's much larger
-jointly-fit sigma shrinks this project's normalized-density RBF kernel's
-absolute variance scale. Variant 3 (`R_alpha`) is confirmed unaffected
-(bit-for-bit identical before/after, all 14 checkpoints, since it's
-computed independently of variant 6's new path) — **`R_alpha` remains
-the correct, already-established fix for variant 1's miscalibration;
-noise-variance alone does not substitute for it.** Full write-up,
-mechanism, and honest overall read (mixed, not uniformly positive) in
-`FINDINGS.md` section 7 (7a-7e).
-
-## 5. Next-best-view selection evaluation
-
-README lists this as Todo. Use posterior variance to pick the next
-training view (greedily query variance across a candidate view pool, add
-the highest-variance view, retrain/fine-tune) and check whether it
-improves held-out reconstruction faster than a round-robin or random view
-schedule, on one or more of the standard NeRF-Synthetic scenes.
+Whether `u_q` (or just `u_SH(q)`, the cheaper term once priority 3 lands)
+can inform densification or a loss-reweighting term during training
+itself, not just post-hoc diagnosis on a finished checkpoint. An earlier,
+now-retired version of this idea (gradient-vs-BQ-variance densification
+triggers in `train_minimal_gsplat.py`) was tried against the OLD
+single-Gaussian point-evaluation kernel and found genuinely negative
+(uncontrolled splat growth without a real quality gain) -- worth
+retrying against this decomposition specifically once priorities 1-2 give
+a calibrated, real-precision signal to train against, not assumed to work
+just because the earlier attempt used a different (and since-diagnosed)
+kernel construction.

@@ -48,7 +48,6 @@ import torch
 from PIL import Image
 
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
-from gs_experiment.pixel_uncertainty import LocalUncertaintyEngine, make_default_3d_position_kernel
 from gs_experiment.ply_io import write_3dgs_ply
 from gs_experiment.spherical_harmonics import N_COEFFS_FOR_DEGREE
 
@@ -166,156 +165,6 @@ def _ssim(pred: torch.Tensor, gt: torch.Tensor, window_size: int = 11) -> torch.
         (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
     )
     return ssim_map.mean()
-
-
-def _splat_positions_and_colors(params: dict):
-    """Detached numpy snapshot of current splat state, in the (positions,
-    scalar-color, opacity) form LocalUncertaintyEngine needs -- shared by
-    both ROADMAP.md item 3 mechanisms below (the NLL loss term and
-    variance-driven densification), since both need to build a fresh
-    engine from whatever the splat population looks like *right now*
-    (positions and count both change at every densify cycle)."""
-    positions_np = params["positions"].detach().cpu().numpy()
-    colors_np = params["sh"].detach().cpu().numpy()[:, :, 0].mean(axis=1)
-    opacities_np = torch.sigmoid(params["opacity_logits"]).detach().cpu().numpy()
-    return positions_np, colors_np, opacities_np
-
-
-def _build_uncertainty_engine(params: dict, sigma: float, max_neighbors: int) -> LocalUncertaintyEngine:
-    positions_np, colors_np, opacities_np = _splat_positions_and_colors(params)
-    bounds = tuple((positions_np[:, d].min() - 0.3, positions_np[:, d].max() + 0.3) for d in range(3))
-    pos_kernel = make_default_3d_position_kernel(sigma=sigma)
-    return LocalUncertaintyEngine(
-        positions=positions_np, values=colors_np, pos_kernel=pos_kernel, scene_bounds=bounds, max_neighbors=max_neighbors,
-        opacities=opacities_np,
-    )
-
-
-def compute_per_splat_bq_variance(
-    params: dict, sigma: float, window_radius: float, max_neighbors: int, device: str, noise_variance: float = 0.0,
-) -> torch.Tensor:
-    """Rendering-aware BQ variance at every current splat's own position --
-    the closed-form, "uncertainty-driven" analogue of the standard 3DGS
-    view-space-gradient densification signal (`avg_grad` in `train`):
-    where the gradient signal asks "does the optimizer keep wanting to
-    move this splat," this asks "is this splat sitting in a
-    poorly-covered region of the scene," directly from the same BQ
-    machinery this project's uncertainty claims are built on, not a proxy
-    for it. Pure numpy/scipy (LocalUncertaintyEngine), so this detaches
-    from the training graph entirely -- used only to pick *which* splats
-    to split/clone, not backpropagated through.
-
-    `noise_variance` (default 0.0, unchanged behavior): real homoscedastic
-    observation-noise variance -- see
-    `gs_experiment.quadrature._rendering_aware_moments`'s docstring for the
-    model/motivation and `gs_experiment.splat_scene.
-    fit_kernel_hyperparams_with_noise` for how to fit it jointly with
-    `sigma` against a real checkpoint.
-    """
-    positions_np, _, _ = _splat_positions_and_colors(params)
-    engine = _build_uncertainty_engine(params, sigma, max_neighbors)
-    variances = np.array(
-        [engine.rendering_aware_variance(p, window_radius, noise_variance=noise_variance).variance for p in positions_np]
-    )
-    return torch.tensor(variances, dtype=torch.float32, device=device)
-
-
-def unproject_depth_grid(depth: np.ndarray, K: np.ndarray, c2w_cv: np.ndarray) -> np.ndarray:
-    """Same construction as gs_experiment/scripts/render_reconstruction.py's
-    function of the same name (duplicated rather than imported, to avoid this
-    training hot path depending on a rendering/plotting script): depth (H, W)
-    in OpenCV camera space -> (H, W, 3) world-space points, the real
-    ray-surface hit for every pixel of a low-res depth pass."""
-    h, w = depth.shape
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    us, vs = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
-    x_cam = (us - cx) / fx * depth
-    y_cam = (vs - cy) / fy * depth
-    cam_points = np.stack([x_cam, y_cam, depth, np.ones_like(depth)], axis=-1)
-    world_points = cam_points @ c2w_cv.T
-    return world_points[..., :3]
-
-
-def compute_nll_loss_term(
-    params: dict,
-    pred: torch.Tensor,
-    gt: torch.Tensor,
-    viewmat_np: np.ndarray,
-    K_full_np: np.ndarray,
-    width: int,
-    height: int,
-    sh_degree: int,
-    device: str,
-    grid_res: int,
-    sigma: float,
-    window_radius: float,
-    max_neighbors: int,
-    alpha_threshold: float,
-    variance_floor: float,
-    noise_variance: float = 0.0,
-) -> Optional[torch.Tensor]:
-    """Gaussian-NLL loss at a sparse grid of real ray-surface points,
-    weighted by closed-form BQ position-only variance -- ROADMAP.md item
-    3's "training under the likelihood," scoped honestly (see the
-    docstring on `train`'s `nll_weight` argument for exactly what this
-    does and does not do).
-
-    Returns None if the current view has no valid (alpha > threshold)
-    points on the query grid (e.g. very early in training, before any
-    splat has opacity/coverage at this view) -- callers should skip adding
-    the term for that iteration rather than treat this as an error.
-
-    `noise_variance` (default 0.0, unchanged behavior): see
-    `compute_per_splat_bq_variance`'s docstring -- same real
-    homoscedastic observation-noise extension, applied here too so both
-    of `train`'s BQ mechanisms share one consistent kernel assumption.
-    """
-    import gsplat
-
-    with torch.no_grad():
-        quats = params["quats"]
-        scales = torch.exp(params["log_scales"])
-        opacities = torch.sigmoid(params["opacity_logits"])
-        sh_for_gsplat = params["sh"].transpose(1, 2)
-
-        K_grid_np = K_full_np.copy()
-        K_grid_np[0, 0] *= grid_res / width
-        K_grid_np[0, 2] *= grid_res / width
-        K_grid_np[1, 1] *= grid_res / height
-        K_grid_np[1, 2] *= grid_res / height
-        K_grid = torch.tensor(K_grid_np, dtype=torch.float32, device=device)
-        viewmat_t = torch.tensor(viewmat_np, dtype=torch.float32, device=device)
-
-        rendered_lo, alpha_lo, _ = gsplat.rasterization(
-            params["positions"], quats, scales, opacities, sh_for_gsplat,
-            viewmat_t[None], K_grid[None], width=grid_res, height=grid_res, sh_degree=sh_degree, render_mode="ED",
-        )
-        depth_map = rendered_lo[0, ..., 0].cpu().numpy()
-        alpha_map = alpha_lo[0, ..., 0].cpu().numpy()
-        valid = alpha_map > alpha_threshold
-        if not valid.any():
-            return None
-
-        c2w_cv = np.linalg.inv(viewmat_np)
-        world_points = unproject_depth_grid(depth_map, K_grid_np, c2w_cv)
-
-        engine = _build_uncertainty_engine(params, sigma, max_neighbors)
-        ys, xs = np.where(valid)
-        variances = np.array(
-            [
-                engine.rendering_aware_variance(world_points[y, x], window_radius, noise_variance=noise_variance).variance
-                for y, x in zip(ys, xs)
-            ]
-        )
-
-        rows = np.clip(((ys.astype(np.float64) + 0.5) * height / grid_res).astype(int), 0, height - 1)
-        cols = np.clip(((xs.astype(np.float64) + 0.5) * width / grid_res).astype(int), 0, width - 1)
-
-    variance_t = torch.tensor(variances, dtype=torch.float32, device=device).clamp_min(variance_floor)
-    pred_at_pts = pred[rows, cols]
-    gt_at_pts = gt[rows, cols]
-    sq_err = ((pred_at_pts - gt_at_pts) ** 2).mean(dim=-1)
-    return 0.5 * (sq_err / variance_t + torch.log(variance_t)).mean()
 
 
 def densify_and_prune(
@@ -478,17 +327,6 @@ def train(
     min_opacity: float = 0.005,
     split_scale_threshold: Optional[float] = None,
     max_splats: int = 30000,
-    densify_criterion: str = "gradient",
-    bq_sigma: float = 0.9,
-    bq_window_radius: float = 1.6,
-    bq_max_neighbors: int = 150,
-    bq_noise_variance: float = 0.0,
-    nll_weight: float = 0.0,
-    nll_interval: int = 100,
-    nll_grid_res: int = 12,
-    nll_alpha_threshold: float = 0.5,
-    nll_variance_floor: float = 1e-8,
-    bq_densify_min_opacity: float = 0.0,
     ssim_weight: float = 0.2,
     position_lr_final: Optional[float] = None,
 ):
@@ -510,52 +348,6 @@ def train(
     scale is a reasonable proxy for "already covering more than one
     feature's worth of space, so cloning it wouldn't help; splitting
     would."
-
-    ROADMAP.md item 3 ("training under the likelihood"), first
-    installment, two independent knobs:
-
-    - `densify_criterion`: `"gradient"` (default, unchanged behavior) or
-      `"bq_variance"` -- swaps the densification trigger from gsplat's
-      view-space positional gradient to real closed-form BQ position-only
-      variance (`compute_per_splat_bq_variance`), queried at every
-      current splat's own position via `LocalUncertaintyEngine`, every
-      `densify_interval` iterations (same cadence, not every iteration --
-      a KD-tree + one BQ solve per splat isn't free). Same percentile-
-      threshold split/clone/prune logic either way; only what counts as
-      "this splat needs more coverage" changes.
-    - `nll_weight` (0.0 = off by default): adds an uncertainty-weighted
-      Gaussian-NLL auxiliary loss term every `nll_interval` iterations,
-      `0.5 * ((pred-gt)^2 / var + log(var))` averaged over a sparse
-      `nll_grid_res` x `nll_grid_res` grid of REAL ray-surface points
-      (gsplat's own expected-depth output, unprojected via this module's own
-      `unproject_depth_grid`, not an approximation of pixel positions), `var`
-      the real closed-form BQ position-only
-      variance at each of those points. Honest scope note: `var` is
-      computed via `LocalUncertaintyEngine` (pure numpy/scipy) from a
-      detached snapshot of the current splat state and is *not* itself
-      differentiated through -- gradients flow through `pred` in the
-      `(pred-gt)^2/var` term as usual (so the practical effect is a
-      real-uncertainty-weighted reweighting of the photometric loss,
-      down-weighting already-well-resolved points relative to
-      under-resolved ones), but the `log(var)` calibration term
-      contributes zero gradient to the splat parameters since `var` is
-      fixed for that step. Differentiating through the BQ posterior
-      itself (a KD-tree ball query + linear solve) is a real further
-      step, not done here -- see ROADMAP.md item 3 and
-      gs_experiment/results/FINDINGS.md for the account of what this
-      first installment does and does not establish.
-    - `bq_sigma`/`bq_window_radius`/`bq_max_neighbors`: shared by both
-      mechanisms above, not independently tunable per-mechanism in this
-      first installment -- defaults match the thin-rod/cylinder scene
-      family's established convention, not the lego-scale
-      `sigma=0.13926`/`window_radius=0.08` (`LEGO_GAP_SIGMA`/
-      `LEGO_GAP_WINDOW_RADIUS` in `real_directional_coverage_experiment.py`)
-      used elsewhere in `gs_experiment/` -- pick values matching the actual
-      scene's spatial scale, not these defaults blindly, for a different
-      scene family. (This docstring previously said `sigma=0.05`, which
-      matched neither the pre-fix lego value (0.0694) nor the post-fix one
-      (0.13926, see FINDINGS.md section 4) -- just a stale/imprecise
-      figure, not a second functional bug; corrected here for accuracy.)
 
     `ssim_weight` (default 0.2): weight of the SSIM term in the loss,
     following the standard 3DGS formulation `(1-w)*L1 + w*(1-SSIM)`.
@@ -662,16 +454,6 @@ def train(
             photo_loss = l1 + torch.nn.functional.mse_loss(pred, gt)
         loss = photo_loss + opacity_reg_weight * opacities.mean()
 
-        nll_term = None
-        if nll_weight > 0 and it % nll_interval == 0 and it > 0:
-            nll_term = compute_nll_loss_term(
-                params, pred, gt, viewmats[view_idx].cpu().numpy(), Ks[view_idx].cpu().numpy(), width, height,
-                sh_degree, device, nll_grid_res, bq_sigma, bq_window_radius, bq_max_neighbors,
-                nll_alpha_threshold, nll_variance_floor, noise_variance=bq_noise_variance,
-            )
-            if nll_term is not None:
-                loss = loss + nll_weight * nll_term
-
         optimizer.zero_grad()
         loss.backward()
 
@@ -688,53 +470,12 @@ def train(
             with torch.no_grad():
                 psnr = -10.0 * torch.log10(torch.nn.functional.mse_loss(pred, gt).clamp_min(1e-10))
             n_now = params["positions"].shape[0]
-            nll_str = f"  nll {nll_term.item():.4f}" if nll_term is not None else ""
-            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}{nll_str}  psnr(train view) {psnr.item():.2f}dB  n_splats {n_now}")
+            print(f"iter {it:5d}/{n_iters}  loss {loss.item():.4f}  psnr(train view) {psnr.item():.2f}dB  n_splats {n_now}")
 
         if densify and densify_start <= it < densify_end and (it - densify_start) % densify_interval == 0 and it > 0:
             with torch.no_grad():
-                if densify_criterion == "bq_variance":
-                    # closed-form BQ position-only variance at each
-                    # splat's own position, in place of the view-space
-                    # gradient signal -- every splat has a well-defined
-                    # variance, so (unlike the gradient path) there's no
-                    # "never received a gradient yet" mask to apply.
-                    avg_grad = compute_per_splat_bq_variance(
-                        params, bq_sigma, bq_window_radius, bq_max_neighbors, device, noise_variance=bq_noise_variance
-                    )
-                    has_data = torch.ones_like(avg_grad, dtype=torch.bool)
-                    if bq_densify_min_opacity > 0.0:
-                        # BQ variance is high in genuinely empty space too
-                        # (correct, but not useful for deciding where to
-                        # grow) -- the same problem a real pruning
-                        # experiment found and fixed with an opacity floor
-                        # (min_opacity_for_bq, see FINDINGS.md section 7).
-                        # First attempt zeroed the signal for low-opacity
-                        # splats but still included
-                        # them in `has_data` -- with most of a freshly
-                        # initialized/split population below the floor,
-                        # that dragged the percentile itself down to ~0,
-                        # making almost any eligible splat's variance
-                        # exceed the threshold and triggering near-
-                        # uncontrolled growth (confirmed: hit max_splats by
-                        # iter 900, held-out PSNR fell despite train PSNR
-                        # recovering -- see gs_experiment/results/
-                        # FINDINGS.md). Excluding low-opacity splats from
-                        # `has_data` too (mirroring exactly how the
-                        # gradient path already excludes "never received a
-                        # gradient" splats from the percentile) fixes this:
-                        # the threshold now reflects only the eligible
-                        # population's real variance distribution, and
-                        # zeroing ineligible splats' own avg_grad still
-                        # keeps them from triggering regardless.
-                        has_data = torch.sigmoid(params["opacity_logits"]) > bq_densify_min_opacity
-                        avg_grad = avg_grad.clone()
-                        avg_grad[~has_data] = 0.0
-                elif densify_criterion == "gradient":
-                    avg_grad = grad_accum / grad_denom.clamp(min=1)
-                    has_data = grad_denom > 0
-                else:
-                    raise ValueError(f"unknown densify_criterion: {densify_criterion!r}")
+                avg_grad = grad_accum / grad_denom.clamp(min=1)
+                has_data = grad_denom > 0
                 grad_threshold = (
                     torch.quantile(avg_grad[has_data], densify_grad_percentile / 100.0).item()
                     if has_data.any()
@@ -910,21 +651,17 @@ def train_with_reference_strategy(
 
 def mean_psnr(scene_dir: str, n_views: int, background_color=(0.05, 0.05, 0.05)) -> float:
     """Mean per-view PSNR of `scene_dir`'s own checkpoint against its own
-    ground-truth images -- shared by every variant `run_nll_experiment`
-    trains, so results are directly comparable at a matched splat budget.
+    ground-truth images.
 
     `background_color` must match whatever `background_color` the checkpoint
     was actually trained with (default here matches `train`'s own default,
     for backward compatibility with existing dark-background-scene callers)
     -- get this wrong (e.g. the default dark background against a
     white-composited NeRF-Synthetic scene trained with
-    `background_color=(1,1,1)`, as real_directional_coverage_experiment.py's
-    LEGO_GAP_TRAIN_KWARGS uses) and every pixel the splats don't cover reads
-    as a large, spurious error, silently tanking PSNR by tens of dB without
-    the reconstruction actually being wrong -- caught exactly this way while
-    building likelihood_training_experiment.py (ROADMAP.md item 1): real
-    per-iteration training-view PSNR was 26-28dB but this function reported
-    ~1.7dB before the mismatch was found."""
+    `background_color=(1,1,1)`, see `DEFAULT_TRAIN_KWARGS`) and every pixel
+    the splats don't cover reads as a large, spurious error, silently
+    tanking PSNR by tens of dB without the reconstruction actually being
+    wrong."""
     from gs_experiment.scripts.render_reconstruction import render_views
 
     results, _ = render_views(scene_dir, list(range(n_views)), background_color=background_color)
@@ -932,135 +669,13 @@ def mean_psnr(scene_dir: str, n_views: int, background_color=(0.05, 0.05, 0.05))
     return float(np.mean(psnrs))
 
 
-NLL_EXPERIMENT_COMMON_KWARGS = dict(
-    n_splats=1500, bounds=((-2.5, 2.5), (-2.5, 2.5), (-2.5, 2.5)), sh_degree=1,
-    init_scale=0.1, opacity_reg_weight=0.003, densify=True, densify_interval=300, densify_start=300,
-    densify_grad_percentile=80.0, min_opacity=0.005, max_splats=6000, log_every=1000,
-    bq_sigma=0.9, bq_window_radius=1.6,
-)
-
-NLL_EXPERIMENT_VARIANTS = {
-    "baseline": dict(densify_criterion="gradient", nll_weight=0.0),
-    "bq_densify": dict(densify_criterion="bq_variance", nll_weight=0.0),
-    "nll_loss": dict(densify_criterion="gradient", nll_weight=0.02),
-    "bq_densify+nll": dict(densify_criterion="bq_variance", nll_weight=0.02),
-}
-
-
-def run_nll_experiment(nbv_dir: str, n_iters: int = 3000, seed: int = 0, nll_interval: int = 50, nll_grid_res: int = 12):
-    """ROADMAP.md item 3: does training under the likelihood -- an
-    uncertainty-weighted Gaussian-NLL auxiliary loss and/or BQ-variance-
-    driven densification, both added to `train` above -- actually beat
-    standard photometric-loss + gradient-densification at a matched splat
-    budget? The comparison this project's own honesty norm requires before
-    either mechanism gets used anywhere else: neither is assumed to help
-    just because it's more "principled." Moved here verbatim from the old
-    nll_training_experiment.py (a thin wrapper around `train` with no
-    independent logic of its own); the real negative result is recorded
-    in gs_experiment/results/FINDINGS.md.
-
-    Four variants, same scene, seed, and every other hyperparameter
-    (matching nbv_experiment.py's exact training call, the established
-    convention for this scene family), only densify_criterion and
-    nll_weight differing:
-      - baseline:       gradient densification,   no NLL term (today's default)
-      - bq_densify:      bq_variance densification, no NLL term
-      - nll_loss:        gradient densification,   NLL term on
-      - bq_densify+nll:  bq_variance densification, NLL term on
-
-    Trained on `<nbv_dir>/baseline` (a real, already-used narrow 10-view
-    training arc), evaluated on both the training views themselves and the
-    genuinely disjoint held-out ring in `<nbv_dir>/baseline_eval` --
-    generalization, not just training-view fit, is the claim that matters.
-    """
-    train_dir = os.path.join(nbv_dir, "baseline")
-    eval_source_dir = os.path.join(nbv_dir, "baseline_eval")
-    out_root = os.path.join(nbv_dir, "nll_experiment")
-    os.makedirs(out_root, exist_ok=True)
-
-    # frame count comes from transforms.json, not the images/ directory --
-    # images/ is a shared symlinked pool of renders, transforms.json is
-    # what actually subsets it into this scene's train/eval views.
-    _, train_frames = load_transforms(os.path.join(train_dir, "transforms.json"))
-    _, eval_frames = load_transforms(os.path.join(eval_source_dir, "transforms.json"))
-    n_train_views = len(train_frames)
-    n_eval_views = len(eval_frames)
-
-    results = {}
-    for name, overrides in NLL_EXPERIMENT_VARIANTS.items():
-        print(f"\n=== training variant: {name} ({overrides}) ===")
-        variant_dir = os.path.join(out_root, name)
-        os.makedirs(variant_dir, exist_ok=True)
-        ply_path = os.path.join(variant_dir, "splats.ply")
-        train(
-            train_dir, ply_path, n_iters=n_iters, seed=seed,
-            nll_interval=nll_interval, nll_grid_res=nll_grid_res,
-            **NLL_EXPERIMENT_COMMON_KWARGS, **overrides,
-        )
-
-        # train-view PSNR: evaluate directly against the training scene_dir
-        # with this variant's checkpoint swapped in.
-        eval_train_dir = os.path.join(variant_dir, "eval_on_train")
-        os.makedirs(eval_train_dir, exist_ok=True)
-        for fname in ("transforms.json",):
-            shutil.copy(os.path.join(train_dir, fname), os.path.join(eval_train_dir, fname))
-        images_link = os.path.join(eval_train_dir, "images")
-        if not os.path.exists(images_link):
-            os.symlink(os.path.abspath(os.path.join(train_dir, "images")), images_link)
-        shutil.copy(ply_path, os.path.join(eval_train_dir, "splats.ply"))
-        train_psnr = mean_psnr(eval_train_dir, n_train_views)
-
-        # held-out PSNR: same pattern against the disjoint eval ring.
-        eval_heldout_dir = os.path.join(variant_dir, "eval_on_heldout")
-        os.makedirs(eval_heldout_dir, exist_ok=True)
-        for fname in ("transforms.json",):
-            shutil.copy(os.path.join(eval_source_dir, fname), os.path.join(eval_heldout_dir, fname))
-        images_link = os.path.join(eval_heldout_dir, "images")
-        if not os.path.exists(images_link):
-            os.symlink(os.path.abspath(os.path.join(eval_source_dir, "images")), images_link)
-        shutil.copy(ply_path, os.path.join(eval_heldout_dir, "splats.ply"))
-        heldout_psnr = mean_psnr(eval_heldout_dir, n_eval_views)
-
-        import gs_experiment.ply_io as ply_io
-        n_splats_final = len(ply_io.read_3dgs_ply(ply_path)["positions"])
-
-        results[name] = dict(train_psnr=train_psnr, heldout_psnr=heldout_psnr, n_splats=n_splats_final)
-        print(f"{name}: n_splats={n_splats_final}  train PSNR={train_psnr:.2f}dB  held-out PSNR={heldout_psnr:.2f}dB")
-
-    print("\n=== summary ===")
-    print(f"{'variant':<18}{'n_splats':>10}{'train PSNR':>14}{'held-out PSNR':>16}")
-    for name, r in results.items():
-        print(f"{name:<18}{r['n_splats']:>10}{r['train_psnr']:>14.2f}{r['heldout_psnr']:>16.2f}")
-
-    base = results["baseline"]
-    print("\ndeltas vs. baseline (train arc, gradient densify, no NLL):")
-    for name, r in results.items():
-        if name == "baseline":
-            continue
-        print(
-            f"  {name:<18} train {r['train_psnr']-base['train_psnr']:+.2f}dB   "
-            f"held-out {r['heldout_psnr']-base['heldout_psnr']:+.2f}dB   "
-            f"n_splats {r['n_splats']-base['n_splats']:+d}"
-        )
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "scene_dir",
-        help="directory with transforms.json + images/; "
-        "in --nll-experiment mode, the nbv_dir containing baseline/ and baseline_eval/",
-    )
-    parser.add_argument("out_path", nargs="?", default=None, help="output .ply path; omit in --nll-experiment mode")
-    parser.add_argument(
-        "--nll-experiment", action="store_true",
-        help="run the ROADMAP.md item 3 four-variant comparison (baseline/bq_densify/nll_loss/bq_densify+nll) "
-        "against scene_dir treated as nbv_dir, instead of a single training run -- moved from the old "
-        "nll_training_experiment.py. Only --n-iters/--seed/--nll-interval/--nll-grid-res apply in this mode.",
-    )
+    parser.add_argument("scene_dir", help="directory with transforms.json + images/")
+    parser.add_argument("out_path", help="output .ply path")
     parser.add_argument("--n-splats", type=int, default=4000)
     parser.add_argument("--sh-degree", type=int, default=3)
-    parser.add_argument("--n-iters", type=int, default=None, help="default: 2500, or 3000 in --nll-experiment mode")
+    parser.add_argument("--n-iters", type=int, default=2500)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--opacity-reg-weight", type=float, default=0.01)
@@ -1073,42 +688,17 @@ def main():
     parser.add_argument("--min-opacity", type=float, default=0.005)
     parser.add_argument("--split-scale-threshold", type=float, default=None)
     parser.add_argument("--max-splats", type=int, default=30000)
-    parser.add_argument("--densify-criterion", choices=["gradient", "bq_variance"], default="gradient")
-    parser.add_argument("--bq-sigma", type=float, default=0.9)
-    parser.add_argument("--bq-window-radius", type=float, default=1.6)
-    parser.add_argument(
-        "--bq-noise-variance", type=float, default=0.0,
-        help="real homoscedastic observation-noise variance, added to K's diagonal alongside bq_sigma's kernel -- "
-        "0 (default) is the exact noiseless behavior; see splat_scene.fit_kernel_hyperparams_with_noise to fit it",
-    )
-    parser.add_argument("--nll-weight", type=float, default=0.0, help="0 = off; see train()'s docstring")
-    parser.add_argument("--nll-interval", type=int, default=None, help="default: 100, or 50 in --nll-experiment mode")
-    parser.add_argument("--nll-grid-res", type=int, default=12)
-    parser.add_argument("--bq-densify-min-opacity", type=float, default=0.0)
     parser.add_argument("--ssim-weight", type=float, default=0.2, help="weight of (1-SSIM) term; 0 = old L1+MSE loss")
     parser.add_argument("--position-lr-final", type=float, default=None,
                         help="final position LR for exponential decay (e.g. 2e-5); None = flat LR")
     args = parser.parse_args()
-
-    if args.nll_experiment:
-        run_nll_experiment(
-            args.scene_dir,
-            n_iters=args.n_iters if args.n_iters is not None else 3000,
-            seed=args.seed,
-            nll_interval=args.nll_interval if args.nll_interval is not None else 50,
-            nll_grid_res=args.nll_grid_res,
-        )
-        return
-
-    if args.out_path is None:
-        parser.error("out_path is required unless --nll-experiment is set")
 
     train(
         args.scene_dir,
         args.out_path,
         n_splats=args.n_splats,
         sh_degree=args.sh_degree,
-        n_iters=args.n_iters if args.n_iters is not None else 2500,
+        n_iters=args.n_iters,
         seed=args.seed,
         device=args.device,
         opacity_reg_weight=args.opacity_reg_weight,
@@ -1121,14 +711,6 @@ def main():
         min_opacity=args.min_opacity,
         split_scale_threshold=args.split_scale_threshold,
         max_splats=args.max_splats,
-        densify_criterion=args.densify_criterion,
-        bq_sigma=args.bq_sigma,
-        bq_window_radius=args.bq_window_radius,
-        bq_noise_variance=args.bq_noise_variance,
-        nll_weight=args.nll_weight,
-        nll_interval=args.nll_interval if args.nll_interval is not None else 100,
-        nll_grid_res=args.nll_grid_res,
-        bq_densify_min_opacity=args.bq_densify_min_opacity,
         ssim_weight=args.ssim_weight,
         position_lr_final=args.position_lr_final,
     )

@@ -54,8 +54,8 @@ def test_camera_angle_x_from_camera_matches_known_focal_length():
 def test_camera_angle_x_from_camera_is_resolution_independent():
     """Scaling width and fx by the same factor (e.g. a downsampled image
     from the same physical camera) should not change the derived FOV --
-    this is what lets real_directional_coverage_experiment.py (--dataset bonsai) use a
-    resolution the COLMAP calibration wasn't computed at."""
+    this is what lets a real COLMAP dataset be used at a resolution the
+    calibration wasn't computed at."""
     cam_full = ColmapCamera(camera_id=1, model="PINHOLE", width=3118, height=2078, params=np.array([3222.7, 3222.7, 1559.0, 1039.0]))
     cam_half = ColmapCamera(camera_id=1, model="PINHOLE", width=1559, height=1039, params=np.array([1611.35, 1611.35, 779.5, 519.5]))
     assert np.isclose(camera_angle_x_from_camera(cam_full), camera_angle_x_from_camera(cam_half), atol=1e-6)

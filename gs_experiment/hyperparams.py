@@ -1,11 +1,7 @@
-"""Fitting the kernel's bandwidth parameter (RBF sigma / Matern rho) to data
-by maximizing the GP log marginal likelihood -- the standard way to "train"
-a GP kernel hyperparameter (Rasmussen & Williams, GPML, ch. 5), and the
-natural next step after finding (gs_experiment/results/FINDINGS.md) that a single
-hardcoded bandwidth loses to a naive Riemann sum: an early toy sweep used
-one fixed sigma/rho across scenes whose true bump widths ranged from 0.05 to
-0.6. This module tests whether fitting the bandwidth per scene closes that
-gap.
+"""Fitting the kernel's bandwidth parameter (RBF sigma), and optionally a
+homoscedastic observation-noise variance alongside it, by maximizing the GP
+log marginal likelihood -- the standard way to "train" a GP kernel
+hyperparameter (Rasmussen & Williams, GPML, ch. 5).
 
 No torch/autodiff here -- this module stays pure numpy/scipy at this stage
 (see ROADMAP.md). If/when this idea moves into the gsplat-integrated code,

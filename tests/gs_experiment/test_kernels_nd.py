@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import integrate
 
-from gs_experiment.kernels import MaternKernel, ProductKernel, RationalQuadraticKernel, RBFKernel
+from gs_experiment.kernels import ProductKernel, RBFKernel
 
 
 def test_product_rbf_v_matches_numerical_2d_integration():
@@ -50,71 +50,10 @@ def test_product_rbf_is_exact_isotropic_gaussian_in_2d():
 def test_product_kernel_gram_and_v_factorize_as_expected():
     """Direct check of the separability property ProductKernel relies on:
     K_2D(i,j) = K_axis1(i,j) * K_axis2(i,j), and v_2D(x) = v_axis1(x1) *
-    v_axis2(x2). (An earlier version of this test tried to check this
-    indirectly through bayesian_quadrature_nd's posterior mean and got the
-    algebra wrong -- a constant per-axis kernel value scales the Gram matrix
-    and its inverse in a way that doesn't cancel the way a first pass at the
-    derivation assumed. Checking the factorization directly is both simpler
-    and actually correct.)"""
+    v_axis2(x2)."""
     rng = np.random.default_rng(0)
     kernel_x = RBFKernel(sigma=0.4)
     kernel_y = RBFKernel(sigma=0.7)
-    kernel_2d = ProductKernel([kernel_x, kernel_y])
-
-    pts = rng.uniform(0, 5, size=(6, 2))
-    K_2d = kernel_2d.k(pts, pts)
-    K_x = kernel_x.k(pts[:, 0].reshape(-1, 1), pts[:, 0].reshape(1, -1))
-    K_y = kernel_y.k(pts[:, 1].reshape(-1, 1), pts[:, 1].reshape(1, -1))
-    np.testing.assert_allclose(K_2d, K_x * K_y, atol=1e-12)
-
-    bounds = [(0.0, 5.0), (0.0, 5.0)]
-    v_2d = kernel_2d.v(pts, bounds)
-    v_x = kernel_x.v(pts[:, 0], *bounds[0])
-    v_y = kernel_y.v(pts[:, 1], *bounds[1])
-    np.testing.assert_allclose(v_2d, v_x * v_y, atol=1e-12)
-
-    assert abs(kernel_2d.vv(bounds) - kernel_x.vv(*bounds[0]) * kernel_y.vv(*bounds[1])) < 1e-12
-
-
-def test_matern_product_kernel_gram_is_positive_semidefinite():
-    rng = np.random.default_rng(1)
-    kernel = ProductKernel([MaternKernel(rho=0.4), MaternKernel(rho=0.6)])
-    x = rng.uniform(0, 5, size=(12, 2))
-    K = kernel.k(x, x)
-    eigvals = np.linalg.eigvalsh(K)
-    assert eigvals.min() > -1e-8
-
-
-def test_rational_quadratic_product_kernel_gram_is_positive_semidefinite():
-    rng = np.random.default_rng(2)
-    kernel = ProductKernel([RationalQuadraticKernel(l=0.4), RationalQuadraticKernel(l=0.6)])
-    x = rng.uniform(0, 5, size=(12, 2))
-    K = kernel.k(x, x)
-    eigvals = np.linalg.eigvalsh(K)
-    assert eigvals.min() > -1e-8
-
-
-def test_rational_quadratic_product_v_matches_numerical_2d_integration():
-    kernel = ProductKernel([RationalQuadraticKernel(l=0.4), RationalQuadraticKernel(l=0.3)])
-    bounds = [(0.0, 5.0), (0.0, 4.0)]
-    x = np.array([1.2, 2.3])
-
-    expected, _ = integrate.dblquad(
-        lambda t2, t1: kernel.k(x, np.array([t1, t2])).item(),
-        bounds[0][0], bounds[0][1],
-        bounds[1][0], bounds[1][1],
-    )
-    got = float(kernel.v(x, bounds)[0])
-    assert abs(got - expected) < 1e-6
-
-
-def test_rational_quadratic_product_kernel_gram_and_v_factorize_as_expected():
-    """Same separability check as test_product_kernel_gram_and_v_factorize_as_expected,
-    for RationalQuadraticKernel -- ProductKernel needed no changes to support
-    a third kernel family, so this is a check on that claim, not new code."""
-    rng = np.random.default_rng(3)
-    kernel_x = RationalQuadraticKernel(l=0.4)
-    kernel_y = RationalQuadraticKernel(l=0.7)
     kernel_2d = ProductKernel([kernel_x, kernel_y])
 
     pts = rng.uniform(0, 5, size=(6, 2))

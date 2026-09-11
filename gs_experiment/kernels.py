@@ -1,18 +1,14 @@
-"""Covariance kernels for 1D Bayesian quadrature over a ray/pixel integral.
+"""Covariance kernels for Bayesian quadrature over the position domain.
 
 Each kernel provides:
   - k(x, y):    pairwise covariance
   - v(x, a, b): kernel mean embedding, i.e. integral of k(x, t) dt over [a, b]
   - vv(a, b):   double integral of k(x, y) dx dy over [a, b] x [a, b]
 
-`v` is given in closed form where cheap (RBF) or by 1D numerical
-integration otherwise (Matern, RationalQuadratic). `vv` is always obtained by integrating `v`
-numerically over [a, b] — this avoids trusting a hand-derived double-integral
-antiderivative (the original models/nerf.py RBF formulas take that riskier
-route, and this repo's git history already records a "double quad" bug from
-that kind of derivation). A closed-form, batched vv is future engineering
-work once this milestone's validation passes (see ROADMAP.md); at toy scale,
-one 1D quadrature call per kernel evaluation is not a bottleneck.
+`v` is given in closed form (RBF). `vv` is always obtained by integrating
+`v` numerically over [a, b] -- this avoids trusting a hand-derived
+double-integral antiderivative (this repo's git history already records a
+"double quad" bug from that kind of derivation).
 """
 
 from __future__ import annotations
@@ -37,7 +33,7 @@ class Kernel:
 
 class RBFKernel(Kernel):
     """Normalized Gaussian kernel: k(x, y) is the density of N(y, sigma^2)
-    evaluated at x. Matches `NeRF.rbf` in models/nerf.py."""
+    evaluated at x."""
 
     name = "rbf"
 
@@ -69,15 +65,11 @@ class ProductKernel:
     Gaussians along each axis (a standard identity, since
     ||x-y||^2 = sum_d (x_d-y_d)^2 and exp of a sum is a product of exps),
     so `ProductKernel([RBFKernel(sigma)]*D)` is exactly the isotropic D-D
-    RBF kernel, not an approximation of it. For Matern this is a legitimate
-    but different (axis-aligned, "tensor-product"/ARD-style) kernel, not
-    identical to the radially-isotropic Matern -- a standard, positive-
-    definite construction, just worth naming precisely.
+    RBF kernel, not an approximation of it.
 
     Building it this way means `v`/`vv` over an axis-aligned box domain also
     factorize into products of the already-implemented/tested 1D `v`/`vv`
-    calls -- no new integration code, and no new numerical risk, for either
-    kernel family.
+    calls -- no new integration code, and no new numerical risk.
     """
 
     name = "product"
@@ -113,143 +105,4 @@ class ProductKernel:
         for dim, kernel in enumerate(self.kernels_per_axis):
             a_d, b_d = bounds[dim]
             val = val * kernel.vv(a_d, b_d)
-        return val
-
-
-class DirectionalKernel:
-    """Von Mises-Fisher-style kernel on directions (unit vectors on
-    S^(d-1)): k(w, w') = exp(kappa * (w . w' - 1)).
-
-    Positive-definite for kappa >= 0: w.w' is itself a (linear, hence PD)
-    kernel, exp() of a PD kernel scaled by a positive constant is PD (each
-    term of its power series is a nonnegative combination of PD kernels, by
-    the Schur product theorem), and this is that PD kernel times the
-    positive constant exp(-kappa). `kappa` plays the role RBF's 1/sigma^2
-    plays for spatial separation, but for angular separation: large kappa
-    means only very similar directions are considered correlated (a highly
-    view-dependent/specular surface needs many close viewing angles to be
-    well-constrained); small kappa means most directions are considered
-    similar (near-Lambertian, one observation generalizes across angles).
-
-    Self-similarity k(w, w) = exp(kappa * (1 - 1)) = 1 always — this is
-    what makes the mixed integrate-position/evaluate-direction Bayesian
-    quadrature in bayesian_quadrature_rendering_aware_directional work out
-    cleanly (see that function's docstring): the *prior* variance term
-    doesn't depend on which direction is queried, only the *posterior
-    reduction* does, via the k(w_i, w_query) terms in the
-    mean-embedding-like vector.
-
-    Unlike Kernel (RBFKernel, MaternKernel), this has no v/vv — it's never
-    integrated over, only evaluated pointwise at a query direction, since a
-    rendered image evaluates one specific outgoing direction per pixel, not
-    an integral over a range of directions.
-    """
-
-    name = "vonmises"
-
-    def __init__(self, kappa: float):
-        self.kappa = float(kappa)
-
-    def k(self, w, w_prime):
-        w = np.atleast_2d(np.asarray(w, dtype=float))
-        w_prime = np.atleast_2d(np.asarray(w_prime, dtype=float))
-        dot = w @ w_prime.T
-        return np.exp(self.kappa * (dot - 1.0))
-
-
-class RationalQuadraticKernel(Kernel):
-    """Rational quadratic kernel: k(r) = (1 + r^2 / (2*alpha*l^2))^(-alpha).
-
-    Standard GP-literature form (Rasmussen & Williams, GPML section 4.2.1):
-    an equal-weighted, continuous scale mixture of RBF kernels with
-    different lengthscales, integrated against a Gamma(alpha, ...) mixing
-    distribution over the inverse squared lengthscale. Concretely, as
-    alpha -> infinity this kernel converges to the plain RBF kernel with
-    lengthscale `l` (the mixture concentrates on a single lengthscale), and
-    for finite alpha it behaves like an RBF whose local bandwidth varies
-    smoothly across scale -- a plausible fit for a scene like this
-    project's lego checkpoint, whose splat density (and hence the natural
-    local lengthscale) varies a lot between the sparse background and the
-    densely-packed mechanical part, unlike RBF/Matern which each commit to
-    one single bandwidth everywhere.
-
-    `alpha` is fixed to a stated constant rather than exposed as a second
-    free parameter, for the same reason `MaternKernel` fixes its smoothness
-    at 3/2: `hyperparams.fit_kernel_param[_pooled_nd]` fits exactly one
-    scalar via `kernel_factory: Callable[[float], Kernel]`, so any new
-    family needs exactly one free knob to plug into that machinery
-    unchanged. alpha=1.0 is used here (a comparatively heavy-tailed choice
-    -- k(r) decays as 1/r^2 rather than RBF's exp(-r^2), so a small number
-    of far-away points can still pull on the posterior a bit -- rather than
-    a large alpha that would make this numerically redundant with
-    `RBFKernel`); `l` (the lengthscale) is the single free parameter fit
-    the same way sigma/rho are.
-
-    Positive semidefinite for any alpha > 0, l > 0 -- a standard result
-    (GPML section 4.2.1: it is literally an infinite mixture, with positive
-    mixing weights, of PD RBF kernels of varying lengthscale, and a
-    nonnegative mixture of PD kernels is PD).
-
-    `v`/`vv` have no closed form (unlike RBF) -- same `scipy.integrate.quad`
-    treatment as `MaternKernel`, including the `breakpoints` trick (this
-    kernel is smooth everywhere, unlike Matern-3/2's kink at r=0, but the
-    breakpoint still helps QUADPACK localize the integrand's peak when it
-    falls strictly inside [a, b]).
-    """
-
-    name = "rational_quadratic"
-
-    def __init__(self, l: float, alpha: float = 1.0):
-        self.l = float(l)
-        self.alpha = float(alpha)
-
-    def k(self, x, y):
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        r2 = (x - y) ** 2
-        return (1.0 + r2 / (2.0 * self.alpha * self.l**2)) ** (-self.alpha)
-
-    def v(self, x, a, b):
-        x_arr = np.atleast_1d(np.asarray(x, dtype=float))
-        out = np.empty_like(x_arr)
-        for i, xi in enumerate(x_arr):
-            breakpoints = [xi] if a < xi < b else None
-            out[i], _ = integrate.quad(lambda t, xi=xi: float(self.k(xi, t)), a, b, points=breakpoints)
-        return out if out.shape[0] > 1 else out[0]
-
-    def vv(self, a, b):
-        val, _ = integrate.quad(lambda y: float(self.v(y, a, b)), a, b)
-        return val
-
-
-class MaternKernel(Kernel):
-    """Matern-3/2 kernel: k(r) = (1 + sqrt(3)|r|/rho) exp(-sqrt(3)|r|/rho).
-
-    Once-differentiable sample paths, vs. RBF's infinitely-smooth ones —
-    this is the kernel the original tutorial notebook derived but never
-    wired into the live NeRF model.
-    """
-
-    name = "matern32"
-
-    def __init__(self, rho: float):
-        self.rho = float(rho)
-
-    def k(self, x, y):
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        r = np.abs(x - y)
-        c = np.sqrt(3.0) * r / self.rho
-        return (1.0 + c) * np.exp(-c)
-
-    def v(self, x, a, b):
-        x_arr = np.atleast_1d(np.asarray(x, dtype=float))
-        out = np.empty_like(x_arr)
-        for i, xi in enumerate(x_arr):
-            breakpoints = [xi] if a < xi < b else None
-            out[i], _ = integrate.quad(lambda t, xi=xi: float(self.k(xi, t)), a, b, points=breakpoints)
-        return out if out.shape[0] > 1 else out[0]
-
-    def vv(self, a, b):
-        val, _ = integrate.quad(lambda y: float(self.v(y, a, b)), a, b)
         return val

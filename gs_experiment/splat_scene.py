@@ -6,20 +6,9 @@ pixels. Mapping a world-space uncertainty value back to a specific
 camera's per-pixel image is a reprojection step (each pixel's uncertainty
 would come from the world-space point(s) its ray intersects, weighted by
 the same alpha-compositing weights gsplat already computes during
-rendering) -- deferred until this is wired to a live gsplat renderer,
-since that projection/ray-intersection logic is exactly what gsplat's own
-rasterizer already provides and shouldn't be reimplemented here.
-
-Also worth restating: `scales`/`rotations` are kept as metadata for
-standard rendering, but are NOT fed into the BQ kernel's bandwidth. The
-validated BQ machinery uses one shared or pooled-fit bandwidth
-(see gs_experiment/results/FINDINGS.md), not per-splat
-heterogeneous covariances -- using each splat's own learned covariance as
-its own kernel bandwidth is a real, mathematically plausible extension
-(closer to the original derivation's "splats as weighted kernel nodes"
-framing) but it is a second, unvalidated change; stacking it on top of the
-GPU/gsplat integration at the same time would make it hard to tell which
-change caused which result. Left as documented future work.
+rendering) -- gpu_uncertainty.py/gpu_sh_directional_uncertainty.py do
+exactly this via real bearing-space candidate search, not a reimplemented
+rasterizer.
 """
 
 from __future__ import annotations
@@ -30,8 +19,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from gs_experiment.camera import CameraPose, directions_from_positions_to_camera
-from gs_experiment.spherical_harmonics import SH_C0, eval_sh
+from gs_experiment.camera import CameraPose
+from gs_experiment.spherical_harmonics import SH_C0
 from gs_experiment.visibility_attribution import (
     attribute_observations,
     invert_to_observed_camera_idx,
@@ -42,24 +31,22 @@ from gs_experiment.visibility_attribution import (
 @dataclass
 class SplatScene:
     positions: np.ndarray  # (N, 3)
-    colors: np.ndarray  # (N,) scalar -- ignored if sh_coeffs is set (see splat_observations)
+    colors: np.ndarray  # (N,) scalar, DC-only fallback -- see load_from_gsplat_checkpoint
     opacities: np.ndarray  # (N,)
-    scales: np.ndarray  # (N, 3) -- metadata only, see module docstring
-    rotations: np.ndarray  # (N, 4) quaternions -- metadata only, see module docstring
+    scales: np.ndarray  # (N, 3)
+    rotations: np.ndarray  # (N, 4) quaternions
 
-    # Observations: which cameras plausibly saw each splat, needed for the
-    # directional kernel. observed_camera_idx[i] is a list of indices into
-    # `cameras` for splat i. Real data would derive this from each
-    # training view's actual contribution (e.g. non-negligible rendering
-    # weight) rather than "every camera sees every splat" -- the mock
-    # scene below approximates it by simple visibility (in front of the
-    # camera, not distance-gated) since it isn't rendering anything for real.
+    # Observations: which real training cameras plausibly saw each splat --
+    # observed_camera_idx[i] is a list of indices into `cameras` for splat i.
+    # Real data derives this from geometric visibility attribution (frustum +
+    # soft occlusion, visibility_attribution.attribute_observations), not an
+    # assignment rule. Feeds gpu_sh_directional_uncertainty.
+    # accumulate_sh_precision's real per-(splat, training-camera)
+    # alpha-compositing weight (rerendering each training camera).
     observed_camera_idx: List[np.ndarray]
     cameras: List[CameraPose]
 
     # Optional: real spherical-harmonic color, (N, n_channels, n_coeffs).
-    # When set, splat_observations evaluates genuinely view-dependent color
-    # per observation instead of falling back to the flat `colors` field.
     sh_coeffs: Optional[np.ndarray] = None
     sh_degree: int = 0
 
@@ -77,9 +64,7 @@ def make_mock_scene(
     real gsplat checkpoint or GPU. Splats scatter uniformly in `bounds`;
     splats within `narrow_zone_radius` of `narrow_zone_center` are marked
     as observed only by `narrow_cameras`, everything else by
-    `wide_cameras` -- two zones with identical spatial splat density but
-    different angular coverage, isolating the directional signal from the
-    spatial one.
+    `wide_cameras`.
     """
     (x0, x1), (y0, y1), (z0, z1) = bounds
     positions = np.stack(
@@ -114,279 +99,87 @@ def make_mock_scene(
     )
 
 
-def splat_observations(scene: SplatScene, include_render_attrs: bool = False, return_rgb: bool = False):
-    """Expand a SplatScene into parallel (position, direction, value)
-    arrays -- one row per (splat, observing-camera) pair -- the input
-    format the directional kernel (DirectionalKernel, combined with a
-    position kernel in gs_experiment.quadrature) expects.
-
-    `value` is genuinely view-dependent (`eval_sh(scene.sh_coeffs[i],
-    direction, scene.sh_degree)`) when `scene.sh_coeffs` is set; otherwise
-    it falls back to the flat `scene.colors[i]` for every observation of a
-    splat, same as before SH support existed. The flat-color path is a
-    known simplification (the same value regardless of viewing direction),
-    kept only for scenes that don't set sh_coeffs.
-
-    `return_rgb` (default False, unchanged behavior): also returns
-    `values_rgb`, (n_rows, 3) -- the same `eval_sh` result `values_flat`
-    is itself collapsed from (`colors.mean(axis=-1)`), kept un-collapsed
-    this time. This project's scalar-valued GP machinery elsewhere is
-    genuinely single-channel by design (see `SplatScene.colors`'s own
-    comment) -- `values_rgb` exists only for callers that want a real
-    3-channel BQ posterior mean for visualization
-    (`gs_experiment.gpu_uncertainty.compute_directional_variance_batched`'s
-    own `values_rgb` parameter), not to make the rest of the pipeline
-    multi-channel. Falls back to `scene.colors[i]` broadcast to 3
-    identical channels when `scene.sh_coeffs` is unset (no real per-channel
-    signal exists in that path either way).
-
-    `include_render_attrs=True` additionally returns `opacities`/`scales`/
-    `rotations` arrays, each splat's own value repeated once per observing
-    camera (same indexing as `positions`/`directions`/`values` above) --
-    for callers that need to construct a `LocalUncertaintyEngine` with
-    `opacities=`/`scales=`/`rotations=` set from this expanded, directional
-    form (rendering_aware_variance_along_ray_directional and friends need
-    real per-candidate opacity/covariance, not just position/direction/
-    value). Default stays `False` so every existing 3-tuple-unpacking
-    caller is unaffected.
-
-    Vectorized per camera, not per (splat, camera) pair: an earlier version
-    called `directions_from_positions_to_camera`/`eval_sh` once per row in a
-    nested Python loop (both already accept batched array input, so this
-    bought nothing) -- profiled at >120s of a 277s real-checkpoint uncertainty-
-    map call, 3.4M single-row calls, before this fix. Grouping rows by camera
-    (typically ~100 groups, not ~3.4M rows) and writing into a pre-sized
-    output array via boolean-mask assignment preserves the exact original
-    splat-major row order (mask assignment lands each camera's rows back at
-    their original flat positions, regardless of which order the groups are
-    processed in) -- same output, not an approximation.
-    """
-    n_per_splat = np.array([len(idx) for idx in scene.observed_camera_idx], dtype=np.int64)
-    n_splats = len(scene.observed_camera_idx)
-    splat_idx_flat = np.repeat(np.arange(n_splats), n_per_splat)
-    cam_idx_flat = np.concatenate(scene.observed_camera_idx) if n_splats > 0 else np.array([], dtype=np.int64)
-
-    positions_flat = scene.positions[splat_idx_flat]
-    directions_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float)
-    values_flat = np.empty(splat_idx_flat.shape[0], dtype=float) if scene.sh_coeffs is not None else None
-    values_rgb_flat = np.empty((splat_idx_flat.shape[0], 3), dtype=float) if scene.sh_coeffs is not None else None
-    for c in np.unique(cam_idx_flat):
-        rows = cam_idx_flat == c
-        directions_flat[rows] = directions_from_positions_to_camera(positions_flat[rows], scene.cameras[c])
-        if scene.sh_coeffs is not None:
-            # Evaluated per camera group, same as directions above: eval_sh on
-            # the full flat array would gather scene.sh_coeffs[splat_idx_flat],
-            # duplicating every splat's (n_channels, n_coeffs) coefficients once
-            # per observing camera -- for a dense checkpoint that's a
-            # (n_splat_camera_pairs, 3, 16) float64 array, tens of GB at
-            # millions of splats. Per camera, splat_idx_flat[rows] has no
-            # duplicates (each splat appears once per camera it's observed by),
-            # so this bounds peak memory by the camera with the most observed
-            # splats instead of the sum over all cameras.
-            colors = eval_sh(scene.sh_coeffs[splat_idx_flat[rows]], directions_flat[rows], scene.sh_degree)
-            values_flat[rows] = colors.mean(axis=-1)  # collapse channels to one scalar, matching the flat-color path
-            values_rgb_flat[rows] = colors
-
-    if scene.sh_coeffs is None:
-        values_flat = scene.colors[splat_idx_flat]
-        values_rgb_flat = np.tile(values_flat[:, None], (1, 3))
-
-    if include_render_attrs:
-        result = (
-            positions_flat, directions_flat, values_flat,
-            scene.opacities[splat_idx_flat], scene.scales[splat_idx_flat], scene.rotations[splat_idx_flat],
-        )
-    else:
-        result = (positions_flat, directions_flat, values_flat)
-    return result + (values_rgb_flat,) if return_rgb else result
-
-
-# Two independent, additive costs make up load_from_gsplat_checkpoint's/
-# splat_observations' host RSS, both measured directly (not estimated) against
-# real checkpoints from this project's own local_runs/lego_prepared/ -- one at
-# 1,000,000 splats, one at 3,000,000 (the exact checkpoint a --budgets 3000000
-# run of splat_budget_uncertainty_sweep.py produced right before OOM-killing the
-# host, repeatedly, on a 30GB machine):
+# Two independent, additive costs make up load_from_gsplat_checkpoint's
+# host RSS, both measured directly (not estimated) against real checkpoints:
 #
-#   n_splats=1,000,000, cap=20  -> 19,683,660 rows: attribution baseline
-#       2757 MiB, +2467 MiB after row-expansion (125.4 bytes/row marginal).
-#   n_splats=3,000,000, cap=20  -> 59,168,609 rows: attribution baseline
-#       7007 MiB, +6948 MiB after row-expansion (123.1 bytes/row marginal).
+#   n_splats=1,000,000  -> attribution baseline 2757 MiB
+#   n_splats=3,000,000  -> attribution baseline 7007 MiB
 #
-# The row-expansion cost is what `max_observations_per_splat` (above, in
-# load_from_gsplat_checkpoint) caps; the attribution-baseline cost (reading the
-# checkpoint + gpu_visibility_attribution's per-camera index lists -- scales
-# with n_splats, not rows) is NOT bounded by that cap, and at 3M splats alone
-# it's already ~7GB -- larger than the whole memory budget below. That's the
-# actual failure mode a row-only guard misses: a budget whose *row* count fits
-# under a cap can still have an unrelated, unbounded *baseline* cost that
-# doesn't. Fit as a line through the two measured points above (both terms, in
-# bytes):
+# Fit as a line through the two measured points above (bytes):
 _ATTRIBUTION_FIXED_OVERHEAD_BYTES = 700 * 1024 * 1024  # process/import/checkpoint-read floor
 _ATTRIBUTION_BYTES_PER_SPLAT = 2200  # measured ~2125 B/splat marginal; rounded up for margin
-_BYTES_PER_OBSERVATION_ROW = 140  # measured ~123-125 B/row; rounded up for margin
-
-# Target ceiling for ONE load_from_gsplat_checkpoint + splat_observations call.
-# compute_uncertainty_maps calls this path once per (checkpoint, sigma) pair, so
-# a caller scoring the same checkpoint at both a fixed and a refit sigma pays
-# this twice in one process -- keep it well under a small machine's free RAM
-# (not just under it) to leave room for both calls plus normal desktop load and
-# matplotlib/render buffers. Lower this further on a smaller machine; raise it
-# only after remeasuring against a real checkpoint at the new budget, not by
-# just guessing a bigger number.
-PER_CALL_MEMORY_BUDGET_BYTES = 5 * 1024**3
-MIN_OBSERVATIONS_PER_SPLAT = 8  # floor -- below this the directional kernel sees too few real
-# observations per splat for its per-camera fit to mean much, regardless of memory pressure.
-
-
-def _attribution_baseline_bytes(n_splats: int) -> int:
-    return _ATTRIBUTION_FIXED_OVERHEAD_BYTES + _ATTRIBUTION_BYTES_PER_SPLAT * n_splats
-
-
-def max_observations_per_splat_for_budget(budget: int, n_training_views: int = 100) -> Optional[int]:
-    """None (no cap) whenever `n_training_views` itself already bounds
-    per-splat observation count below what PER_CALL_MEMORY_BUDGET_BYTES
-    allows -- keeps small budgets byte-for-byte reproducible rather than
-    introducing subsampling noise where it isn't needed.
-
-    Raises ValueError if `budget`'s attribution baseline alone (before a
-    single observation row is added) already exceeds the memory budget --
-    that budget can't be made safe by capping rows at all, regardless of
-    how low; refuse rather than silently under-cap it (see the module-level
-    comment above for why a row-only guard misses exactly this case).
-    """
-    baseline = _attribution_baseline_bytes(budget)
-    if baseline >= PER_CALL_MEMORY_BUDGET_BYTES:
-        raise ValueError(
-            f"budget={budget:,}: attribution alone costs an estimated {baseline / 1024**3:.1f}GB, "
-            f"already at or over PER_CALL_MEMORY_BUDGET_BYTES={PER_CALL_MEMORY_BUDGET_BYTES / 1024**3:.1f}GB "
-            f"-- no observation cap can make this budget safe. This is the exact shape of budget that "
-            f"OOM-killed the host repeatedly before this guard existed; lower the budget rather than bypass this."
-        )
-    remaining = PER_CALL_MEMORY_BUDGET_BYTES - baseline
-    max_rows = remaining // _BYTES_PER_OBSERVATION_ROW
-    cap = max(MIN_OBSERVATIONS_PER_SPLAT, max_rows // budget)
-    if cap * budget * _BYTES_PER_OBSERVATION_ROW > remaining and cap == MIN_OBSERVATIONS_PER_SPLAT:
-        raise ValueError(
-            f"budget={budget:,}: even the MIN_OBSERVATIONS_PER_SPLAT={MIN_OBSERVATIONS_PER_SPLAT} floor "
-            f"would exceed the remaining {remaining / 1024**3:.1f}GB after attribution's "
-            f"{baseline / 1024**3:.1f}GB baseline -- refuse rather than exceed PER_CALL_MEMORY_BUDGET_BYTES."
-        )
-    return None if cap >= n_training_views else cap
 
 
 def fit_kernel_hyperparams(
     scene: SplatScene,
     sigma_bounds=(0.005, 1.0),
-    kappa_bounds=(0.05, 20.0),
     n_windows: int = 25,
     max_window_size: int = 60,
     window_radius: float = 0.08,
     min_opacity: float = 0.1,
-    min_observations_for_kappa: int = 3,
     seed: int = 0,
-):
-    """Marginal-likelihood-fit both the position kernel's bandwidth (sigma) and
-    the directional kernel's concentration (kappa) against THIS scene's own real
-    data, instead of reusing a value pooled once across a different calibration
-    set (gs_experiment.hyperparams.fit_kernel_param_pooled_nd -- the same
-    procedure a held-out check once validated for sigma against a real
-    checkpoint's own local windows, and the same procedure the project's
-    original pooled kappa fit used, applied per-scene here instead of pooled
-    across a fixed set of checkpoints; see git history for both). Exists
-    because a bandwidth tuned at one checkpoint's splat density/coverage has no
-    reason to be right for a checkpoint at a very different density (confirmed
+) -> Optional[float]:
+    """Marginal-likelihood-fit the position kernel's bandwidth (sigma)
+    against THIS scene's own real data, instead of reusing a value pooled
+    once across a different calibration set
+    (gs_experiment.hyperparams.fit_kernel_param_pooled_nd) -- a bandwidth
+    tuned at one checkpoint's splat density/coverage has no reason to be
+    right for a checkpoint at a very different density (confirmed
     directly: a 300k-splat-tuned sigma is a real bandwidth mismatch at 500
-    splats -- an earlier, retired sweep script first demonstrated this with an
-    explicit fixed-vs-refit-sigma comparison for sigma alone; this generalizes
-    that to kappa and to every caller of compute_uncertainty_maps, not just
-    one sweep).
+    splats).
 
-    Sigma comes from local (position, color) windows: `n_windows` splats above
-    `min_opacity` are sampled as window centers, each paired with its neighbors
-    within `window_radius` (capped at `max_window_size`, a random subsample,
-    not a truncation, so the fit isn't spatially biased toward whichever
-    neighbors happen to sort first).
+    Sigma comes from local (position, color) windows: `n_windows` splats
+    above `min_opacity` are sampled as window centers, each paired with its
+    neighbors within `window_radius` (capped at `max_window_size`, a
+    random subsample, not a truncation, so the fit isn't spatially biased
+    toward whichever neighbors happen to sort first).
 
-    Kappa comes from per-splat multi-view (direction, color) groups: splats
-    above `min_opacity` with at least `min_observations_for_kappa` observing
-    cameras are sampled (up to `n_windows` of them), each contributing one
-    window of (viewing direction, observed color) pairs across its own real
-    observing cameras -- whether color varies with viewing direction is a
-    per-splat question, unlike sigma's spatial-neighborhood one, so kappa's
-    windows are per-splat groups, not spatial neighborhoods.
-
-    Returns `(sigma, kappa)`, either `None` if there wasn't enough real data to
-    fit it (too few above-threshold splats for sigma; too few multi-view
-    splats for kappa) -- callers should fall back to a documented default in
-    that case, not silently use an ill-fit value.
+    Returns `sigma`, or `None` if there wasn't enough real data to fit it
+    (too few above-threshold splats) -- callers should fall back to a
+    documented default in that case, not silently use an ill-fit value.
     """
     from scipy.spatial import cKDTree
 
     from gs_experiment.hyperparams import fit_kernel_param_pooled_nd
-    from gs_experiment.kernels import DirectionalKernel, ProductKernel, RBFKernel
+    from gs_experiment.kernels import ProductKernel, RBFKernel
 
     rng = np.random.default_rng(seed)
     keep = scene.opacities > min_opacity
     positions = scene.positions[keep]
     colors = scene.colors[keep]
-    opac_idx = np.nonzero(keep)[0]
 
-    sigma = None
-    if len(positions) >= 6:
-        tree = cKDTree(positions)
-        query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
-        sigma_datasets = []
-        for p in positions[query_idx]:
-            idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
-            if len(idx) < 6:
-                continue
-            if len(idx) > max_window_size:
-                idx = rng.choice(idx, size=max_window_size, replace=False)
-            sigma_datasets.append((positions[idx], colors[idx]))
-        if sigma_datasets:
-            fit = fit_kernel_param_pooled_nd(
-                sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3), bounds=sigma_bounds, n_grid=25,
-            )
-            sigma = float(fit.param)
+    if len(positions) < 6:
+        return None
 
-    kappa = None
-    eligible = [i for i in opac_idx if len(scene.observed_camera_idx[i]) >= min_observations_for_kappa]
-    if eligible:
-        chosen = rng.choice(eligible, size=min(n_windows, len(eligible)), replace=False)
-        kappa_datasets = []
-        for i in chosen:
-            cams = scene.observed_camera_idx[i]
-            if len(cams) > max_window_size:
-                cams = rng.choice(cams, size=max_window_size, replace=False)
-            directions = np.stack(
-                [directions_from_positions_to_camera(scene.positions[i][None, :], scene.cameras[c])[0] for c in cams]
-            )
-            if scene.sh_coeffs is not None:
-                colors_i = eval_sh(scene.sh_coeffs[i][None, :, :], directions, scene.sh_degree).mean(axis=-1)
-            else:
-                colors_i = np.full(len(cams), scene.colors[i])
-            kappa_datasets.append((directions, colors_i))
-        fit = fit_kernel_param_pooled_nd(
-            kappa_datasets, lambda k: DirectionalKernel(kappa=k), bounds=kappa_bounds, n_grid=25,
-        )
-        kappa = float(fit.param)
+    tree = cKDTree(positions)
+    query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
+    sigma_datasets = []
+    for p in positions[query_idx]:
+        idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
+        if len(idx) < 6:
+            continue
+        if len(idx) > max_window_size:
+            idx = rng.choice(idx, size=max_window_size, replace=False)
+        sigma_datasets.append((positions[idx], colors[idx]))
+    if not sigma_datasets:
+        return None
 
-    return sigma, kappa
+    fit = fit_kernel_param_pooled_nd(
+        sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3), bounds=sigma_bounds, n_grid=25,
+    )
+    return float(fit.param)
 
 
 def fit_kernel_hyperparams_with_noise(
     scene: SplatScene,
     sigma_bounds=(0.005, 1.0),
     noise_bounds=(1e-5, 0.5),
-    kappa_bounds=(0.05, 20.0),
     n_windows: int = 25,
     max_window_size: int = 60,
     window_radius: float = 0.08,
     min_opacity: float = 0.1,
-    min_observations_for_kappa: int = 3,
     seed: int = 0,
-):
+) -> tuple:
     """`fit_kernel_hyperparams`'s noise-aware sibling: fits the position
     kernel's bandwidth (sigma) *jointly* with a real homoscedastic
     observation-noise variance (`gs_experiment.hyperparams.
@@ -398,87 +191,45 @@ def fit_kernel_hyperparams_with_noise(
     toward an artificially short bandwidth just to keep exactly
     interpolating through them, at a real, large marginal-likelihood cost
     (confirmed directly: +180 to +780 log-likelihood units from adding
-    noise, across 8 real scene/checkpoint combinations checked, never a
-    close call) -- and a visibly worse-conditioned, speckle-prone posterior
-    downstream (the negative-BQ-weight rate this project already found and
-    reported, gs_experiment/results/FINDINGS.md's calibration-methodology
-    sections). See `gs_experiment.quadrature._rendering_aware_moments`'s
-    docstring for the full noise model and motivation, and
-    `fit_kernel_param_and_noise_pooled_nd`'s docstring for the fitting
-    procedure itself (a 2D marginal-likelihood grid search + local refine,
-    replacing `fit_kernel_param_pooled_nd`'s 1D one).
+    noise, across 8 real scene/checkpoint combinations checked) -- and a
+    visibly worse-conditioned, speckle-prone posterior downstream. See
+    `gs_experiment.quadrature._rendering_aware_moments`'s docstring for the
+    full noise model and motivation.
 
-    Kappa (the directional kernel's concentration) is fit exactly as in
-    `fit_kernel_hyperparams`, unchanged -- its own fitting path never went
-    through the noiseless-interpolation assumption sigma's does (see that
-    function's docstring), so there is no analogous fix to make there; RBF
-    plus a real observation-noise term is this project's current best-
-    supported combination (not yet extended to Matérn/rational quadratic,
-    kept intentionally scoped rather than speculatively generalized).
-
-    Returns `(sigma, noise_variance, kappa)`; `sigma`/`noise_variance` are
-    `None` together if there wasn't enough real data to fit them (same
-    condition `fit_kernel_hyperparams` uses for `sigma`), `kappa` is `None`
-    on its own separate condition, exactly as `fit_kernel_hyperparams`.
-    Deliberately a separate function rather than a `with_noise=` flag on
-    `fit_kernel_hyperparams` that would change its return arity
-    conditionally -- every existing caller of `fit_kernel_hyperparams`
-    keeps unpacking exactly `(sigma, kappa)`, untouched.
+    Returns `(sigma, noise_variance)`, `None`/`None` if there wasn't enough
+    real data to fit them (same condition `fit_kernel_hyperparams` uses).
     """
     from scipy.spatial import cKDTree
 
-    from gs_experiment.hyperparams import fit_kernel_param_and_noise_pooled_nd, fit_kernel_param_pooled_nd
-    from gs_experiment.kernels import DirectionalKernel, ProductKernel, RBFKernel
+    from gs_experiment.hyperparams import fit_kernel_param_and_noise_pooled_nd
+    from gs_experiment.kernels import ProductKernel, RBFKernel
 
     rng = np.random.default_rng(seed)
     keep = scene.opacities > min_opacity
     positions = scene.positions[keep]
     colors = scene.colors[keep]
-    opac_idx = np.nonzero(keep)[0]
 
-    sigma, noise_variance = None, None
-    if len(positions) >= 6:
-        tree = cKDTree(positions)
-        query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
-        sigma_datasets = []
-        for p in positions[query_idx]:
-            idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
-            if len(idx) < 6:
-                continue
-            if len(idx) > max_window_size:
-                idx = rng.choice(idx, size=max_window_size, replace=False)
-            sigma_datasets.append((positions[idx], colors[idx]))
-        if sigma_datasets:
-            fit = fit_kernel_param_and_noise_pooled_nd(
-                sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3),
-                bounds=sigma_bounds, noise_bounds=noise_bounds, n_grid=15,
-            )
-            sigma = float(fit.param)
-            noise_variance = float(fit.noise_variance)
+    if len(positions) < 6:
+        return None, None
 
-    kappa = None
-    eligible = [i for i in opac_idx if len(scene.observed_camera_idx[i]) >= min_observations_for_kappa]
-    if eligible:
-        chosen = rng.choice(eligible, size=min(n_windows, len(eligible)), replace=False)
-        kappa_datasets = []
-        for i in chosen:
-            cams = scene.observed_camera_idx[i]
-            if len(cams) > max_window_size:
-                cams = rng.choice(cams, size=max_window_size, replace=False)
-            directions = np.stack(
-                [directions_from_positions_to_camera(scene.positions[i][None, :], scene.cameras[c])[0] for c in cams]
-            )
-            if scene.sh_coeffs is not None:
-                colors_i = eval_sh(scene.sh_coeffs[i][None, :, :], directions, scene.sh_degree).mean(axis=-1)
-            else:
-                colors_i = np.full(len(cams), scene.colors[i])
-            kappa_datasets.append((directions, colors_i))
-        fit = fit_kernel_param_pooled_nd(
-            kappa_datasets, lambda k: DirectionalKernel(kappa=k), bounds=kappa_bounds, n_grid=25,
-        )
-        kappa = float(fit.param)
+    tree = cKDTree(positions)
+    query_idx = rng.choice(len(positions), size=min(n_windows, len(positions)), replace=False)
+    sigma_datasets = []
+    for p in positions[query_idx]:
+        idx = np.array(tree.query_ball_point(p, window_radius), dtype=int)
+        if len(idx) < 6:
+            continue
+        if len(idx) > max_window_size:
+            idx = rng.choice(idx, size=max_window_size, replace=False)
+        sigma_datasets.append((positions[idx], colors[idx]))
+    if not sigma_datasets:
+        return None, None
 
-    return sigma, noise_variance, kappa
+    fit = fit_kernel_param_and_noise_pooled_nd(
+        sigma_datasets, lambda s: ProductKernel([RBFKernel(sigma=s)] * 3),
+        bounds=sigma_bounds, noise_bounds=noise_bounds, n_grid=15,
+    )
+    return float(fit.param), float(fit.noise_variance)
 
 
 def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_target_splats: int = 40, n_cameras_per_side: int = 6):
@@ -525,13 +276,7 @@ def make_occluder_scene(rng: np.random.Generator, n_wall_splats: int = 60, n_tar
     # Real (DC-only, view-independent) color, not the raw SH coefficient --
     # 3DGS stores SH coefficients as offsets from a mid-gray baseline
     # (eval_sh's own "+ 0.5" convention; see that function's docstring), so
-    # a raw sh_coeffs[:,:,0] value is not itself a color (a bug this exact
-    # line once had -- see gs_experiment/results/FINDINGS.md's calibration-
-    # methodology section for how it was caught: a real checkpoint's raw
-    # values spanned [-2.39, 2.37], and the marginal-likelihood-fitted RBF
-    # sigma changed by ~2x once corrected). This is a fallback used whenever
-    # sh_coeffs isn't queried directionally (see splat_observations), so it
-    # must be a real color on its own.
+    # a raw sh_coeffs[:,:,0] value is not itself a color.
     colors = SH_C0 * sh_coeffs[:, :, 0].mean(axis=1) + 0.5
 
     opacities = rng.uniform(0.5, 1.0, n_splats)
@@ -592,14 +337,12 @@ def load_from_gsplat_checkpoint(
 
     `use_gpu_attribution=True` uses `gpu_visibility_attribution.
     batched_attribute_observations` instead -- the same attribution,
-    verified to match exactly (tests/gs_experiment/test_gpu_visibility_attribution.py;
-    also checked directly against attribute_observations on a real 80k-splat/
-    100-camera checkpoint: identical index sets on every camera), just
-    ~100x faster on a real checkpoint by batching every camera's occlusion
-    z-buffer into one GPU pass instead of a 100-iteration Python loop. Needs
-    torch (lazily imported here, not at module level, so this module and the
-    default `pytest tests/` suite stay importable without it); default stays
-    `False` so this function's behavior is unchanged for every existing caller.
+    verified to match exactly, just ~100x faster on a real checkpoint by
+    batching every camera's occlusion z-buffer into one GPU pass instead of
+    a 100-iteration Python loop. Needs torch (lazily imported here, not at
+    module level, so this module and the default `pytest tests/` suite
+    stay importable without it); default stays `False` so this function's
+    behavior is unchanged for every existing caller.
 
     `attribution_min_opacity`: splats below this opacity can't hard-occlude
     others during attribution (see `occlusion_mask`'s docstring) -- default
@@ -609,21 +352,16 @@ def load_from_gsplat_checkpoint(
     optimization artifact, not a bug in training itself); confirmed
     directly that these alone caused an 8x collapse in real per-splat
     camera attribution on an otherwise-identical, floater-free checkpoint
-    of the same scene. Pass e.g. 0.1 (already this project's convention
-    elsewhere, see fit_kernel_hyperparams' own min_opacity default) for
-    real-checkpoint use.
+    of the same scene. Pass e.g. 0.1 for real-checkpoint use.
 
     `max_observations_per_splat`: caps each splat's `observed_camera_idx`
     at this many cameras (uniform random subsample without replacement,
     seeded by `attribution_seed`) -- see
     `visibility_attribution.subsample_observed_camera_idx`'s docstring for
-    why this exists: `splat_scene.splat_observations` expands
-    `observed_camera_idx` into one row per (splat, observing-camera) pair,
-    and at high splat counts with dense multi-view coverage that row count
-    (not just splat count) is what determines whether the directional
-    `LocalUncertaintyEngine` fits in host memory. `None` (the default)
-    keeps every observation, i.e. unchanged from before this parameter
-    existed.
+    why this exists: at high splat counts with dense multi-view coverage,
+    `gpu_sh_directional_uncertainty.accumulate_sh_precision`'s per-camera
+    rerendering cost scales with total observation-row count, not just
+    splat count. `None` (the default) keeps every observation.
     """
     from gs_experiment.nerf_transforms import camera_pose_from_c2w, load_transforms
     from gs_experiment.ply_io import read_3dgs_ply
@@ -660,13 +398,9 @@ def load_from_gsplat_checkpoint(
 
     sh_coeffs = checkpoint["sh_coeffs"]
     # Real (DC-only, view-independent) color -- SH_C0 * raw + 0.5, matching
-    # eval_sh's own degree-0 formula exactly (see that function and this
-    # module's other `colors=` assignment for why the raw coefficient alone
-    # is not a color: this line was the actual bug behind a real checkpoint's
-    # `colors` spanning [-2.39, 2.37] and the marginal-likelihood-fitted RBF
-    # sigma changing by ~2x once corrected -- gs_experiment/results/
-    # FINDINGS.md's calibration-methodology section).
-    colors = SH_C0 * sh_coeffs[:, :, 0].mean(axis=1) + 0.5  # unused fallback, sh_coeffs takes priority (see splat_observations)
+    # eval_sh's own degree-0 formula exactly (3DGS stores SH coefficients as
+    # offsets from a mid-gray baseline, not a color on their own).
+    colors = SH_C0 * sh_coeffs[:, :, 0].mean(axis=1) + 0.5
 
     return SplatScene(
         positions=positions,

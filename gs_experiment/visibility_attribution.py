@@ -3,15 +3,9 @@ observed each splat, for real data where (unlike the mock scene, which
 assigns this by fiat for controlled experiments) there's no ground-truth
 record of which training views constrained which splat.
 
-Originally a cheap proxy for the real work this docstring used to say was
-"deferred until there's an actual renderer to hook into": rendering every
-training view and recording each splat's alpha-weighted contribution.
-That renderer hook now exists (gs_experiment/gsplat_rendering_weights.py,
-via gsplat's own differentiable projection) for a single query ray/pixel;
-`attribute_observations` below still uses the cheaper geometric filters,
-since attributing *every* splat to *every* camera via the real renderer
-for a whole scene is a much larger cost than this module's original
-per-query use case needs:
+`attribute_observations` below uses cheap geometric filters (not a real
+per-pixel rasterization) to decide which cameras plausibly saw each splat
+at all:
 
   1. Frustum test: is the splat within the camera's field of view and in
      front of it.
@@ -21,9 +15,12 @@ per-query use case needs:
      a similar bearing but meaningfully closer to the camera.
   3. ray_transmittance_weights: a continuous, depth-ordered analogue of
      (2) for one specific ray -- real per-splat opacity turned into a
-     genuine alpha-compositing transmittance weight, still via bearing
-     proximity rather than the real anisotropic 2D footprint (contrast
-     with gsplat_rendering_weights.gsplat_alpha_compositing_weights).
+     genuine alpha-compositing transmittance weight, via bearing
+     proximity rather than the real anisotropic 2D footprint. This is
+     also the mechanism `gpu_sh_directional_uncertainty.
+     compute_own_alpha_weight_batched` reuses to get each splat's real
+     per-training-camera alpha-compositing weight, by querying at the
+     splat's own bearing.
 
 All of the above are pure numpy/scipy, no torch/gsplat dependency.
 """
@@ -439,11 +436,10 @@ def subsample_observed_camera_idx(observed_camera_idx: list, max_per_splat: int,
     random subsample without replacement, seeded for reproducibility) --
     splats already at or under the cap are returned unchanged.
 
-    Exists because `splat_scene.splat_observations` expands
-    `observed_camera_idx` into one row per (splat, observing-camera) pair,
-    and that row count is genuinely what the downstream directional
-    `LocalUncertaintyEngine` needs fully resident for its neighbor index
-    (confirmed on a real 3M-splat/100-view checkpoint: ~167M rows uncapped,
+    Exists because `gpu_sh_directional_uncertainty.accumulate_sh_precision`
+    rerenders one (splat, observing-camera) pair per row of
+    `observed_camera_idx`, and that row count is genuinely what needs to
+    stay bounded (confirmed on a real 3M-splat/100-view checkpoint: ~167M rows uncapped,
     ~59M rows even at cap=20, measured at ~14GB resident for that one call
     -- OOM-killed the host repeatedly at that budget; see
     `splat_scene.py`'s `PER_CALL_MEMORY_BUDGET_BYTES` comment). Unlike

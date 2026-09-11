@@ -1,58 +1,76 @@
-# BQ-Splat: uncertainty for Gaussian Splatting, nearly for free
+# BQ-Splat: a renderer-consistent sparse-GP view of 3D Gaussian Splatting
 
-**The idea in one sentence**: rendering a Gaussian-Splat scene is already a weighted sum over kernels or a quadrature rule. This means we can get uncertainty for "free" using Bayesian-quadrature. This gives
-closed-form, per-region uncertainty from the same math already used to
-render, without bolting on a separate uncertainty model.
+**The idea in one sentence**: treat 3D Gaussian Splatting as a sparse
+interdomain Gaussian process whose alpha-composited image *is* its
+posterior mean, so uncertainty falls out of the same representation
+without ever touching or approximating the render itself.
 
 ## The theory, in plain language
 
-A Gaussian-Splat renderer computes a pixel's color as a weighted sum of
-nearby splats' colors — closer, more opaque splats contribute more. That weighted sum is a *quadrature rule*: a way of approximating an integral (here, the true light arriving along a ray) from a finite set of samples (here, the splats). **Bayesian quadrature** is a standard, decades-old way to reason about exactly this situation: put a probabilistic prior over the thing you're integrating, and the *same* observations that give you a point estimate of the integral also give you a principled variance around it, how much that estimate could plausibly be wrong, given only the finite, imperfect set of samples you actually have.
+An earlier version of this project built a Bayesian-quadrature posterior
+*over* the rendering integral and asked its own solved-for weights
+`w* = Kxx^-1 z` to explain real alpha compositing `w_alpha = T_i*alpha_i`.
+They don't, in general — once a directional kernel is added, `w*` has no
+structural relationship to `w_alpha` at all. The fix is not a better
+kernel; it's a different picture of what the splats *are*.
 
-Applied to Gaussian Splatting, this means building a query-specific
-renderer weight `a_q(xi) = T_q(xi) sigma(xi) G_q(xi)` (transmittance x
-opacity x footprint) directly into the kernel:
-`k_q(xi, xi') = a_q(xi) k_base(xi, xi') a_q(xi')` — rather than
-integrating a generic base kernel uniformly over an arbitrary window. The posterior *variance* under this kernel is a closed-form number that's large when a region is thinly covered by splats (fine detail, sparse reconstruction, occluded) and small when it's well-covered — no separate learned uncertainty head, no ensemble, no dropout.
+Fix the splat geometry and treat each splat's stored SH coefficients as
+an **interdomain inducing variable** of an underlying radiance-field GP,
+chosen so that the GP's posterior mean, under the real renderer weights
+`b_q`, is *exactly* the real image:
 
-**The unifying idea** goes one step further. Build the base kernel as a
-*product* of two parts — one over 3D position, one over viewing
-direction — and the same posterior answers two different questions
-depending on what you ask it:
+    mu_q = C_alpha(q) = b_q^T theta_hat
 
-- *Integrate over position, ignore direction* → **quadrature
-  uncertainty**: is this region numerically well-resolved by the current splats, regardless of how many camera views actually saw it?
-- *Evaluate at one specific query direction* → **directional/epistemic
-  uncertainty**: is *this particular viewing angle* well-constrained by
-  the directions training actually observed it from?
+Conditioning a GP on inducing variables gives a standard, closed-form
+predictive variance that decomposes into two independent terms:
+
+    u_q = u_spatial_BQ(q) + b_q^T Sigma_theta b_q
+
+- **`u_spatial_BQ(q)`** — the finite-spatial-representation term: the
+  real alpha-compositing weights' own RKHS worst-case risk, scored (not
+  solved for) under a position-only kernel. Large where splats are
+  spatially sparse or the local footprint poorly resolves the query.
+- **`b_q^T Sigma_theta b_q`** — parameter uncertainty in the *learned* SH
+  coefficients: each splat's own Bayesian linear regression posterior
+  over its SH coefficients, `Sigma_theta_i`, built from how much its real
+  alpha-compositing weight contributed to each real training camera it
+  was observed from. Large where a splat was seen from few or
+  narrowly-clustered directions; this is `u_SH(q)` once propagated
+  through the real per-pixel alpha weights.
+
+Because the mean is pinned to the real renderer output by construction,
+this is a strictly post-hoc, renderer-consistent uncertainty: it can
+never corrupt the reconstruction, and it decomposes into "is this region
+spatially under-resolved" vs. "is this viewing angle under-constrained,"
+answerable independently.
+
+See [`gs_experiment/sh_directional_uncertainty.py`](gs_experiment/sh_directional_uncertainty.py)
+and [`gs_experiment/gpu_sh_directional_uncertainty.py`](gs_experiment/gpu_sh_directional_uncertainty.py)
+for the full derivation and implementation.
 
 ## What's been tested
 
-
-- **Does the uncertainty signal track real sparse or missing coverage?**
-  Yes, tested across all 8 standard NeRF-Synthetic benchmark scenes. 
-- **Does the directional/viewing-angle-coverage signal work on real
-  geometry?** Yes.
-- **Does the signal also flag GS-training floaters?** Yes, needs an experiment
-- **Is the number *calibrated** Yes, needs an experiment
-- **Training directly under the likelihood** Todo
-- **Next best view selection evaluation** Todo
-- **Alternative kernels** Eg. Matern? 
+- **Does the mean stay exactly the real renderer's output?** Yes, by
+  construction — `C_alpha(q)` is never solved for, only real alpha
+  compositing.
+- **Do the two uncertainty terms show visibly distinct spatial
+  patterns?** Yes: `u_spatial_BQ` is sharp and structure-following;
+  `u_SH` is smoother and tracks real training-view angular coverage
+  (see `gs_experiment/results/sparse_gp_uncertainty.png`).
+- Calibration against real held-out error, and a fitting procedure for
+  the SH-coefficient prior precision `lam`, are open — see
+  [`ROADMAP.md`](ROADMAP.md).
 
 ## Repo layout
 
 - [`gs_experiment/`](gs_experiment/) — the whole project: the BQ math
-  (kernels, quadrature, render weights, hyperparameter fitting) and the
-  real Gaussian-Splatting experiments built on it (needs a GPU +
-  `gsplat`). See [`gs_experiment/README.md`](gs_experiment/README.md) for
-  the module/tool list.
-- [`ROADMAP.md`](ROADMAP.md) — the forward-looking research plan: what a strong paper still needs, ordered by how load-bearing each gap is.
+  (kernels, quadrature, render weights, hyperparameter fitting), the
+  SH-coefficient directional uncertainty, and the real Gaussian-Splatting
+  experiments built on them (needs a GPU + `gsplat`). See
+  [`gs_experiment/README.md`](gs_experiment/README.md) for the module/tool
+  list.
+- [`ROADMAP.md`](ROADMAP.md) — the forward-looking research plan.
 - `tests/` — the active test suite (`pytest tests/`).
-
-A handful of library modules (kernels, quadrature, render weights, camera/
-scene I/O) plus a small number of general, flag-driven CLI tools under
-`gs_experiment/scripts/` — each tool's flags select among what used to be
-separate one-off scripts, with the underlying math and results unchanged.
 
 ## Getting started
 
@@ -62,19 +80,12 @@ python -m pytest tests/ -v
 ```
 
 That runs everything that doesn't need a GPU. For the real experiments,
-set up `gsplat` (see [`requirements-gsplat.txt`](requirements-gsplat.txt)
-for a from-scratch setup, including a couple of real CUDA/compiler
-gotchas already solved there) and, for example, build the cross-scene
-uncertainty gallery against already-trained checkpoints:
+set up `gsplat` (see [`requirements-gsplat.txt`](requirements-gsplat.txt))
+and render the headline figure against already-trained checkpoints:
 
 ```
-.venv-gsplat/bin/python gs_experiment/scripts/render_scene_gallery.py
+.venv-gsplat/bin/python gs_experiment/scripts/render_sparse_gp_uncertainty.py
 ```
 
 `gs_experiment/README.md` has the full list of tools, what each one
 tests, and which real datasets they expect.
-
-## Where to read more
-
-- [`ROADMAP.md`](ROADMAP.md) — the honest state of the research plan: what's
-  — the current-conclusions summary and the primary results document.

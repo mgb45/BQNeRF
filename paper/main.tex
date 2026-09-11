@@ -39,6 +39,7 @@ Perception and Sensing; Gaussian splatting; uncertainty quantification.
 \section{Background}
 
 \subsection{Rendering with Gaussian splats}
+\label{sec:rendering-with-splats}
 
 Neural radiance fields represent density and view-dependent colour as
 continuous functions and render pixels by integrating radiance along camera
@@ -194,526 +195,241 @@ therefore used as a geometric property of the representation. This turns a
 tool for uncertain numerical integration into a post-hoc diagnostic for
 finite scene maps.
 
-\section{Bayesian Quadrature for Gaussian Splat Maps}
+\section{A Renderer-Consistent View of Gaussian Splat Maps}
+\label{sec:method}
 
-\subsection{Spatial support}
+Building on Section~\ref{sec:rendering-with-splats}'s observation that
+alpha compositing is itself a quadrature rule: for a position-only kernel
+and point-mass primitives, the Bayesian-quadrature-\emph{optimal}
+solved-for weights $\mathbf w^\ast=K^{-1}\mathbf z$ coincide exactly with
+the real compositing weights $w_{q,i}=T_{q,i}\alpha_{q,i}$, for any kernel
+bandwidth. That equivalence breaks the moment a directional term is
+added to the kernel to say anything about viewing-angle coverage: the
+query moment vector evaluates direction against one fixed query direction,
+$k_{\mathrm{dir}}(d_i,d_*)$, while the Gram matrix correlates direction
+between candidate pairs, $k_{\mathrm{dir}}(d_i,d_j)$. These enter the
+linear system in structurally different ways and do not cancel, so the
+solved-for weights $\mathbf w^\ast$ no longer track $w_{q,i}$ once
+direction is involved --- confirmed directly (exact agreement as
+$\kappa\to0$, disagreement of two orders of magnitude at a realistic
+$\kappa$). Visually, this appears as chromatic speckle in the
+Bayesian-quadrature posterior mean: a directional Bayesian-quadrature
+\emph{mean} is a worse image than the alpha-compositing render it is
+supposed to refine.
 
-Let $\Omega_q\subset\R^3$ be a small region centred on a query point $q$, and
-let $X_q=\{x_1,\ldots,x_m\}$ be the centres of nearby splats. We interpret the
-splat centres as sample locations of an unknown local scene function. With a
-uniform integration density over $\Omega_q$, Eq.~\eqref{eq:variance} gives a
-scalar measure of spatial support.
+The fix is not a better directional kernel. A splat's stored
+spherical-harmonic coefficients are not a point observation of the
+radiance field at a location and direction; they are a learned, localized
+basis function, and the representation that photometric training actually
+optimizes. Treating them as inducing variables of a sparse Gaussian
+process --- rather than as point evaluations --- lets the posterior mean
+be pinned to the real renderer output \emph{by construction}, so that
+uncertainty is purely post hoc and can never corrupt the reconstruction.
 
-The prior term $z_0$ is the uncertainty in the local integral before any
-splats are observed. The term $\mathbf z^\top K^{-1}\mathbf z$ is the
-uncertainty removed by their locations. Nearby splats distributed across the
-region produce a large reduction; few, distant, or clustered splats leave a
-larger variance. The measure consequently captures sample arrangement rather
-than only sample count.
+\subsection{The renderer as an exact posterior mean}
+\label{sec:renderer-consistency}
 
-We use an axis-aligned box for $\Omega_q$, retrieve neighbours with a $k$-d
-tree, and cap each solve at 400 splats. For separable kernels and box domains,
-the required moments factor into one-dimensional integrals. Since spatial
-uncertainty uses only the primitive locations, it can be computed from a
-trained map without colours, residuals, or additional optimisation.
-
-\subsection{Directional support}
-
-View-dependent appearance requires support in both position and direction. We
-represent an observation by $(x_i,d_i)$, where $d_i\in\mathbb S^2$ is a camera
-direction from which splat $i$ was observed, and use the product kernel
-
-\begin{equation}
-    k\big((x,d),(x',d')\big)
-    =k_{\mathrm{pos}}(x,x')k_{\mathrm{dir}}(d,d').
-    \label{eq:product-kernel}
-\end{equation}
-
-Our directional kernel is
-
-\begin{equation}
-    k_{\mathrm{dir}}(d,d')
-    =\exp\!\left(\kappa(d^\top d'-1)\right),
-    \label{eq:direction-kernel}
-\end{equation}
-
-where $\kappa$ controls the angular length scale. Small $\kappa$ transfers
-information across a wide range of directions; large $\kappa$ represents
-stronger view dependence.
-
-For query direction $d_*$, the kernel mean is
+Fix the splat geometry (centres, covariances, opacities) and, for one
+colour channel, let $\theta_i\in\R^{B}$ collect splat $i$'s spherical-
+harmonic coefficients, with real SH feature vector $\phi(d)\in\R^{B}$ (the
+same basis \texttt{gsplat}/3DGS evaluate a splat's colour against, pulled
+out as a design vector rather than evaluated straight through a fixed
+coefficient vector). Splat $i$'s colour in direction $d$ is
+$c_i(d)=\phi(d)^\top\theta_i$. Writing the real compositing weight as
+$\beta_{q,i}=T_{q,i}\alpha_{q,i}$ and stacking every splat's coefficients
+into $\theta$, alpha compositing (Eq.~\eqref{eq:alpha-compositing}) is
+exactly the linear read-out
 
 \begin{equation}
-    z_i=\left[\int_{\Omega_q}k_{\mathrm{pos}}(x,x_i)p(x)\,dx\right]
-    k_{\mathrm{dir}}(d_i,d_*).
-    \label{eq:directional-mean}
+    C_\alpha(q)=\sum_i\beta_{q,i}\,\phi(d_q)^\top\theta_i
+    = b_q^\top\theta,
+    \qquad
+    b_q^\top=\big[\beta_{q,1}\phi(d_q)^\top,\ldots\big].
+    \label{eq:renderer-readout}
 \end{equation}
 
-The resulting variance is low only when the query is supported in both
-position and direction. Position-only and joint position--direction
-uncertainty are therefore the same construction applied to different input
-spaces. We recover camera--splat associations from the training cameras using
-frustum intersection and an angular depth test, then attach the corresponding
-viewing direction to each visible splat.
+Now let $f(x,d)\sim\mathcal{GP}(0,k)$ be an unknown continuous radiance
+field, and treat each stored coefficient as an \emph{interdomain inducing
+variable} of $f$ --- a linear functional of $f$ localized to splat $i$'s
+own spatial support and its $\ell$-th spherical-harmonic mode, rather than
+a point evaluation $f(x_i,d_i)$. For a render functional $F_q=\mathcal
+L_q[f]$, the joint Gaussian process over the inducing variables $U$ and
+$F_q$ gives the standard sparse-GP conditional,
+\begin{equation}
+    F_q\mid U\sim\mathcal N\big(A_qU,\;u_{\mathrm{rep}}(q)\big),
+    \qquad A_q=k_{qU}K_{UU}^{-1},
+    \label{eq:sparse-gp-conditional}
+\end{equation}
+with $u_{\mathrm{rep}}(q)=k_{qq}-k_{qU}K_{UU}^{-1}k_{Uq}$ the usual
+generalized-Bayesian-quadrature representation error, now for linear
+functionals of the inducing variables rather than point observations.
+Choosing the inducing functionals so that $A_q=b_q^\top$ ---
+renderer-aligned interdomain inducing variables, or equivalently a
+Bayes--Sard construction that makes the SH basis an exactly-integrated
+mean space --- and setting $\mathbb E[U]=\hat\theta$ (the coefficients
+3DGS actually trained) gives
+\begin{equation}
+    \mathbb E[F_q]=A_q\hat\theta=b_q^\top\hat\theta=C_\alpha(q).
+    \label{eq:mean-is-renderer}
+\end{equation}
+The posterior mean under this construction is not an approximation to
+alpha compositing: it \emph{is} alpha compositing, exactly, for every
+query. This is the property the point-evaluation, joint
+position--direction kernel described above never delivers once direction
+is involved.
 
-\subsection{The rendering-aware kernel}
+\subsection{Two independent uncertainty terms}
+
+The field decomposes as $f=f_{\mathrm{GS}}+f_\perp$, where $f_{\mathrm
+{GS}}$ lies in the subspace the finite splat/SH representation spans and
+$f_\perp$ is everything else. The rendered pixel is $F_q=b_q^\top U +
+\mathcal L_q[f_\perp]$, so the predictive variance splits into the
+finite-representation term $u_{\mathrm{rep}}(q)=\mathcal L_q\mathcal
+L_q[k_\perp]$ (uncertainty in modes the map does not represent at all)
+and a second term from treating the trained coefficients $\hat\theta$ as
+estimated, not exact. Approximating $U\mid\mathcal D\approx\mathcal
+N(\hat\theta,\Sigma_\theta)$ (a post-hoc Laplace approximation, with
+$\Sigma_\theta\approx(\Lambda_0+\sigma_{\mathrm{obs}}^{-2}J^\top J)^{-1}$
+for a linear renderer's Jacobian $J_q=b_q^\top$) and integrating over $U$
+gives the complete predictive distribution,
+\begin{equation}
+    F_q\mid\mathcal D\sim\mathcal N\!\Big(C_\alpha(q),\;
+    \underbrace{u_{\mathrm{rep}}(q)}_{\text{spatial}}
+    +\underbrace{b_q^\top\Sigma_\theta b_q}_{\text{directional}}
+    +\sigma_{\mathrm{obs}}^2\Big).
+    \label{eq:full-predictive}
+\end{equation}
+We report the first two terms, dropping the constant observation-noise
+floor:
+\begin{equation}
+    u_q = u_{\mathrm{spatial\,BQ}}(q) + u_{\mathrm{SH}}(q).
+    \label{eq:decomposition}
+\end{equation}
+
+\paragraph{Spatial term.}
 \label{sec:rendering-aware}
-
-Uniform box quadrature asks whether splats support a local spatial average.
-Rendering asks a more specific question: whether they support the weighted
-radiance integral in Eq.~\eqref{eq:rendering-functional}. Let
-
+$u_{\mathrm{spatial\,BQ}}(q)$ is $u_{\mathrm{rep}}(q)$ under the simplest
+point-evaluation inducing variables in position alone (a rendering-aware
+kernel $k_q(\xi,\xi')=a_q(\xi)k_{\mathrm{pos}}(\xi,\xi')a_q(\xi')$ for the
+query-specific renderer weight $a_q$, with no directional factor at all):
+the real compositing weights' own worst-case risk,
 \begin{equation}
-    a_q(\xi)=T_q(\xi)\,\sigma(\xi)\,G_q(\xi)
-    \label{eq:render-weight}
+    u_{\mathrm{spatial\,BQ}}(q)=z_{q,0}-2\,\mathbf w_q^\top\mathbf z_q
+    +\mathbf w_q^\top K\mathbf w_q,
+    \label{eq:spatial-risk}
 \end{equation}
+evaluated at the real weights $\mathbf w_q=[\beta_{q,i}]$ rather than
+solved for --- no matrix inverse is needed, since Eq.~\eqref{eq:spatial-risk}
+is a quadratic form in an already-known vector. Because
+Eq.~\eqref{eq:spatial-risk} is uniquely minimized at $\mathbf w^\ast=
+K^{-1}\mathbf z_q$ (the classical Bayes--Hermite result), it never falls
+below the position-only Bayesian-quadrature-optimal variance; scoring the
+real weights directly, rather than solving for and reporting a different
+estimator's variance, is what keeps this term paired with the mean it is
+actually computed for.
 
-denote the query-dependent rendering weight, combining accumulated
-transmittance, density or opacity, and the projected footprint or visibility
-term. There are two equivalent ways to incorporate this structure.
-
-First, place a GP prior on radiance,
-$c\sim\mathcal{GP}(0,k_{\mathrm{base}})$, and apply the linear rendering
-functional $\mathcal L_q$ to that process. The Bayesian-quadrature moments are
-
-\begin{align}
-    z_{q,i} &= \int a_q(\xi)
-    k_{\mathrm{base}}(\xi,x_i)\,d\xi, \\
-    z_{q,0} &= \int\!\int a_q(\xi)a_q(\xi')
-    k_{\mathrm{base}}(\xi,\xi')\,d\xi\,d\xi'.
-    \label{eq:render-moments}
-\end{align}
-
-The observation Gram matrix remains
-$K_{ij}=k_{\mathrm{base}}(x_i,x_j)$ because the observations are colours
-$c(x_i)$.
-
-Second, define the rendering integrand $g_q(\xi)=a_q(\xi)c(\xi)$. It is also a
-Gaussian process, with the query-specific kernel
-
+\paragraph{Directional term.} $\Sigma_\theta$ is block-diagonal across
+splats under an independence approximation, so $u_{\mathrm{SH}}(q)=
+\sum_i\beta_{q,i}^2\,\phi(d_q)^\top\Sigma_{\theta_i}\phi(d_q)$, with each
+splat's own coefficient posterior a per-splat Bayesian linear regression
+over its real observed training directions $\mathcal D_i$,
 \begin{equation}
-    k_q(\xi,\xi')=
-    a_q(\xi)k_{\mathrm{base}}(\xi,\xi')a_q(\xi').
-    \label{eq:render-kernel}
+    \Sigma_{\theta_i}^{-1}=\lambda I+\sum_{p\in\mathcal D_i}
+    \beta_{p,i}^2\,\phi(d_p)\phi(d_p)^\top,
+    \label{eq:sh-precision}
 \end{equation}
-
-Integrating $g_q$ against the ordinary volume measure gives exactly the same
-$z_{q,0}$ as Eq.~\eqref{eq:render-moments}. Equation~\eqref{eq:render-kernel}
-is the rendering-aware kernel structure: the renderer gates covariance at
-both arguments. Points have little influence when they are occluded, have
-negligible projected opacity, or lie outside the pixel footprint. This
-equivalence also clarifies an implementation detail: when conditioning on
-stored radiance values, use the base Gram matrix and rendering-weighted
-moments; when conditioning on values of the weighted integrand, use the full
-query-specific Gram matrix.
-
-We approximate $a_q$ by an unnormalised Gaussian whose mass, mean, and
-covariance match the contributing splats. For an RBF base kernel, all moments
-then follow in closed form from Gaussian-product identities. We consider
-three sources of rendering weights: mean local opacity, depth-ordered ray
-transmittance, and the anisotropic per-pixel alpha values produced by
-\texttt{gsplat}. In the last two cases, the total mass is
-$\sum_iT_{q,i}\alpha_{q,i}=1-T_{q,\mathrm{final}}$, matching the standard
-alpha-compositing recursion.
-
-The directional extension follows by setting
-
-\begin{equation}
-    k_{\mathrm{base}}\big((x,d),(x',d')\big)
-    =k_{\mathrm{pos}}(x,x')k_{\mathrm{dir}}(d,d').
-\end{equation}
-
-The rendering weight remains spatial: it describes where the ray receives
-mass. Directional support enters through the base covariance. Consequently,
-
-\begin{equation}
-    z_{q,i}=\left[\int a_q(\xi)
-    k_{\mathrm{pos}}(\xi,x_i)\,d\xi\right]
-    k_{\mathrm{dir}}(d_i,d_*).
-    \label{eq:render-directional-mean}
-\end{equation}
-
-This separates two distinct reasons for uncertainty: weak contribution along
-the ray and poor coverage of the requested viewing direction.
+where $\beta_{p,i}$ is splat $i$'s own real alpha-compositing weight in
+training observation $p$ --- how much it actually contributed to whatever
+pixel its own projected centre landed on in that training camera, not a
+binary visible/occluded flag. We obtain every $\beta_{p,i}$ by
+rerendering the fixed training cameras (no retraining): querying at each
+splat's own projected bearing in each camera it plausibly observed, and
+taking its own slot in the real depth-ordered alpha-compositing
+transmittance weights along that ray. Crucially, $\Sigma_{\theta_i}$ does
+not depend on observed \emph{colours} at all, only on which directions
+were observed and how strongly each observation weighted that splat --- a
+Fisher-information/coverage statistic, which is exactly the quantity the
+earlier point-evaluation directional kernel (Section~\ref{sec:method})
+was structurally unable to express correctly. A splat seen from many
+angularly diverse, strongly-weighted directions has small
+$\Sigma_{\theta_i}$ everywhere; one seen from a narrow cone, or only ever
+weakly, stays uncertain away from that cone.
 
 \subsection{Kernel choice and fitting}
 \label{sec:kernel-choice}
 
-The kernel defines which scene functions are plausible between samples. We
-evaluate an RBF kernel, which assumes very smooth variation, and a
-Mat\'ern-$3/2$ kernel, which admits rougher functions and retains more
-uncertainty between samples. The formulation is otherwise kernel-agnostic;
-anisotropic spatial kernels or material-dependent directional kernels can be
-introduced without changing the Bayesian-quadrature equations.
-
-We fit kernel length scales by maximising GP marginal likelihood on
-observations sampled from each trained map. This adapts the covariance to the
-units and characteristic scale of each scene. The fitted kernel determines
-the meaning and absolute scale of the reported variance, so uncertainty
-values are compared only under a common kernel model.
+The position kernel $k_{\mathrm{pos}}$ is an RBF, with bandwidth fit per
+checkpoint by maximizing GP marginal likelihood on local (position,
+colour) windows sampled from the trained map, jointly with a real
+homoscedastic observation-noise variance (real splat positions routinely
+include near-duplicate points, which forces a noiseless fit toward an
+artificially short bandwidth just to keep exactly interpolating through
+them). The SH-coefficient prior precision $\lambda$ in
+Eq.~\eqref{eq:sh-precision} is currently a fixed scalar rather than
+fit from data; a marginal-likelihood fit for it, and a quantitative
+calibration check of $u_q$ against real held-out rendering error, are
+open (see the project roadmap).
 
 \section{Using the Uncertainty}
 
 \subsection{Uncertainty maps}
 
-We form uncertainty images by associating each image region with its
-contributing 3-D neighbourhood and evaluating Eq.~\eqref{eq:variance} under
-the joint position--direction rendering-aware kernel, so the result
-highlights both weak geometric support and surfaces requested from
-unfamiliar viewpoints.
+We form uncertainty images by evaluating Eq.~\eqref{eq:decomposition} at
+every real ray--surface hit in a held-out view (depth-unprojected from
+\texttt{gsplat}'s own expected-depth output), reporting $u_{\mathrm{spatial\,
+BQ}}$, $u_{\mathrm{SH}}$, and their sum alongside the renderer's own
+output $C_\alpha(q)$ --- never a Bayesian-quadrature-solved mean.
 
 \begin{figure*}[t]
     \centering
-    \includegraphics[width=\textwidth]{figures/scene_gallery.png}
-    \caption{Seven NeRF-Synthetic scenes, one held-out view each, at two
-    splat budgets (500 and this project's standard 300{,}000-splat recipe).
-    Left to right: ground truth, gsplat reconstruction, $|$error$|$, and raw
-    rendering-aware posterior variance (shared log-scale color range across
-    every figure in this paper).}
-    \label{fig:qualitative}
+    \includegraphics[width=\textwidth]{figures/sparse_gp_uncertainty.png}
+    \caption{Three NeRF-Synthetic scenes, one held-out view each
+    (300{,}000-splat checkpoints). Left to right: ground truth,
+    $C_\alpha(q)$ (the real renderer output, never solved for), $u_{\mathrm
+    {spatial\,BQ}}(q)$, $u_{\mathrm{SH}}(q)$, and their sum (shared per-scene
+    log-scale colour range across the three uncertainty columns).}
+    \label{fig:sparse-gp}
 \end{figure*}
 
 \section{Experiments}
 \label{sec:experiments}
 
-We test the two effects that \method{} is designed to measure: incomplete
-spatial coverage, from the number of primitives available to represent a
-scene, and incomplete directional coverage, from missing viewing angles.
+We test the property the renderer-consistent construction is designed to
+guarantee, and the qualitative behaviour of the two uncertainty terms it
+produces, on three real NeRF-Synthetic scenes (lego, chair, ship; one
+held-out view each, 300{,}000-splat checkpoints; Figure~\ref{fig:sparse-gp}).
 
-\subsection{Spatial coverage}
+\subsection{The mean never departs from the renderer}
 
-We train the lego scene at six splat budgets -- $500$; $10{,}000$;
-$30{,}000$; $100{,}000$; $300{,}000$ (this project's standard recipe); and
-$1{,}000{,}000$ -- and render the same held-out view against each checkpoint.
-Held-out PSNR rises from $21.4\,$dB at $500$ splats to $30.5$, $34.9$,
-$38.7$, $40.4$, and $41.0\,$dB at $1{,}000{,}000$, with diminishing returns
-past roughly $100{,}000$ splats. Posterior variance tracks the same curve
-spatially rather than just in aggregate (Figure~\ref{fig:spatial}): at $500$
-splats it is elevated across nearly the whole object, and by
-$300{,}000$--$1{,}000{,}000$ splats it concentrates onto a shrinking set of
-genuinely under-resolved regions instead of shrinking uniformly.
+$C_\alpha(q)$ is, by construction, the real \texttt{gsplat} alpha-composited
+output --- not a quantity solved for under a Bayesian-quadrature posterior.
+On all three scenes the rendered mean column is visually identical to
+the ground-truth reconstruction, with none of the chromatic speckle the
+earlier directional point-evaluation kernel produced wherever it was
+asked to solve for a directionally-aware posterior mean
+(Section~\ref{sec:method}).
 
-\begin{figure*}[t]
-    \centering
-    \includegraphics[width=0.97\textwidth]{figures/lego_splat_sweep.png}
-    \caption{Lego, same held-out view, increasing splat budget top to bottom
-    ($500$ to $1{,}000{,}000$). Left to right: ground truth, gsplat
-    reconstruction, $|$error$|$, and raw rendering-aware posterior variance
-    (shared log-scale color range across every figure in this paper).
-    Reconstruction quality and BQ uncertainty improve together and saturate
-    together.}
-    \label{fig:spatial}
-\end{figure*}
+\subsection{The two uncertainty terms are visibly distinct}
 
-\subsection{Directional coverage}
+$u_{\mathrm{spatial\,BQ}}$ is sharp and structure-following on every
+scene, concentrating on fine geometric detail --- edges, thin structures
+such as the ship's rigging --- consistent with it measuring finite
+spatial support. $u_{\mathrm{SH}}$ is smoother and more spatially
+coherent, consistent with it tracking real training-view angular
+coverage, a property that varies more smoothly across a surface than
+per-splat spatial density does. The two terms are not redundant: regions
+of high $u_{\mathrm{spatial\,BQ}}$ do not coincide exactly with regions of
+high $u_{\mathrm{SH}}$, and the sum visibly combines both --- a spatial
+question and a directional question, answerable independently, as
+Eq.~\eqref{eq:decomposition} intends.
 
-We construct a real coverage-gap sweep on the lego scene: symmetric angular
-windows of increasing half-width ($0^\circ$ to $75^\circ$) are removed from
-the 100 training views, and the same held-out view nearest the gap center is
-rendered against each condition's own checkpoint. Reconstruction quality
-tracks the missing coverage ($35.1$, $29.2$, $22.9$, $15.1$, and
-$16.1\,$dB), and the raw rendering-aware posterior variance grows
-monotonically with the gap, by roughly two orders of magnitude: mean
-variance $0.084 \to 1.254 \to 3.343 \to 8.886 \to 11.769$ (Figure~\ref{fig:coverage}).
-
-\begin{figure*}[t]
-    \centering
-    \includegraphics[width=\textwidth]{figures/coverage_uncertainty_sweep.png}
-    \caption{Lego, same held-out view, decreasing training-view coverage
-    left to right ($0^\circ$ to $75^\circ$ gap half-width). Top to bottom:
-    ground truth, gsplat reconstruction, $|$error$|$, and raw rendering-aware
-    posterior variance (shared log-scale color range across every figure in
-    this paper); the bottom row summarizes the variance's mean and median
-    (log scale) over the whole view against gap half-width. Reconstruction
-    degrades and BQ uncertainty grows together in the missing-coverage
-    region.}
-    \label{fig:coverage}
-\end{figure*}
-
-\section{Discussion}
-
-
-
-\section{Conclusion}
-
-
-
-\appendix
-
-Two further experiments, run after the headline spatial- and directional-
-coverage results above, on questions this project has not yet resolved
-into a paper-level claim: whether the BQ posterior can inform training
-itself, not just diagnose a finished checkpoint (\S\ref{app:likelihood}),
-and whether kernel choice matters for this method's two central real-data
-properties (\S\ref{app:kernels}). Both are reported here for completeness,
-at the same standard of honesty as the main results, rather than folded
-into the main claims.
-
-\subsection{Training directly under the likelihood}
-\label{app:likelihood}
-
-Every result in Section~\ref{sec:experiments} computes BQ posterior
-variance \emph{after} training, off a checkpoint fit by ordinary
-photometric loss and view-space-gradient-triggered densification. We test
-whether the posterior can instead inform training itself, via two
-mechanisms already exposed by our trainer: (i) swapping the densification
-trigger from gsplat's view-space positional gradient to closed-form BQ
-position-only variance, queried at each splat's own position, optionally
-floored by opacity so near-transparent, effectively empty splats cannot
-outscore splats near real, under-resolved geometry; and (ii) an
-uncertainty-weighted Gaussian-NLL auxiliary loss term evaluated on a sparse
-grid of real ray-surface points.
-
-We train five matched variants on a real 12-view lego training pool (same
-seed and hyperparameters throughout: 2{,}000 initial splats, an
-8{,}000-splat budget, 3{,}000 iterations, SSIM-weighted photometric loss,
-BQ hyperparameters fit at lego's scale), and evaluate each on both its
-training views and a disjoint 15-view subsample of the official held-out
-test split. Table~\ref{tab:likelihood} reports the result.
-
-\begin{table}[t]
-\centering
-\caption{Training directly under the BQ likelihood: matched variants on a
-real 12-view lego checkpoint, evaluated on training and held-out views.}
-\label{tab:likelihood}
-\small
-\begin{tabular}{lrrr}
-\toprule
-Variant & Splats & Train PSNR & Held-out PSNR \\
-\midrule
-Baseline (gradient densify)          & 3{,}132 & 26.71\,dB & 17.57\,dB \\
-BQ-variance densify                  & 3{,}330 & 27.56\,dB & 17.81\,dB \\
-NLL loss (gradient densify)          & 3{,}106 & 26.80\,dB & 17.43\,dB \\
-BQ-variance densify + NLL            & 3{,}345 & 27.38\,dB & 17.72\,dB \\
-BQ-variance densify + opacity floor  & 1{,}179 & 24.76\,dB & 17.55\,dB \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-BQ-variance densification is a real, if modest, held-out win over
-gradient-triggered densification ($+0.24\,$dB), consistent whether or not
-the NLL term is also active. The NLL auxiliary loss term alone is a
-no-op-to-mild-negative ($-0.14\,$dB held-out) at this loss weight and grid
-resolution/cadence, plausibly because its variance term does not
-differentiate through the BQ posterior itself in this first installment.
-Flooring the BQ-variance densification score by opacity is a genuine
-efficiency lever rather than a quality tax: $62\%$ fewer splats than
-baseline at essentially no held-out PSNR cost ($-0.02\,$dB). We read this
-as encouraging but preliminary: a single scene and iteration budget, not
-yet a general training-time claim.
-
-\subsection{Alternative kernels}
-\label{app:kernels}
-
-\S\ref{sec:kernel-choice} keeps the position kernel pluggable; the main
-results use RBF. We add a third family, a rational quadratic kernel
-$k(r) = \left(1 + r^2/(2\alpha l^2)\right)^{-\alpha}$ with $\alpha$ fixed
-at $1$ (a continuous scale mixture of RBF bandwidths, plausible for scenes
-whose splat density -- and hence natural local length scale -- varies
-across the object) and length scale $l$ as its one free parameter, fit by
-the same marginal-likelihood procedure as RBF's $\sigma$ and Mat\'ern's
-$\rho$. We compare RBF, Mat\'ern-3/2, and rational quadratic, each fit
-fresh against real local windows, on all $7$ NeRF-Synthetic scenes used
-elsewhere in this paper (chair, drums, ficus, hotdog, lego, mic, ship;
-materials is excluded throughout this project for an unrelated,
-honestly-reported reason -- its reconstructions stay visibly hazy under
-our vanilla-3DGS recipe even at their best held-out view), each at two very
-different splat densities (a $300$k-splat checkpoint and a $500$-splat
-one), on whether posterior variance is calibrated against real held-out
-rendering error (up to $480$ depth-unprojected query points per checkpoint
-from held-out views), scored three ways: correlation, a Gaussian-NLL-style
-proper scoring rule, and AUSE, the area between the predicted-uncertainty
-sparsification curve and the oracle (true-error-sorted) curve on the same
-query points -- near $0$ means the predicted variance ranks points almost
-as well as the true error itself would (lower is better for both NLL and
-AUSE). The per-checkpoint local-window radius (tuned once, on lego, in an
-earlier single-scene version of this experiment) was re-checked directly
-against real neighbor counts on all $7$ scenes before reuse: it transfers
-without retuning everywhere (every scene/checkpoint combination keeps
-$\geq 6$ real neighbors for at least $86\%$ of sampled windows).
-
-(An earlier version of this comparison also scored a fourth property, a
-kNN-distance-based ``sparsity correlation.'' It has been dropped: besides
-specific confounds in how it compared kernel families, the design itself
-doesn't hold up on reflection -- local kNN distance is one narrow, fairly
-arbitrary proxy for ``sparsity,'' and this method's posterior variance is
-shaped by several real, scene-specific factors at once (local opacity,
-real neighbor count relative to an engine-side neighbor cap, per-scene
-splat-density distribution, fitted bandwidth) that a single scalar label
-cannot cleanly separate from genuine epistemic uncertainty.)
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison at fitted bandwidths, on a dense
-($300$k-splat) and a sparse ($500$-splat) checkpoint of the chair scene.
-Calibration $r$/mean NLL/AUSE are against real held-out rendering error;
-NLL and AUSE are proper-scoring/ranking metrics (lower is better for
-both). The same columns are repeated for the other $6$ scenes in
-Tables~\ref{tab:kernels-drums}--\ref{tab:kernels-ship}.}
-\label{tab:kernels}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.1181$ & $+0.023$ & $\mathbf{1115.0}$ & $\mathbf{0.073}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0503$   & $+0.237$ & $2101.5$ & $0.075$ \\
-Dense (300k) & Rational quadratic & $l=0.0217$      & $+0.215$ & $2646.0$ & $0.083$ \\
-Sparse (500) & RBF                & $\sigma=0.1382$ & $-0.066$ & $\mathbf{0.04}$ & $\mathbf{0.105}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.1000$   & $-0.076$ & $18.2$ & $0.114$ \\
-Sparse (500) & Rational quadratic & $l=0.0480$      & $-0.110$ & $24.1$ & $0.125$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, drums scene. Columns as in Table~\ref{tab:kernels}.}
-\label{tab:kernels-drums}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.1026$ & $-0.020$ & $\mathbf{1430.8}$ & $\mathbf{0.198}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0359$   & $-0.067$ & $3324.1$ & $0.278$ \\
-Dense (300k) & Rational quadratic & $l=0.0156$      & $-0.076$ & $4866.4$ & $0.305$ \\
-Sparse (500) & RBF                & $\sigma=0.1699$ & $+0.067$ & $\mathbf{0.82}$ & $\mathbf{0.157}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.1906$   & $+0.086$ & $10.6$ & $0.182$ \\
-Sparse (500) & Rational quadratic & $l=0.0896$      & $+0.063$ & $9.71$ & $0.205$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, ficus scene. Columns as in Table~\ref{tab:kernels}.}
-\label{tab:kernels-ficus}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.1038$ & $+0.049$ & $\mathbf{1797.8}$ & $\mathbf{0.186}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0437$   & $+0.173$ & $6956.4$ & $0.205$ \\
-Dense (300k) & Rational quadratic & $l=0.0197$      & $+0.153$ & $8978.3$ & $0.214$ \\
-Sparse (500) & RBF                & $\sigma=0.1588$ & $+0.105$ & $\mathbf{6.89}$ & $\mathbf{0.126}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.1299$   & $+0.157$ & $46.3$ & $0.145$ \\
-Sparse (500) & Rational quadratic & $l=0.0079$      & $+0.151$ & $2971.7$ & $0.178$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, hotdog scene. Columns as in Table~\ref{tab:kernels}.}
-\label{tab:kernels-hotdog}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.2225$ & $+0.134$ & $1.06\times 10^{5}$ & $\mathbf{0.030}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.1544$   & $+0.180$ & $2.02\times 10^{4}$ & $0.038$ \\
-Dense (300k) & Rational quadratic & $l=0.0576$      & $+0.148$ & $\mathbf{8967.8}$ & $0.039$ \\
-Sparse (500) & RBF                & $\sigma=0.1906$ & $+0.192$ & $\mathbf{2.29}$ & $\mathbf{0.110}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.1936$   & $+0.170$ & $16.8$ & $0.113$ \\
-Sparse (500) & Rational quadratic & $l=0.0968$      & $+0.116$ & $15.9$ & $0.119$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, lego scene. Columns as in Table~\ref{tab:kernels}. (This scene's checkpoints are the same ones used throughout the main paper's figures.)}
-\label{tab:kernels-lego}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k)  & RBF                & $\sigma=0.1359$ & $+0.155$ & $\mathbf{454.0}$ & $\mathbf{0.084}$ \\
-Dense (300k)  & Mat\'ern-3/2       & $\rho=0.0675$   & $+0.119$ & $484.8$ & $0.116$ \\
-Dense (300k)  & Rational quadratic & $l=0.0277$      & $+0.096$ & $526.5$ & $0.130$ \\
-Sparse (500)  & RBF                & $\sigma=0.1564$ & $-0.006$ & $\mathbf{0.55}$ & $\mathbf{0.131}$ \\
-Sparse (500)  & Mat\'ern-3/2       & $\rho=0.1181$   & $-0.041$ & $11.5$ & $0.138$ \\
-Sparse (500)  & Rational quadratic & $l=0.0573$      & $-0.074$ & $15.3$ & $0.146$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, mic scene. Columns as in Table~\ref{tab:kernels}.}
-\label{tab:kernels-mic}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.1126$ & $+0.192$ & $\mathbf{4389.4}$ & $\mathbf{0.295}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0380$   & $+0.049$ & $1.77\times 10^{5}$ & $0.334$ \\
-Dense (300k) & Rational quadratic & $l=0.0136$      & $+0.031$ & $5.56\times 10^{5}$ & $0.353$ \\
-Sparse (500) & RBF                & $\sigma=0.1623$ & $+0.192$ & $\mathbf{2.63\times 10^{8}}$ & $\mathbf{0.171}$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.1356$   & $+0.126$ & $9.28\times 10^{8}$ & $0.192$ \\
-Sparse (500) & Rational quadratic & $l=0.0662$      & $+0.102$ & $9.28\times 10^{8}$ & $0.204$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\centering
-\caption{Kernel-family comparison, ship scene. Columns as in Table~\ref{tab:kernels}.}
-\label{tab:kernels-ship}
-\small
-\begin{tabular}{llrrrr}
-\toprule
-Checkpoint & Kernel & Fitted param.\ & Calib.\ $r$ & Mean NLL & AUSE \\
-\midrule
-Dense (300k) & RBF                & $\sigma=0.1292$ & $+0.179$ & $\mathbf{707.4}$ & $\mathbf{0.030}$ \\
-Dense (300k) & Mat\'ern-3/2       & $\rho=0.0583$   & $+0.161$ & $983.9$ & $0.053$ \\
-Dense (300k) & Rational quadratic & $l=0.0210$      & $+0.064$ & $1508.9$ & $0.091$ \\
-Sparse (500) & RBF                & $\sigma=0.1964$ & $-0.012$ & $\mathbf{-0.63}$ & $0.044$ \\
-Sparse (500) & Mat\'ern-3/2       & $\rho=0.2272$   & $+0.002$ & $0.46$ & $\mathbf{0.041}$ \\
-Sparse (500) & Rational quadratic & $l=0.1201$      & $-0.002$ & $0.39$ & $0.044$ \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-RBF is the best-calibrated family across almost every scene, checkpoint,
-and metric (Tables~\ref{tab:kernels}--\ref{tab:kernels-ship}) -- a clean,
-close-to-universal result, not just a lego artifact.
-
-By the Gaussian-NLL score, RBF wins $13$ of the $14$ scene/checkpoint
-combinations, typically by one to three orders of magnitude and by as
-much as $438\times$ in the best-separated case (chair, sparse
-checkpoint). The one exception is hotdog's dense checkpoint, where
-rational quadratic wins by a real $10\times$ margin ($8967.8$ vs.\ RBF's
-$1.06\times 10^{5}$). By AUSE -- does sorting held-out points by
-predicted variance actually order them by true error -- RBF wins the same
-$13$ of $14$ combinations, with the one exception a near-tie on ship's
-sparse checkpoint (Mat\'ern-3/2 at $0.041$ vs.\ RBF's $0.044$). Elsewhere,
-Mat\'ern/rational quadratic's marginal-likelihood fits consistently land
-on tighter bandwidths that explain local color smoothness well but
-produce overconfident (too-small) variance at real held-out points,
-punished heavily by the $1/\text{var}$ term in NLL and, more mildly, by
-AUSE's ranking penalty. The calibration \emph{correlation} itself stays
-weak and sign-inconsistent across every family and every scene: none of
-the three families should be read as genuinely tracking held-out error in
-the correlation sense -- RBF's advantage is in the proper-scoring and
-ranking metrics, not in raw correlation.
-
-Together, NLL and AUSE agree closely (both single out the same lone
-exception scene, hotdog, on the dense checkpoint; both put RBF ahead
-everywhere else) -- two different ways of asking ``does this family's
-variance actually price real held-out error correctly'' converge on the
-same answer, which is the kind of agreement a single ad hoc metric can't
-offer on its own. We read this as a fairly clean recommendation, not a
-scene-dependent trade-off: RBF should stay the default position kernel
-for this method's uncertainty estimate, with Mat\'ern-3/2 or rational
-quadratic considered only if a specific scene's dense-checkpoint result
-(as with hotdog here) motivates checking directly.
-
+Rerendering every real training camera to build $\Sigma_{\theta_i}$
+(Eq.~\eqref{eq:sh-precision}) took 8--11 minutes per 300{,}000-splat
+scene; both query-side terms evaluate in under a second per view once
+$\Sigma_\theta$ is built. A quantitative calibration check of $u_q$
+against real held-out rendering error, and a marginal-likelihood fit for
+$\lambda$, are left to future work rather than assumed from the
+qualitative result above.
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 

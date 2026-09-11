@@ -1,147 +1,93 @@
-# gs_experiment — Bayesian quadrature on real Gaussian Splatting
+# gs_experiment — a renderer-consistent sparse-GP view of 3D Gaussian Splatting
 
-Real experiments against real trained `gsplat` checkpoints: the BQ math
-(kernels, quadrature, the directional extension) and its application to
-real 3D Gaussian Splatting scenes — real cameras, real training, real
-densification — live in this one package. Needs a GPU and `gsplat` for
-anything that trains or loads a checkpoint (see
-[`../requirements-gsplat.txt`](../requirements-gsplat.txt) for setup,
-including two real CUDA/compiler gotchas already solved there); the pure
+Real experiments against real trained `gsplat` checkpoints, implementing
+the decomposition described in the top-level [`README.md`](../README.md):
+
+    mu_q = C_alpha(q)                          (real alpha compositing, untouched)
+    u_q  = u_spatial_BQ(q) + u_SH(q)
+
+Needs a GPU and `gsplat` for anything that trains or loads a checkpoint
+(see [`../requirements-gsplat.txt`](../requirements-gsplat.txt)); the pure
 math/geometry modules (`kernels.py`, `quadrature.py`, `render_weight.py`,
 `hyperparams.py`, `camera.py`, `visibility_attribution.py`,
-`spherical_harmonics.py`) run on `numpy`/`scipy` alone and are covered by
-the main test suite (`pytest tests/`).
-
+`spherical_harmonics.py`, `sh_directional_uncertainty.py`) run on
+`numpy`/`scipy` alone and are covered by the main test suite
+(`pytest tests/`).
 
 ## Core library modules
 
-- **`kernels.py`** — `RBFKernel`/`MaternKernel` (each with a closed-form
-  or numerically-integrated mean embedding and double integral),
-  `ProductKernel` (a D-D kernel as a product of 1D kernels per axis,
-  exact for RBF), `DirectionalKernel` (a von Mises-Fisher factor over
-  viewing direction, combined multiplicatively with a position kernel).
-- **`quadrature.py`** — the rendering-aware BQ family:
-  `bayesian_quadrature_rendering_aware` /
-  `bayesian_quadrature_rendering_aware_directional` /
-  `renderer_centered_residual_variance`. `k_q(xi, xi') = a_q(xi)
-  k_base(xi, xi') a_q(xi')` for a query-specific renderer weight `a_q`
-  (see `render_weight.py`), in place of a uniform-box integration domain.
-  An earlier multi-D/directional box-quadrature family
-  (`bayesian_quadrature_nd`/`bayesian_quadrature_directional`/
-  `directional_posterior_variance`) that predates this is retired -- see
-  git history.
+- **`kernels.py`** — `RBFKernel` (closed-form mean embedding/double
+  integral) and `ProductKernel` (a D-D kernel as a product of 1D kernels
+  per axis, exact for RBF).
+- **`quadrature.py`** — `bayesian_quadrature_rendering_aware` (the
+  BQ-optimal position-only estimator under a query-specific renderer
+  weight `a_q`, see `render_weight.py`) and
+  `rendering_aware_alternative_weight_risk` (the general RKHS
+  worst-case-risk formula, scored at the REAL alpha-compositing weights
+  rather than solved for) -- this is `u_spatial_BQ(q)`'s scalar reference.
 - **`render_weight.py`** — `GaussianRenderWeight`: `a_q = T_q sigma G_q`
   modeled as an unnormalized Gaussian bump (amplitude, center,
-  covariance), for the closed-form rendering-aware quadrature above.
-- **`hyperparams.py`** — fits the kernel bandwidth (RBF sigma / Matern
-  rho) to data by maximizing the GP log marginal likelihood, instead of a
-  hardcoded bandwidth. `fit_kernel_param_pooled_nd` fits one shared
-  bandwidth across many datasets/windows, for testing whether a single
-  fitted bandwidth generalizes.
-- **`pixel_uncertainty.py`** — `LocalUncertaintyEngine`: the main entry
-  point for querying rendering-aware BQ variance against a real
-  checkpoint. Builds a KD-tree once for candidate lookup and caps
-  local-neighbor count for tractability. `rendering_aware_variance`
-  builds a real per-query `a_q` (see `render_weight.py`) from actual
-  per-splat opacity and a Gaussian footprint tied to the query radius, so
-  a low-opacity splat contributes less to both mean and variance by
-  construction -- but the amplitude is occlusion-blind (a flat
-  neighborhood-mean opacity). `rendering_aware_variance_along_ray` closes
-  that: real, depth-ordered alpha-compositing transmittance weights
-  along the specific ray from a given camera through the query point
-  (`visibility_attribution.ray_transmittance_weights`), so a splat behind
-  a closer, opaque splat *on that ray* gets a small weight from real
-  accumulated transmittance rather than a uniform average -- but still
-  via an isotropic bearing threshold, not each splat's real projected
-  shape. `rendering_aware_variance_via_gsplat` is the most faithful
-  version: real gsplat GPU projection (`gsplat_rendering_weights.py`)
-  gives each local splat its actual anisotropic 2D footprint and real
-  per-pixel alpha for a given camera + intrinsics, in place of the
-  isotropic-bearing proxy. Needs `scales`/`rotations` on the engine and a
-  GPU + gsplat env (see `../requirements-gsplat.txt`); still not a live
-  differentiable rasterizer in the full sense (no antialiasing/sub-pixel
-  footprint integration, no gradient path -- runs under
-  `torch.no_grad()`) -- see that method's docstring for exactly what is
-  and isn't modeled. Each method has a `_directional` variant completing
-  the joint position+direction kernel
-  (`bayesian_quadrature_rendering_aware_directional`) for the
-  complementary "is this specific viewing angle well-constrained"
-  question.
+  covariance).
+- **`hyperparams.py`** — fits the RBF bandwidth (and, jointly, a real
+  homoscedastic observation-noise variance) to data by maximizing the GP
+  log marginal likelihood, instead of a hardcoded bandwidth.
+- **`pixel_uncertainty.py`** — `LocalUncertaintyEngine.
+  rendering_aware_alpha_risk_along_ray`: real, depth-ordered
+  alpha-compositing transmittance weights along the specific camera ray
+  through a query point (`visibility_attribution.ray_transmittance_weights`)
+  build a position-only `a_q`, then `alpha_risk` scores those SAME real
+  weights' own RKHS risk under that kernel -- `u_spatial_BQ(q)`.
+- **`gpu_uncertainty.py`** — `compute_alpha_risk_batched`: the whole-image
+  batched-GPU equivalent of the scalar method above.
+- **`sh_directional_uncertainty.py`** — the directional term: `sh_basis`
+  (the real SH basis 3DGS's renderer evaluates against, pulled out as a
+  design matrix) and the per-splat Bayesian linear regression posterior
+  covariance `Sigma_theta_i` this project's SH-coefficient uncertainty is
+  built from.
+- **`gpu_sh_directional_uncertainty.py`** — `accumulate_sh_precision`:
+  builds `Sigma_theta_i` for every splat by literally rerendering every
+  real training camera (`compute_own_alpha_weight_batched`, each splat's
+  real alpha-compositing weight at its own projected bearing); and
+  `compute_sh_directional_uncertainty_batched`: the query-side batched
+  evaluation of `u_SH(q) = sum_i beta_{q,i}^2 * phi(d_q)^T Sigma_theta_i
+  phi(d_q)`.
 - **`splat_scene.py`** — `load_from_gsplat_checkpoint` (reads a real
-  `.ply` + `transforms.json`), `splat_observations` (expands a scene into
-  the (position, direction, value) rows the directional kernel needs;
-  `include_render_attrs=True` also returns per-row opacity/scale/rotation,
-  for the rendering-aware directional methods above).
+  `.ply` + `transforms.json`), `fit_kernel_hyperparams`/
+  `fit_kernel_hyperparams_with_noise` (per-checkpoint bandwidth fitting).
 - **`camera.py`** — camera pose representation, turntable pose
-  generation, and per-splat viewing-direction geometry, including
-  `viewmat_from_camera_pose`/`project_point_to_pixel` (the pure-numpy
-  camera-to-gsplat-rasterization-boundary conversion `gsplat_rendering_weights.py`
-  uses).
-- **`gsplat_rendering_weights.py`** — `gsplat_alpha_compositing_weights`:
-  real per-pixel alpha-compositing weights via gsplat's own differentiable
-  EWA-splatting projection (`gsplat.fully_fused_projection`) -- needs
-  torch + a CUDA-enabled gsplat build and a GPU; kept out of
-  `pixel_uncertainty.py`'s top-level imports (lazily imported by
-  `rendering_aware_variance_via_gsplat`) so that module and the default
-  `pytest tests/` suite stay importable without torch/gsplat installed.
+  generation, and per-splat viewing-direction geometry.
 - **`visibility_attribution.py`** — frustum + soft-z-buffer occlusion
   proxy for "which cameras plausibly saw this splat" (real training
-  pipelines don't record this). `ray_transmittance_weights` is the
-  continuous analogue for one specific ray: real per-splat opacity as
-  alpha, depth-ordered into a genuine alpha-compositing transmittance
-  weight per splat, instead of `occlusion_mask`'s binary yes/no --
-  what `pixel_uncertainty.rendering_aware_variance_along_ray` uses.
-  `CameraSplatIndex` is the bearing-space candidate index those queries
-  share across many calls against one camera; its `directions=`/
-  `query_direction=` option ranks overflow candidates by directional
-  alignment rather than bearing-distance ties, which matters whenever
-  `positions` is a camera-expanded observation array (one row per
-  (splat, observing-camera) pair) -- see its docstring.
+  pipelines don't record this), and `ray_transmittance_weights`: real
+  per-splat opacity turned into a genuine alpha-compositing transmittance
+  weight along one ray. `CameraSplatIndex` is the bearing-space candidate
+  index queries share across many calls against one camera.
+- **`gpu_visibility_attribution.py`** — batched-GPU equivalent of the
+  attribution above, ~100x faster on a real checkpoint.
 - **`spherical_harmonics.py`** — `eval_sh`, matching the standard
   3DGS/gsplat SH color convention.
 - **`ply_io.py`** / **`nerf_transforms.py`** — the standard 3DGS `.ply`
-  schema and NeRF-style `transforms.json` I/O, including the OpenCV/OpenGL
-  convention conversions `colmap_loader.py` also uses.
+  schema and NeRF-style `transforms.json` I/O.
 - **`colmap_loader.py`** — reads real COLMAP camera poses (the format
   real photographed datasets like Mip-NeRF360 ship), for scenes where
   poses are an SfM *estimate*, not exactly known.
 - **`train_minimal_gsplat.py`** — a minimal from-scratch `gsplat` trainer
+  with real densify/prune, used to produce the checkpoints everything
+  else runs against.
 
 ## Entry-point tools
 
-These are the tools that actually produce this project's current results — one file per figure, reusing
-`render_reconstruction.py`'s shared `render_views`/`compute_uncertainty_maps`
-(no CLI of its own) rather than duplicating rendering logic per script.
-
 - **`prepare_nerf_synthetic.py`** — downloads/prepares a standard
   NeRF-Synthetic scene (100 real training views + an official held-out
-  test split); also builds a "narrow" (angularly clustered) real-view
-  subset and graded-spread/gap conditions used by the tools below.
-- **`render_scene_gallery.py`** — the cross-scene qualitative result:
-  one held-out view per scene (7 of the 8 standard NeRF-Synthetic
-  scenes; `materials` excluded, see the script's own docstring), at two
-  splat budgets (500 and this project's standard 300k `wide` recipe)
-  side by side, showing ground truth / reconstruction / |error| / raw
-  rendering-aware posterior variance. `sigma`/`kappa` default to fitting
-  per checkpoint (`splat_scene.fit_kernel_hyperparams`) rather than
-  reusing one bandwidth pooled across a fixed calibration set.
-- **`render_splat_sweep_gallery.py`** — same columns as
-  `render_scene_gallery.py`, but rows are increasing splat budgets (500
-  to 1,000,000 by default) for one scene (lego), showing reconstruction
-  quality and BQ uncertainty improving and saturating together. Large
-  budgets are automatically capped via
-  `splat_scene.max_observations_per_splat_for_budget` to stay within a
-  validated host-memory ceiling.
-- **`real_directional_coverage_experiment.py`** — trains the lego
-  coverage-gap checkpoints `render_coverage_uncertainty_sweep.py` needs:
-  removes a deliberate angular gap of increasing half-width from the
-  100-view training pool, leaving every other view untouched (confound-
-  free relative to an earlier, retired "subsample" design that thinned
-  the pool globally; see git history).
-- **`render_coverage_uncertainty_sweep.py`** — the directional-coverage
-  result: the same held-out view rendered against each gap condition's
-  own checkpoint, showing reconstruction degrading and raw posterior
-  variance growing together in the missing-coverage region.
+  test split).
+- **`scripts/render_reconstruction.py`** — shared rendering library:
+  `render_views` (GT vs. real gsplat reconstruction) and
+  `_render_and_unproject` (real depth-unprojection into world-space query
+  points), plus the per-scene checkpoint/eval-dir registry
+  (`CHECKPOINTS`/`EVAL_DIRS`).
+- **`scripts/render_sparse_gp_uncertainty.py`** — the current headline
+  result: renders `mu_q = C_alpha(q)`, `u_spatial_BQ(q)`, `u_SH(q)`, and
+  their sum, for real held-out views on real checkpoints.
 
 ## Running it
 
@@ -155,5 +101,5 @@ end, with a `gsplat` environment set up (`../requirements-gsplat.txt`):
 ```
 .venv-gsplat/bin/python gs_experiment/scripts/prepare_nerf_synthetic.py <raw_scene_dir> <out_dir>
 .venv-gsplat/bin/python -m gs_experiment.scripts.train_minimal_gsplat <out_dir>/wide <out_dir>/wide/splats.ply --densify
-.venv-gsplat/bin/python gs_experiment/scripts/render_scene_gallery.py
+.venv-gsplat/bin/python gs_experiment/scripts/render_sparse_gp_uncertainty.py
 ```

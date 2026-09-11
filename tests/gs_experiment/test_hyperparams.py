@@ -8,7 +8,7 @@ from gs_experiment.hyperparams import (
     log_marginal_likelihood,
     log_marginal_likelihood_nd,
 )
-from gs_experiment.kernels import MaternKernel, ProductKernel, RBFKernel
+from gs_experiment.kernels import ProductKernel, RBFKernel
 
 
 def test_lml_prefers_true_generating_bandwidth_over_far_off_ones():
@@ -56,20 +56,6 @@ def test_fit_kernel_param_pooled_recovers_shared_bandwidth_across_datasets():
 
     fit = fit_kernel_param_pooled(datasets, lambda s: RBFKernel(sigma=s), bounds=(0.05, 3.0))
     assert 0.3 < fit.param < 1.1
-
-
-def test_fit_kernel_param_works_for_matern_too():
-    rng = np.random.default_rng(2)
-
-    def g_true(t):
-        return np.sin(t) + 0.3 * np.sin(5 * t)
-
-    nodes = np.sort(rng.uniform(0, 10, size=30))
-    values = g_true(nodes)
-
-    fit = fit_kernel_param(nodes, values, lambda r: MaternKernel(rho=r), bounds=(1e-2, 3.0))
-    assert fit.param > 0
-    assert np.isfinite(fit.log_marginal_likelihood)
 
 
 def _product_rbf(sigma, d=3):

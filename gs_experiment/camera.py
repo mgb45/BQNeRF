@@ -95,10 +95,11 @@ def translate_cameras(cameras: list[CameraPose], offset: np.ndarray) -> list[Cam
 
 def directions_from_positions_to_camera(positions: np.ndarray, camera: CameraPose) -> np.ndarray:
     """Unit vector from each of `positions` (N, 3) toward `camera.center` --
-    the "viewing direction" DirectionalKernel expects for each observation
-    of a splat: not the camera's own forward axis, but the direction from
-    the observed point back to the observer, which varies per splat even
-    for a single camera.
+    the real per-observation viewing direction (used to evaluate a splat's
+    SH color, or its SH-coefficient posterior in
+    gs_experiment/sh_directional_uncertainty.py): not the camera's own
+    forward axis, but the direction from the observed point back to the
+    observer, which varies per splat even for a single camera.
     """
     positions = np.asarray(positions, dtype=float)
     to_camera = camera.center[None, :] - positions
@@ -123,8 +124,7 @@ def viewmat_from_camera_pose(camera: CameraPose) -> np.ndarray:
     gs_experiment.nerf_transforms.opencv_viewmat_from_c2w produces from a
     NeRF-synthetic c2w, but usable for *any* CameraPose, including ones
     that never went through a transforms.json (turntable_camera,
-    make_mock_scene, ...). Needed at the gsplat rasterization boundary --
-    see gs_experiment/gsplat_rendering_weights.py.
+    make_mock_scene, ...). Needed at the gsplat rasterization boundary.
     """
     right, up, forward = camera_local_frame(camera)
     down = -up
