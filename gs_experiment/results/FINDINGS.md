@@ -1,140 +1,244 @@
 # gs_experiment findings
 
-Real Gaussian-Splatting results — real `gsplat` training, real checkpoints,
+Real Gaussian-Splatting results -- real `gsplat` training, real checkpoints,
 real cameras. This is the primary results document for the project.
 
-This file was recreated when the repo was rewritten around a single,
-more coherent theoretical framing (see `README.md`); prior findings
-(kernel-family ablation, likelihood-training experiments, directional-
-coverage/floater results built on the older point-evaluation kernel)
-still exist in git history if ever needed, but are not reproduced here.
+## 0. CORRECTION (supersedes the previous sections 3-4 of this file)
 
-## 1. Why the earlier directional-kernel construction had to be retired
+**Every previously recorded `u_SH` result in this project was measuring the
+prior, not the data.** The per-splat SH-coefficient "posterior" was, to 13
+significant figures, exactly its prior. The cause was the way the real
+alpha-compositing weight `beta_{p,i}` was reconstructed, in the now-retired
+`gpu_sh_directional_uncertainty.compute_own_alpha_weight_batched`. Two
+independent defects compounded:
+
+1. **Centre-pixel-only.** `beta_{p,i}` was sampled at the single pixel the
+   splat's own projected centre landed on. A training observation constrains
+   splat i through *every* pixel it touches, so the information it carries
+   is `sum_q beta_{q,i}^2` over its whole real footprint. A splat covering
+   400 pixels and one covering 1 were given comparable weight.
+2. **The bearing ball counted non-occluders as occluders.** Candidates came
+   from a 0.05 rad (~2.9 deg) bearing ball -- vastly wider than a pixel --
+   capped at the 500 nearest, and every one of those entered the
+   depth-ordered transmittance product as though it occluded the query.
+   `T` collapsed to ~0 for almost every splat.
+
+Measured directly against gsplat on the 300k-splat lego `wide` checkpoint:
+the surrogate's median `beta` over genuinely visible splats was **1.1e-12**
+(numerically zero) where the real rasterizer gives those same splats a
+footprint-summed `sum_q beta^2` of **6.5e-5** -- a median ratio of
+**2.1e18**. Downstream, the accumulated data term came out **~1e-13 times
+the prior precision** in every SH band for every splat.
+
+A third, separate defect made the two sides incommensurable even had `beta`
+been right: the likelihood's observation noise variance `sigma_n^2` was
+missing entirely, so the data term was in squared-colour units while the
+prior was in coefficient units. No scalar `lam` can balance those. This is
+the real explanation for the hand-tuning recorded in the retired
+`render_angle_sweep.py`'s `LAM` comment (`lam=10` "goes blind", `lam=1e-3`
+"saturates", `lam=0.1` a "checked middle ground") -- all three were
+describing a prior being balanced against nothing.
+
+**Why the existing tests did not catch it.** `tests/gs_experiment/
+test_gpu_sh_directional_uncertainty.py` cross-validated the *batched*
+surrogate against the *scalar* surrogate, and they agreed exactly. Both
+were wrong in the same way. The lesson is recorded here deliberately:
+cross-validating two implementations of the same construction establishes
+only that the construction was implemented twice. The check that found this
+compared against the **real rasterizer**, which is the only external
+reference that exists for a quantity defined as "what the renderer does".
+
+Retracted as a result: FINDINGS sections 3-4 below as they concern `u_SH`,
+`gs_experiment/results/sparse_gp_uncertainty.png`, `angle_sweep.png`, and
+`splat_count_sweep.png`. Whatever structure those figures showed in their
+`u_SH` panels is the prior pushed through query-side alpha weights -- an
+opacity/coverage map -- not directional coverage. `u_spatial_BQ`
+(`gpu_uncertainty.py`) is a separate term and is **not** affected.
+
+## 1. The claim: 3DGS rendering is a quadrature rule
+
+Alpha compositing is already a weighted quadrature sum,
+
+    C(q) = sum_i beta_{q,i} c_i(d_q),    beta_{q,i} = T_i * alpha_i
+
+with nodes = splats and weights = `beta_{q,i}` -- and the rasterizer
+computes those weights anyway, as part of rendering. So a posterior over the
+splats' appearance parameters pushes forward to a per-pixel predictive
+variance at *render cost*. Uncertainty is nearly free, in the literal sense
+that it costs extra renders and nothing else.
+
+The cheapest and most legible way to push the posterior through is not a
+quadratic form but sampling: draw `theta^(s) ~ N(theta_hat, Sigma_theta)`,
+render each draw with the real rasterizer, take the per-pixel spread. No
+retraining, no model ensemble, one checkpoint, k renders.
+
+## 2. Why the earlier directional-kernel construction was retired
+
+(Unchanged, and still correct -- this concerns an earlier formulation than
+the one section 0 corrects.)
 
 The project's original formulation built a Bayesian-quadrature posterior
 directly *over* the rendering integral: a query-specific renderer weight
 `a_q` combined with a base kernel `k_base`, solved for BQ-optimal weights
-`w* = Kxx^-1 z`, and hoped `w*` would explain (or at least resemble) real
-alpha compositing's own weights `w_alpha = T_i*alpha_i`.
+`w* = Kxx^-1 z`, and hoped `w*` would explain real alpha compositing's own
+weights `w_alpha`. For a **position-only** kernel and a **mixture** `a_q`,
+that hope is a theorem: with point splats, `w* = w_alpha` exactly, for any
+bandwidth. But adding a directional kernel factor `k_dir(d, d')` breaks it.
+In the moment vector direction enters as `k_dir(d_i, d_query)`; in the Gram
+matrix as `k_dir(d_i, d_j)`. These play structurally different roles and do
+not cancel -- exact at kappa->0, off by more than 100x at a realistic kappa.
+Visually this showed up as chromatic speckle in the BQ-mean colour render.
 
-For a **position-only** kernel and a **mixture** `a_q` (one Gaussian per
-real candidate splat, not moment-matched into one blob), this hope is
-actually a theorem: with point splats, `w* = w_alpha` *exactly*, for any
-kernel bandwidth (proven directly; see git history for the mixture-BQ
-work this superseded). But the moment a directional kernel factor
-`k_dir(d, d')` is added — needed to say anything about viewing-angle
-coverage — that exact recovery breaks. In the moment vector, direction
-enters as `k_dir(d_i, d_query)` (candidate vs. one fixed query
-direction); in the Gram matrix, direction enters as `k_dir(d_i, d_j)`
-(candidate vs. candidate). These play structurally different roles and
-do not cancel — confirmed directly: exact at kappa->0, off by more than
-100x at a realistic kappa. Visually, this showed up as real chromatic
-speckle in the BQ-mean color render wherever direction was involved,
-which is what originally prompted this investigation (a BQ mean should
-never look worse than the real alpha-compositing reconstruction it's
-supposedly a probabilistic refinement of).
+The fix was recognizing that a splat's stored SH coefficients are not a
+point observation of the radiance field -- they are a learned, localized
+basis function, and the representation photometric training actually
+optimizes. That much survives section 0's correction intact.
 
-The fix is not a better directional kernel. It's recognizing that a
-splat's stored SH coefficients are not a point observation of the
-radiance field at all — they're a *learned, localized basis function*,
-and the representation that photometric training actually optimizes.
+## 3. The corrected construction
 
-## 2. The renderer-consistent sparse-GP decomposition
+Per-splat Bayesian linear regression over the real SH basis, with all three
+of section 0's defects fixed (`gs_experiment/rasterized_sh_precision.py`):
 
-Treat 3DGS as a sparse interdomain Gaussian process: each splat's SH
-coefficients are an inducing variable of an underlying radiance-field GP,
-chosen so the GP's posterior mean under the real renderer weights `b_q`
-equals `C_alpha(q)` *exactly* — not approximately, not "hopefully," by
-construction. Conditioning on inducing variables then gives the standard
-sparse-GP predictive variance, which decomposes into two independent
-terms:
+    D_i = sum_p (sum_q beta_{q,i,p}^2) phi(d_{i,p}) phi(d_{i,p})^T
+    P_i = Lambda + D_i / sigma_n^2
 
-    mu_q = C_alpha(q)
-    u_q  = u_spatial_BQ(q) + b_q^T Sigma_theta b_q
+- **`sum_q beta_{q,i,p}^2` from the real rasterizer.** gsplat renders
+  `I(q) = sum_i beta_{q,i} c_i` for arbitrary per-splat features `c_i`, so
+  backpropagating an image `r` gives `dL/dc_i = sum_q beta_{q,i} r_q`
+  exactly. With `r` Rademacher, `E[(dL/dc_i)^2] = sum_q beta_{q,i}^2` --
+  the wanted quantity, footprint-summed, under the renderer's own weights,
+  with no bearing ball, no candidate cap and no surrogate compositing model.
+  Independent probes ride as independent *channels* of one render (`beta` is
+  geometric, hence channel-independent), so the whole accumulation is one
+  forward+backward pass per training camera.
+- **`sigma_n^2`** fit as the mean squared residual between the real render
+  and the real training images (`estimate_noise_variance`). On lego `wide`:
+  `sigma_n = 0.0129`.
+- **`Lambda` by empirical Bayes, per SH band and per channel**:
+  `lambda_{l,c} = 1/Var_i[theta_{i,c,k} : k in band l]`, read straight off
+  the checkpoint's own coefficient population. This replaces the hand-picked
+  scalar. A single scalar is badly mis-specified regardless of the other
+  bugs: the l=0 (DC colour) and l=3 coefficients of a real checkpoint differ
+  in natural scale by orders of magnitude. On lego `wide`, fitted
+  `lambda_l0` is 1.55/1.92/3.48 (RGB) against `lambda_l2` ~10.6-11.0.
 
-See `README.md` for the full derivation. Two consequences worth stating
-plainly: (1) the mean is now categorically incapable of the chromatic
-corruption section 1 describes, since it is never solved for; (2)
-`Sigma_theta_i` (the SH-coefficient posterior) does not depend on
-observed *colors* at all, only on which directions were observed and how
-much each observation's own alpha-compositing weight was — a pure
-Fisher-information/coverage statistic, which is what the retired
-directional-kernel construction was trying (and structurally failing) to
-express.
+Measured effect of the correction, lego `wide`, 300k splats, 100 cameras:
 
-## 3. What was built
+| | retired KNN surrogate | rasterizer |
+|---|---|---|
+| data/prior precision, l=0, median | ~1e-13 | **25.7** |
+| fraction of splats data-dominated | 0.000 | **0.851** |
+| accumulation wall-clock | 223 s | **5.0 s** |
 
-- **`u_spatial_BQ(q)`**
-  (`gs_experiment/pixel_uncertainty.LocalUncertaintyEngine.
-  rendering_aware_alpha_risk_along_ray`'s `alpha_risk`,
-  `gs_experiment/gpu_uncertainty.compute_alpha_risk_batched` for the
-  whole-image batched version): the real alpha-compositing weights' own
-  RKHS worst-case risk, scored under a position-only kernel — already
-  established machinery, now batched and cross-validated to 1e-6 against
-  the scalar path on real data (`tests/gs_experiment/
-  test_gpu_uncertainty_alpha_risk.py`). A real bug was caught and fixed
-  here: an earlier version of the batched risk formula omitted the
-  Gram matrix's own relative-jitter term, disagreeing with the scalar
-  reference by ~1% on real risk values.
+The corrected accumulation is both right and 45x faster: the surrogate's
+cost was a KD-tree candidate search per camera, the rasterizer's is one
+render per camera.
 
-- **`beta_{p,i}`, each splat's real per-training-camera alpha-compositing
-  weight** (`gs_experiment/gpu_sh_directional_uncertainty.
-  compute_own_alpha_weight_batched`): computed by literally rerendering
-  every real training camera — querying at each observed splat's own
-  projected bearing and taking its own slot in the real depth-ordered
-  transmittance weights, batched per camera. Cross-validated against the
-  scalar `visibility_attribution.ray_transmittance_weights` +
-  `CameraSplatIndex.query` combination directly.
+## 4. Posterior-ensemble rendering, and what it shows
 
-- **`Sigma_theta_i`** (`gs_experiment/sh_directional_uncertainty.py`'s
-  Bayesian linear regression over the real SH basis, `gs_experiment/
-  gpu_sh_directional_uncertainty.accumulate_sh_precision` for the
-  real-checkpoint accumulation): `Sigma_theta_i^-1 = lam*I + sum_p
-  beta_{p,i}^2 phi(d_p)phi(d_p)^T`. `sh_basis` was verified to reproduce
-  `spherical_harmonics.eval_sh`'s own basis exactly (machine precision)
-  at every SH degree 0-3, and the regression math was checked against a
-  Sherman-Morrison sanity property (a single observation reduces
-  posterior variance only along its own feature direction, leaving the
-  orthogonal complement exactly at the prior).
+`gs_experiment/scripts/render_posterior_ensemble.py` draws from the per-splat
+posterior and renders each draw through gsplat. Cost on lego `wide`: 8 draws
+= 323 ms of renders on a **21.5 ms** render, plus a one-time 306 ms Cholesky
+per scene -- so ~15x one render per additional view once factored.
 
-- **`u_SH(q)`** (`gpu_sh_directional_uncertainty.
-  compute_sh_directional_uncertainty_batched`): `sum_i beta_{q,i}^2 *
-  phi(d_q)^T Sigma_theta_i phi(d_q)` at real query pixels, cross-validated
-  against a scalar reference built from `LocalUncertaintyEngine.
-  _along_ray_local_data`'s own real candidate/weight gathering.
+**On the full 100-view checkpoint the posterior is genuinely tight**:
+per-pixel std 0.0020 (mean), 0.023 (max); four draws are visually identical
+(`gs_experiment/results/posterior_ensemble.png`). This is the correct answer
+and a useful sanity result -- a well-trained 300k-splat model fit to 100
+views really is confident about appearance -- but it is not a figure.
 
-`lam` (the SH-coefficient prior precision) is a free hyperparameter, not
-fit in this pass — see `ROADMAP.md` item 2.
+**Spread appears when the conditioning set is thin.**
+`gs_experiment/scripts/render_posterior_view_sweep.py` freezes ONE
+checkpoint (geometry, opacities, stored coefficients, query camera and
+render all untouched) and varies only how many real training cameras the
+posterior is conditioned on. Strictly nested conditioning, no retraining
+confound of any kind -- unlike comparing independently trained checkpoints,
+where splat count, positions, opacities, learned coefficients and the
+query-side weights all move at once:
 
-## 4. Visual result
+| training views | l=0 data/prior (median) | per-pixel std on object | max |
+|---|---|---|---|
+| 100 | 25.7 | 0.0057 | 0.023 |
+| 25 | 6.27 | 0.0100 | 0.041 |
+| 8 | 1.55 | 0.0373 | 0.231 |
+| 3 | 0.344 | 0.0430 | 0.251 |
 
-`gs_experiment/scripts/render_sparse_gp_uncertainty.py` renders, for
-three real held-out views (lego/chair/ship, `wide` ~300k-splat
-checkpoints): ground truth, `C_alpha(q)` (the real renderer output,
-unmodified), `u_spatial_BQ(q)`, `u_SH(q)`, and their sum
-(`gs_experiment/results/sparse_gp_uncertainty.png`).
+`gs_experiment/results/posterior_view_sweep.png`: the top row's draws are
+pixel-identical with a black std map; the bottom rows visibly disagree.
 
-Observed on all three scenes:
-- `C_alpha(q)` is visually identical to the real reconstruction, as
-  guaranteed by construction — no directional color corruption of the
-  kind section 1 describes.
-- `u_spatial_BQ` is sharp and structure-following: it tracks fine
-  geometric detail (edges, thin structures like the ship's rigging).
-- `u_SH` is smoother and more spatially coherent, consistent with
-  tracking real training-view angular coverage (a property that varies
-  more smoothly across a surface) rather than per-splat spatial density.
-- The sum combines both signals, visibly dominated by `u_spatial_BQ`'s
-  sharper peaks with `u_SH`'s smoother floor visible elsewhere.
+## 5. Open, and honestly negative so far
 
-Runtime: `u_spatial_BQ` and `u_SH`'s own query-side evaluation are both
-sub-second per view; `accumulate_sh_precision` (rerendering every real
-training camera once per scene) took 8-11 minutes per 300k-splat scene —
-see `ROADMAP.md` item 3.
+- **Correlation with real held-out error is weak where it counts.** On lego
+  `wide` view 21, whole-frame Spearman between per-pixel posterior std and
+  `|held-out error|` is 0.95 -- but that is almost entirely the
+  object/white-background split, since both are ~0 on background. Restricted
+  to object pixels it is **0.28** (Pearson 0.23). A whole-frame correlation
+  on a NeRF-Synthetic scene mostly reports "found the silhouette" and should
+  not be quoted as calibration.
+- **The draws show chromatic speckle**, not structured disagreement. That is
+  the block-diagonal approximation showing through: `Sigma_theta` treats
+  every splat's coefficients as independent, so each splat's colour wobbles
+  on its own. Photometric training only ever constrains the *sum* of
+  contributions along a ray, so splats in an overlapping stack are jointly
+  non-identifiable, and the true posterior has strong cross-splat
+  correlations that the block diagonal discards. This is the leading
+  suspect for the weak object-pixel correlation above, and the next thing
+  to fix.
+- **Geometry is not in the posterior.** Positions, scales and opacities are
+  held fixed and only appearance is sampled, so an error of geometric origin
+  (a floater in the wrong place with a confidently-fit colour) need not
+  light up.
 
-Not yet done: a quantitative calibration check against real held-out
-rendering error (this project's established practice — see
-`quadrature.rendering_aware_alternative_weight_risk`'s own docstring for
-why scoring the real renderer's own weights under a real posterior is a
-well-posed, honest question) — deferred to `ROADMAP.md` item 1,
-deliberately, per explicit direction to look at the renders first before
-reaching for statistics again.
+## 6. Cross-splat coupling: implemented, validated, and a negative result
+
+`gs_experiment/coupled_sh_posterior.py` samples from the FULL joint
+posterior over every splat's coefficients, never forming or inverting it.
+The construction is that every operation `A` needs is a render:
+
+- **Matvec.** `g_p^T v` is the rendered image when splat i is given the
+  scalar feature `phi(d_{i,c})^T v_i`, and `sum_p g_p s_p` is that render's
+  backward pass against `s`. Taking `s` to be the rendered image itself, the
+  data term of `A v` is exactly the gradient of `0.5*||render||^2` -- one
+  forward+backward per training camera.
+- **Sampling.** `b ~ N(0, A)` is drawn in closed form (`Lambda^{1/2} r_0 +
+  (1/sigma_n) sum_p g_p eps_p`, the second term another backward pass, this
+  time against a white-noise image), then `A x = b` is solved by
+  preconditioned CG. Since `Cov(b) = A`, `Cov(x) = A^-1` exactly.
+
+Validated in `tests/gs_experiment/test_coupled_sh_posterior.py` by forming
+`A` explicitly on a scene small enough to allow it (8 splats, degree 1, 4
+cameras) and checking the sampler's empirical covariance against `A^-1`
+directly -- relative Frobenius error under 15% at 1200 samples -- plus that
+the operator is symmetric positive definite and that `(A^-1)_ii >=
+(A_ii)^-1` holds per splat.
+
+**On the real scene it does not help.** lego `wide`, 300k splats, 25
+training views, 400 CG iterations to a 6.2e-3 relative residual:
+
+| | block-diagonal | coupled |
+|---|---|---|
+| per-pixel std on object | 0.0100 | 0.0110 |
+| Spearman vs `|held-out error|`, object pixels | **0.241** | **0.202** |
+| wall-clock to sample 8 draws | 0.2 s | 209 s |
+
+Coupling raises the per-pixel std by a median factor of 1.125 (90th
+percentile 2.02) and makes the correlation with real held-out error
+slightly WORSE. The hypothesis recorded in section 5 -- that block-diagonal
+independence was what capped the error correlation -- is **not supported**.
+A 1000x cost increase buys a ~12% variance correction and no calibration
+gain, so the block-diagonal posterior is the one to use.
+
+One structural detail is worth keeping, because it is the non-identifiability
+showing up correctly. Each splat's MARGINAL variance must increase under
+coupling (`(A^-1)_ii >= (A_ii)^-1`), but the per-PIXEL variance
+`b_q^T Sigma b_q` need not: the 10th percentile of the coupled/block ratio is
+0.66, i.e. it often falls. Overlapping splats are *anti*-correlated -- only
+their sum along a ray is constrained -- so their errors partially cancel in
+the rendered sum. The coupled posterior is saying the individual splats are
+less determined than the block diagonal claims while the thing you actually
+render is better determined. That is the right answer, and it is why the
+block diagonal is not costing calibration here.
+
+So the weak object-pixel correlation (section 5) remains unexplained, and
+the leading suspect is now the one listed there third rather than second:
+geometry is not in the posterior at all.

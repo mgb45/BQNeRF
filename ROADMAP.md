@@ -1,64 +1,65 @@
 # ROADMAP
 
-Forward experiment plan for the renderer-consistent sparse-GP
-decomposition (see [`README.md`](README.md) for the theory and
-[`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md)
-for what's already been built and shown). Ordered by priority.
+Forward experiment plan. See [`README.md`](README.md) for the claim and
+[`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md) for
+what has been shown and what has been retracted. Ordered by priority.
 
-## 1. Calibration against real held-out error
+## 1. Geometry in the posterior
 
-`u_spatial_BQ(q) + u_SH(q)` has been shown to produce visually distinct,
-sensible-looking spatial patterns (`gs_experiment/results/
-sparse_gp_uncertainty.png`), but not yet checked quantitatively against
-real held-out rendering error (correlation, a Gaussian-NLL-style proper
-scoring rule, AUSE). The project's own established convention
-(`rendering_aware_alternative_weight_risk`'s docstring; the retired
-kernel-family-ablation work) is to score this honestly and report a
-negative result if it comes out that way, rather than assume a
-theoretically-motivated construction is automatically well-calibrated.
+Positions, scales and opacities are held fixed; only appearance is sampled.
+An error of geometric origin -- a floater in the wrong place with a
+confidently-fit colour -- need not light up. This is now the leading suspect
+for the weak object-pixel error correlation (FINDINGS section 5), since
+cross-splat coupling has been implemented, validated and found NOT to
+explain it (FINDINGS section 6).
 
-## 2. Fitting `lam`, the SH-coefficient prior precision
+Opacity is the cheapest extension and the one most likely to buy the floater
+story: it enters the render with a computable derivative, and sampling it
+costs nothing extra at render time (a draw is still one render).
 
-`gs_experiment/sh_directional_uncertainty.py`'s `Sigma_theta_i^-1 = lam*I
-+ sum_p beta_{p,i}^2 phi(d_p)phi(d_p)^T` currently takes `lam` as a
-hand-picked scalar (see `render_sparse_gp_uncertainty.py`'s own `LAM`
-constant). A marginal-likelihood fit (mirroring `hyperparams.
-fit_kernel_param_and_noise_pooled_nd`'s pattern, but over per-splat SH
-regression instead of the position kernel) would replace that guess with
-a real, data-driven value -- and is a prerequisite for priority 1's
-calibration check to mean much.
+## 2. Calibration against real held-out error
 
-## 3. `accumulate_sh_precision` performance
+Report AUSE (rank-based, robust to any residual scale error) alongside
+Gaussian NLL (not robust, and therefore the real test of whether
+`sigma_n^2` and `Lambda` are right). **Always restricted to object pixels** --
+whole-frame correlations on NeRF-Synthetic are dominated by the
+object/background split and report the silhouette, not calibration. Use the
+block-diagonal posterior: coupling costs 1000x and does not improve the
+correlation (FINDINGS section 6).
 
-Rerendering every real training camera currently takes 8-11 minutes per
-300k-splat scene (see `render_sparse_gp_uncertainty.py`'s own timing
-prints) -- tractable for a one-off figure, not for an interactive or
-per-training-step use. The per-camera loop in
-`gpu_sh_directional_uncertainty.accumulate_sh_precision` is a natural
-target: batching multiple cameras' gathers together (mirroring
-`gpu_visibility_attribution.batched_attribute_observations`'s own
-per-camera-chunked batching) rather than one Python-level camera at a
-time.
+## 3. The angular-gap figure
+
+"The view nobody trained on": remove training cameras within a growing
+angular cone around one direction and show uncertainty rising specifically
+there. Do this **frozen-map** (nested camera removal from one checkpoint,
+as `render_posterior_view_sweep.py` does for view count), not by comparing
+the independently-trained `gap_0..gap_4` checkpoints -- those confound the
+effect with splat count, positions, opacities, learned coefficients and the
+query-side weights all moving at once.
+
+Worth keeping as a correctness check in its own right: nested camera removal
+can only ever drop positive-semi-definite terms from `D_i`, so posterior
+variance must be non-decreasing as the conditioning set shrinks. A violation
+is unambiguous evidence of an implementation bug, independent of retraining,
+kernel choice or function-class limitations.
 
 ## 4. Next-best-view selection
 
-Use `u_q(pixel)`, aggregated per candidate next training view (e.g. mean
-or a high percentile over that view's own visible pixels), to pick which
-unobserved view to add next, and check whether it reduces held-out error
-faster than a round-robin/random view schedule. Depends on priority 1
-(a signal not yet shown to correlate with real error is a weak basis for
-choosing views).
+Aggregate per-pixel uncertainty per candidate view and pick the next
+training view with it; check whether held-out error drops faster than a
+random/round-robin schedule. This is the "so what" -- it converts the work
+from a diagnostic into a tool. Depends on 2: a signal not yet shown to
+correlate with real error is a weak basis for choosing views.
 
-## 5. Training under the likelihood
+## 5. `u_spatial_BQ`, the finite-representation term
 
-Whether `u_q` (or just `u_SH(q)`, the cheaper term once priority 3 lands)
-can inform densification or a loss-reweighting term during training
-itself, not just post-hoc diagnosis on a finished checkpoint. An earlier,
-now-retired version of this idea (gradient-vs-BQ-variance densification
-triggers in `train_minimal_gsplat.py`) was tried against the OLD
-single-Gaussian point-evaluation kernel and found genuinely negative
-(uncontrolled splat growth without a real quality gain) -- worth
-retrying against this decomposition specifically once priorities 1-2 give
-a calibrated, real-precision signal to train against, not assumed to work
-just because the earlier attempt used a different (and since-diagnosed)
-kernel construction.
+`gpu_uncertainty.compute_alpha_risk_batched` -- the real alpha weights' RKHS
+worst-case risk under a position-only kernel -- is unaffected by the
+FINDINGS section 0 defect and still implemented, but is currently orphaned:
+the posterior-ensemble story does not use it. It answers a different
+question (is the node set adequate?) than the coefficient posterior (are the
+node values determined?). Note it carries no GP amplitude, so it is a
+*relative* risk in units of length^-3, not a variance in colour^2, and
+cannot simply be added to the ensemble variance without fitting a signal
+amplitude `sigma_f^2`. Decide deliberately whether to fit that and combine,
+or to drop the term.

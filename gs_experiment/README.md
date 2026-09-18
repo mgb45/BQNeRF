@@ -44,13 +44,15 @@ math/geometry modules (`kernels.py`, `quadrature.py`, `render_weight.py`,
   design matrix) and the per-splat Bayesian linear regression posterior
   covariance `Sigma_theta_i` this project's SH-coefficient uncertainty is
   built from.
-- **`gpu_sh_directional_uncertainty.py`** — `accumulate_sh_precision`:
-  builds `Sigma_theta_i` for every splat by literally rerendering every
-  real training camera (`compute_own_alpha_weight_batched`, each splat's
-  real alpha-compositing weight at its own projected bearing); and
-  `compute_sh_directional_uncertainty_batched`: the query-side batched
-  evaluation of `u_SH(q) = sum_i beta_{q,i}^2 * phi(d_q)^T Sigma_theta_i
-  phi(d_q)`.
+- **`rasterized_sh_precision.py`** — the current method.
+  `accumulate_sh_precision_rasterized` builds each splat's SH Fisher
+  information straight off the real rasterizer, via gsplat's own backward
+  pass with Rademacher image probes (one forward+backward per training
+  camera, ~5 s for 300k splats / 100 cameras); `estimate_noise_variance`
+  fits the `sigma_n^2` that puts the data term and the prior in the same
+  units. This REPLACES the retired `gpu_sh_directional_uncertainty.py`,
+  whose surrogate compositing model understated per-splat information by a
+  median factor of 2.1e18 — see `results/FINDINGS.md` section 0.
 - **`splat_scene.py`** — `load_from_gsplat_checkpoint` (reads a real
   `.ply` + `transforms.json`), `fit_kernel_hyperparams`/
   `fit_kernel_hyperparams_with_noise` (per-checkpoint bandwidth fitting).
@@ -85,9 +87,19 @@ math/geometry modules (`kernels.py`, `quadrature.py`, `render_weight.py`,
   `_render_and_unproject` (real depth-unprojection into world-space query
   points), plus the per-scene checkpoint/eval-dir registry
   (`CHECKPOINTS`/`EVAL_DIRS`).
-- **`scripts/render_sparse_gp_uncertainty.py`** — the current headline
-  result: renders `mu_q = C_alpha(q)`, `u_spatial_BQ(q)`, `u_SH(q)`, and
-  their sum, for real held-out views on real checkpoints.
+- **`scripts/render_posterior_ensemble.py`** — draws from the per-splat SH
+  posterior and renders each draw through the real rasterizer; reports the
+  cost breakdown and the correlation with real held-out error (whole-frame
+  AND object-pixels-only, since the whole-frame number is dominated by the
+  silhouette).
+- **`scripts/render_posterior_view_sweep.py`** — the headline figure: ONE
+  frozen checkpoint, varying only how many real training cameras the
+  posterior is conditioned on. Strictly nested conditioning, so there is no
+  retraining confound.
+- **`scripts/frozen_map_monotonicity_test.py`** — the correctness check for
+  the above: nested camera removal can only drop positive-semi-definite
+  terms from `D_i`, so posterior variance must be non-decreasing as the
+  conditioning set shrinks.
 
 ## Running it
 
@@ -101,5 +113,5 @@ end, with a `gsplat` environment set up (`../requirements-gsplat.txt`):
 ```
 .venv-gsplat/bin/python gs_experiment/scripts/prepare_nerf_synthetic.py <raw_scene_dir> <out_dir>
 .venv-gsplat/bin/python -m gs_experiment.scripts.train_minimal_gsplat <out_dir>/wide <out_dir>/wide/splats.ply --densify
-.venv-gsplat/bin/python gs_experiment/scripts/render_sparse_gp_uncertainty.py
+.venv-gsplat/bin/python gs_experiment/scripts/render_posterior_view_sweep.py
 ```

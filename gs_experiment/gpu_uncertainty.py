@@ -152,7 +152,7 @@ def _alpha_risk_chunk(positions, values, covariances, weights, valid, query_poin
         z0 - 2.0 * (w * z).sum(dim=1) + torch.einsum("pk,pkj,pj->p", w, k_pos_mat, w) + jitter_scalar * (w**2).sum(dim=1)
     )
     alpha_mean = (w * values).sum(dim=1)
-    return alpha_mean.cpu().numpy(), risk.clamp_min(0.0).cpu().numpy()
+    return alpha_mean.cpu().numpy(), risk.clamp_min(0.0).cpu().numpy(), z0.cpu().numpy()
 
 
 def compute_alpha_risk_batched(
@@ -165,6 +165,7 @@ def compute_alpha_risk_batched(
     rel_jitter: float = 1e-4,
     device: str = "cuda",
     pixel_chunk_bytes: float = 1.5e9,
+    return_prior_variance: bool = False,
 ) -> np.ndarray:
     """Batched equivalent of calling
     `engine.rendering_aware_alpha_risk_along_ray(query_points[p],
@@ -177,8 +178,22 @@ def compute_alpha_risk_batched(
     total_mass is negligible.
 
     Returns `(alpha_mean, alpha_risk)`, each (P,) float64, same order as
-    `query_points`.
-    """
+    `query_points` -- unless `return_prior_variance=True`, in which case
+    returns `(alpha_mean, alpha_risk, prior_variance)`. `prior_variance`
+    (z0 -- the risk a fully-uninformed weight vector, i.e. all-zero `w`,
+    would score) is `sigma_rbf`-dependent in exactly the way `alpha_risk`
+    is: since `sigma_rbf` is refit per checkpoint (`fit_kernel_hyperparams`
+    is not shared across conditions with different splat counts/scenes),
+    raw `alpha_risk` is NOT comparable across such conditions -- confirmed
+    directly: on real chair checkpoints, raw mean risk went 0.35 (500
+    splats) -> 0.92 (10k splats, wrong direction despite better PSNR) ->
+    0.026 (wide), while z0 went 18.8 -> 94.1 -> 37 in lockstep (driven by
+    sigma_rbf 0.138 -> 0.083 -> 0.118, not by real coverage). The
+    normalized ratio `alpha_risk / prior_variance` is scale-robust to this
+    and behaves monotonically instead: 0.026 -> 0.012 -> 0.00075. Use this
+    ratio, not raw `alpha_risk`, whenever comparing across conditions that
+    don't share one fitted `sigma_rbf` (the angle sweep's shared-sigma
+    design sidesteps this; per-budget/per-scene sweeps don't)."""
     dtype = torch.float64
     query_points = np.atleast_2d(np.asarray(query_points, dtype=float))
     p_total = query_points.shape[0]
@@ -188,6 +203,8 @@ def compute_alpha_risk_batched(
         cov = torch.zeros((p_total, d, d), dtype=dtype, device=device)
         cov[:, torch.arange(d), torch.arange(d)] = 1e-12
         z0 = _zero_candidate_variance(cov, sigma_rbf, d)
+        if return_prior_variance:
+            return np.zeros(p_total, dtype=np.float64), z0, z0.copy()
         return np.zeros(p_total, dtype=np.float64), z0
 
     m = camera_index.indices.shape[0]
@@ -206,6 +223,7 @@ def compute_alpha_risk_batched(
 
     alpha_means = np.empty(p_total, dtype=np.float64)
     alpha_risks = np.empty(p_total, dtype=np.float64)
+    prior_variances = np.empty(p_total, dtype=np.float64)
     for start in range(0, p_total, chunk_size):
         end = min(start + chunk_size, p_total)
         positions, values, covariances, weights, valid = _gather_position_only_candidates_and_weights(
@@ -213,7 +231,9 @@ def compute_alpha_risk_batched(
             index_bearings, index_depths, index_positions, index_values, index_opacities, index_covariances,
         )
         query_points_t = torch.tensor(query_points[start:end], dtype=dtype, device=device)
-        alpha_means[start:end], alpha_risks[start:end] = _alpha_risk_chunk(
+        alpha_means[start:end], alpha_risks[start:end], prior_variances[start:end] = _alpha_risk_chunk(
             positions, values, covariances, weights, valid, query_points_t, sigma_rbf, rel_jitter, device, dtype,
         )
+    if return_prior_variance:
+        return alpha_means, alpha_risks, prior_variances
     return alpha_means, alpha_risks
