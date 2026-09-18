@@ -589,3 +589,79 @@ Abstract and Introduction still describe the RETIRED directional-kernel
 sparse-GP construction (last touched at commit `4bea5e7`, before sections
 0-10 of this file) and need a rewrite pass to match sections 1-4 before
 submission -- tracked as a new, high-priority ROADMAP item.
+
+## 12. Pre-registered evaluation protocol, and the OUGS verdict
+
+### 12.1 Why the protocol is frozen before the baselines exist
+
+`gs_experiment/evaluation.py` is committed BEFORE any comparative baseline is
+implemented, deliberately. Section 9 records that this project's headline
+per-pixel number moved from "0.27, modest, do not claim it" to "98% of
+attainable" purely because of how it was scored. A metric discovered to be
+wrong after the fact is recoverable; a metric *chosen* after the fact is not.
+With a comparison against the literature about to be run, every scoring
+decision has to predate seeing any baseline's numbers.
+
+The frozen decisions are listed in that module's docstring. The load-bearing
+ones: per-channel never RGB-averaged; object pixels as the headline with
+whole-frame reported only for comparability and never as calibration; rank
+metrics quoted as a FRACTION OF ATTAINABLE (and AUSE against its attainable
+floor); NLL only after a calibration fitted on disjoint views; the anchored
+variance model as default; every method compared against a constant-variance
+baseline; cost and retraining-requirement recorded beside every accuracy
+number; >=3 seeds for anything stochastic; both regimes and both capacities.
+
+One fairness bug was caught by the protocol's own tests before any baseline
+ran: `fit_variance_model` initialised every fit at `s = 1`, which gives a
+better-converged optimum to methods whose raw sigma already sits near the
+residual scale and penalises baselines reported in arbitrary units (coverage
+counts, Fisher traces). The initialisation is now scale-free by moments, and
+`test_calibration_fit_is_invariant_to_the_methods_raw_units` holds it across
+nine orders of magnitude. Had this been found after running the baselines it
+would have been indistinguishable from tuning.
+
+### 12.2 OUGS (`li2026ougs`, arXiv:2511.09397, December 2025)
+
+Read in full. It derives uncertainty from the explicit Gaussian parameters
+(position, scale, rotation, opacity, SH) as a DIAGONAL Fisher matrix
+accumulated by an exponential moving average of squared gradients DURING
+TRAINING, propagates it to pixels through the rendering Jacobian
+(`Sigma_C(u) = J_u (diag I + lambda I)^-1 J_u^T`), and multiplies by a SAM-2
+semantic mask for object-awareness. Evaluated on Mip-NeRF 360, Light-Field
+and Tanks&Temples against ActiveNeRF, FisherRF, Bayes' Rays and GauSS-MI.
+
+Three consequences for this project:
+
+- **It does not answer ROADMAP item 1, and it is not the same construction.**
+  OUGS is in-the-loop: its Fisher information only exists because it was
+  accumulated across training iterations. Ours is read off a frozen,
+  already-trained checkpoint. That distinction survives intact.
+- **It contains no calibration numbers at all.** Its Table 1 is entirely
+  downstream reconstruction quality (PSNR/SSIM/LPIPS at 5-30 views). There is
+  no correlation against held-out error, no NLL, no AUSE, no coverage. An
+  entire uncertainty paper with no measurement of whether the uncertainty is
+  right. Combined with `zhao2026posterior` -- who does measure it, and reports
+  collapse inside the object -- this says the open ground is calibration, not
+  view selection, and the comparative effort should lead there.
+- **Its motivating figure is section 9's silhouette finding from the other
+  direction.** OUGS Figure 1 argues a global uncertainty score "is often
+  dominated by complex but irrelevant background clutter" and misleads view
+  selection; they fix it with a semantic mask, we fix it by restricting to
+  object pixels. Independent convergence on the same hazard, worth citing as
+  such.
+
+It also creates one sharp, cheap experiment that neither paper can run alone.
+Section 7 found that adding geometry (opacity) to the posterior made
+CALIBRATION worse; OUGS includes all geometry parameters and wins at VIEW
+SELECTION. Those are not contradictory -- they are different questions -- and
+testing "does geometry help next-best-view even though it hurts calibration?"
+on a common harness is a genuinely novel comparison.
+
+### 12.3 Consequence for ROADMAP
+
+Next-best-view is DEMOTED from item 1. The field is crowded (ActiveNeRF,
+FisherRF, Bayes' Rays, GauSS-MI, OUGS, and `xue2026`), competing head-on
+means reimplementing four strong baselines on three datasets this project
+does not currently use, and the differentiator -- calibration -- is measurably
+unoccupied. The comparative effort leads with calibration against the
+post-hoc appearance-uncertainty cluster, on the frozen protocol above.
