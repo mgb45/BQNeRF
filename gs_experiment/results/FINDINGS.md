@@ -665,3 +665,96 @@ means reimplementing four strong baselines on three datasets this project
 does not currently use, and the differentiator -- calibration -- is measurably
 unoccupied. The comparative effort leads with calibration against the
 post-hoc appearance-uncertainty cluster, on the frozen protocol above.
+
+## 13. Comparative results: epistemic and aleatoric uncertainty are different quantities
+
+First run of the pre-registered protocol (section 12.1) against reimplemented
+competitors, on lego, identical checkpoints, identical held-out views, object
+pixels. `gs_experiment/baselines.py`, `scripts/run_comparison.py`.
+
+### Saturated regime -- `wide`, 100 training views, 30 held-out views
+
+| method | Spearman | AUSE | per-view Sp | NLL gain vs constant | cost |
+|---|---|---|---|---|---|
+| ours (SH posterior) | 0.264 | 0.458 | **0.644** | +0.069 | 9.1 s |
+| residual-supervised SH | **0.353** | **0.407** | -0.027 | **+0.147** | 103.5 s |
+| uniform-coverage SH | 0.085 | 0.617 | 0.537 | +0.004 | 8.5 s |
+| weight concentration | 0.010 | 0.708 | 0.564 | -0.027 | 0.3 s |
+| render gradient | 0.249 | 0.454 | 0.209 | +0.023 | 0.1 s |
+
+**We lose per-pixel here, and it goes in the paper as a loss.** The
+Galappaththige-style baseline is supervised on the very residual the
+evaluation scores, and it wins on per-pixel Spearman, AUSE and NLL, at 11x
+the cost. More awkward still, a 0.1 s render-gradient edge detector matches
+our AUSE (0.454 vs 0.458). On a checkpoint fit to 100 well-spread views,
+per-pixel error is largely edge misspecification, and a method that fits
+misspecification directly will win at predicting it.
+
+But it has **no per-view signal at all** (-0.027 against our 0.644).
+
+### Epistemic regime -- `gap_4`, 51 training views with a 75 deg hole
+
+| method | Spearman | AUSE | per-view Sp | NLL gain vs constant | cost |
+|---|---|---|---|---|---|
+| **ours (SH posterior)** | **0.750** | **0.117** | **0.973** | **+0.662** | 7.4 s |
+| residual-supervised SH | **-0.452** | 1.367 | **-0.923** | -0.048 | 44.9 s |
+| uniform-coverage SH | 0.536 | 0.250 | 0.961 | +0.214 | 7.5 s |
+| weight concentration | 0.243 | 0.494 | 0.951 | +0.026 | 0.3 s |
+| render gradient | 0.035 | 0.747 | -0.807 | -0.048 | 0.1 s |
+
+The table inverts, and not by a little. Ours reaches 97% of attainable
+per-pixel ranking and 0.973 per-view. The supervised baseline goes
+**ANTI-correlated at both levels** (-0.452 per-pixel, -0.923 per-view), and
+its calibration fit degenerates to the constant-variance solution (`s = 0.00`),
+i.e. the protocol independently concludes its sigma carries no usable
+information.
+
+The mechanism is not subtle. Fitted on 51 training views that by construction
+exclude the 75 deg cone, it learns "error lives at edges, in the regions I
+saw", and therefore predicts LOW uncertainty inside the gap, which is exactly
+where the error is largest. It is confidently wrong precisely where it
+matters. The render-gradient floor fails the same way (-0.807 per-view) for
+the same reason.
+
+### What this means
+
+**Per-pixel and per-view uncertainty are measuring different things, and no
+method tested does both.** A construction fitted to observed residuals learns
+an ALEATORIC map -- where error sits within a view -- and by construction
+cannot learn anything about directions the training views never covered. An
+epistemic posterior does the reverse. This is not a ranking of methods; it is
+a statement about what each quantity is for:
+
+- *"Where in this render should I not trust the pixels?"* on a well-observed
+  scene: a supervised aleatoric map wins, at 11x the cost.
+- *"Which view is unreliable? Where should I capture next? Has this scene
+  been covered?"*: only the epistemic posterior carries signal at all, and
+  the supervised map is actively harmful.
+
+Two secondary results worth keeping:
+
+- **The `beta^2` Fisher weighting earns its place.** Uniform-coverage --
+  our construction with every observation weighted equally instead of by its
+  real compositing weight -- drops from 0.264 to 0.085 in the saturated
+  regime and from 0.750 to 0.536 in the epistemic one. Plain angular coverage
+  is a decent epistemic signal but a clearly worse one, which answers the
+  Han-style mechanism question directly.
+- **The render-gradient floor matching our AUSE on `wide` is evidence FOR the
+  dissociation, not against the method.** A trivial edge detector matching a
+  posterior at per-pixel sparsification says the thing being predicted there
+  is edge misspecification. The same detector is anti-correlated the moment
+  real epistemic error exists.
+
+One consequence for how any of this can be used: **you cannot tell which
+regime you are in from the aleatoric side.** The supervised baseline scores
+well on `wide` and catastrophically on `gap_4` while reporting nothing that
+distinguishes the two. The epistemic posterior's own magnitude does
+distinguish them (FINDINGS section 8: per-view Spearman 0.61 -> 0.97 as the
+gap widens, mean std rising ~10x inside the hole).
+
+### Protocol note
+
+A display bug surfaced here and is fixed: "fraction of attainable" is now
+reported as `n/a` for an anti-correlated predictor. A negative fraction is a
+category error rather than a weak score -- such a method is worse than
+uninformative -- and the signed raw Spearman carries the verdict.

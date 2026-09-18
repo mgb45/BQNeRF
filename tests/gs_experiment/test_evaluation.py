@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from gs_experiment.evaluation import (
+    format_table,
     Prediction, ause, attainable, binned_calibration, compare, evaluate,
     fit_variance_model, gaussian_nll, object_mask, per_view_spearman, spearman,
 )
@@ -161,3 +162,20 @@ def test_calibration_fit_is_invariant_to_the_methods_raw_units():
         assert abs(r["nll_anchored"] - base["nll_anchored"]) < 0.02, (factor, r["nll_anchored"])
         assert abs(r["spearman"] - base["spearman"]) < 1e-9
         assert abs(r["calib_s"] * factor - base["calib_s"]) < 0.15 * base["calib_s"]
+
+
+def test_anticorrelated_predictor_has_no_fraction_of_attainable():
+    """A method that points at the WRONG pixels is not "weakly informative":
+    a negative fraction-of-attainable is a category error, so it is reported
+    as n/a and the signed raw spearman carries the verdict. This case is real
+    -- a residual-supervised baseline fitted on training views that exclude a
+    coverage gap scores -0.45 inside that gap."""
+    sigma_true = _sigma_field()
+    rng = np.random.default_rng(3)
+    view_id = np.repeat(np.arange(N_VIEWS), N_PER_VIEW)
+    flipped = Prediction(sigma=1.0 / sigma_true, residual=rng.normal(0.0, sigma_true),
+                         view_id=view_id, sigma_n=0.01, name="anti")
+    r = evaluate(flipped)
+    assert r["spearman"] < -0.2
+    assert not np.isfinite(r["spearman_frac_attainable"])
+    assert "n/a" in format_table([{**r, "per_view_spearman": per_view_spearman(flipped)}])

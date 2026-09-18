@@ -23,7 +23,15 @@ THE FROZEN DECISIONS
    OUGS both report the same hazard from opposite directions. Whole-frame is
    reported only for comparability with published numbers, always labelled.
 
-3. **Rank metrics are reported as a fraction of what is ATTAINABLE.** With a
+3. **Rank metrics are reported as a fraction of what is ATTAINABLE.** This
+   fraction is a WITHIN-METHOD diagnostic, not a cross-method ranking: each
+   method's ceiling is computed from its OWN sigma distribution, and a method
+   whose sigma happens to spread over more orders of magnitude gets a higher
+   ceiling. Reading "50% vs 32%" as "this method is better" is a mistake --
+   it says the second method's sigma is further from what its own spread
+   could support. Rank methods against each other on RAW spearman, AUSE and
+   NLL gain; use the fraction to ask whether a given method is leaving
+   information on the table. With a
    perfectly calibrated sigma the observable is still one draw,
    `|eps| = sigma|z|`, `z ~ N(0,1)`; `Var(log|z|) = pi^2/8 ~ 1.23` destroys
    rank information on its own. The ceiling is estimated by simulating
@@ -230,7 +238,11 @@ def evaluate(pred: Prediction, seed: int = 0) -> dict:
         "spearman": sp,
         "spearman_ceiling": sp_ceil,
         "spearman_ceiling_sd": sp_sd,
-        "spearman_frac_attainable": sp / sp_ceil if sp_ceil else float("nan"),
+        # Undefined for an anti-correlated predictor: a negative "fraction of
+        # attainable" is not a weak score, it is a category error. Such a
+        # method is worse than uninformative and should be read off raw
+        # spearman, which is signed.
+        "spearman_frac_attainable": (sp / sp_ceil if (sp_ceil and sp > 0) else float("nan")),
         "ause": au,
         "ause_floor": au_floor,
         "ause_floor_sd": au_sd,
@@ -272,11 +284,14 @@ def compare(preds: list[Prediction], seed: int = 0) -> list[dict]:
 def format_table(rows: list[dict]) -> str:
     head = (f"{'method':<24}{'sp':>7}{'ceil':>7}{'%att':>7}{'AUSE':>8}{'floor':>8}"
             f"{'pvSp':>7}{'NLL':>9}{'vsConst':>9}{'s':>7}{'c':>7}{'secs':>8}{'retrain':>9}")
-    lines = [head, "-" * len(head)]
+    lines = ["rank methods on sp / AUSE / vsConst; %att is a within-method diagnostic "
+             "(each ceiling uses that method's own sigma spread)", head, "-" * len(head)]
     for r in rows:
+        frac = r["spearman_frac_attainable"]
+        frac_txt = f"{100 * frac:.0f}%" if np.isfinite(frac) else "n/a"
         lines.append(
-            f"{r['name']:<24}{r['spearman']:>7.3f}{r['spearman_ceiling']:>7.3f}"
-            f"{100 * r['spearman_frac_attainable']:>6.0f}%{r['ause']:>8.3f}{r['ause_floor']:>8.3f}"
+            f"{r['name']:<24}{r['spearman']:>7.3f}{r['spearman_ceiling']:>7.3f}{frac_txt:>7}"
+            f"{r['ause']:>8.3f}{r['ause_floor']:>8.3f}"
             f"{r['per_view_spearman']:>7.3f}{r['nll_anchored']:>9.3f}"
             f"{r['gain_over_constant']:>+9.3f}{r['calib_s']:>7.2f}{r['calib_c']:>7.2f}"
             f"{r['seconds']:>8.1f}{'yes' if r['requires_retraining'] else 'no':>9}")
