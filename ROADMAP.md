@@ -28,20 +28,82 @@ resolution, brace and environment balance, figure paths) -- compile it with
 before submission, since six new tables/figures were added. Do this before
 any submission.
 
-## 1. Next-best-view selection
+## 1. Comparative baselines, calibration-led
 
-Read `arXiv:2511.09397` (OUGS: object-aware active view selection in 3DGS via
-Gaussian-parameter-covariance-to-Fisher-information) before starting --
-noted in FINDINGS section 11 as active competition for exactly this
-direction, and it may already answer the question below.
+The evaluation protocol is pre-registered and frozen in
+`gs_experiment/evaluation.py` (FINDINGS section 12.1) -- committed before any
+baseline exists, and every method scored by it and no other. Lead with
+calibration: OUGS reports no calibration numbers at all and
+`zhao2026posterior` reports variance collapse inside the object, so that is
+the unoccupied ground (FINDINGS section 12.2).
 
-Now the best-supported next step. Per-VIEW uncertainty tracks per-view
-held-out error at Spearman 0.97 in the epistemic regime and 0.61 even on a
-fully-observed checkpoint (FINDINGS section 8) -- and a per-view aggregate
-is exactly what NBV consumes. Aggregate per-pixel uncertainty over each
-candidate view, pick the next training view with it, and check whether
-held-out error drops faster than a random/round-robin schedule. There is an
-`nbv_out/` from an earlier attempt to build on.
+Reimplemented in our own harness, on IDENTICAL checkpoints:
+
+- **Galappaththige-style** (`galappaththige2026predictive`) -- frozen map, per-
+  splat SH channel fit by regularised linear least squares against real
+  photometric residuals. The hard test: it is supervised on the very error
+  we are scored against, so it *should* win, and the linear-LS normal
+  equations are solvable with the CG/matvec operator already in
+  `coupled_sh_posterior.py`. Implement it in its strongest form; losing to a
+  strong implementation is worth more than beating a strawman.
+- **FisherRF-style** (`jiang2024`) -- per-primitive diagonal Fisher over ALL
+  Gaussian parameters, via the same Rademacher-probe backward. Tests directly
+  whether restricting the posterior to appearance is a win or a loss.
+- **Han-style coverage field** (`han2025viewdependent`) -- tests whether the
+  Fisher weighting beats a hand-designed angular-coverage weighting.
+- **Deep ensemble** -- N independent trainings, per-pixel variance. Not in the
+  bibliography but universal, and `zhao2026posterior` benchmarks against it.
+  At the calibrated recipe (below) this is ~1 h for 5 members x 7 scenes.
+- **Model-free floors** -- angular coverage count, nearest-training-view angle,
+  render gradient magnitude. The "is any of this needed" bar.
+
+Published-numbers-only, stated as such: `jia2026rendering` and
+`wu2026horseshoe` are in-the-loop methods whose fair reimplementation means
+adopting their whole training recipe; `zhao2026posterior` and
+`wu2026perturbed` are X-ray modality. Cite, do not reimplement badly.
+
+Scenes: 7 NeRF-Synthetic plus **bonsai** (`bonsai_prepared/gap_0`, a real
+Mip-NeRF 360 capture, 262 training views + 30-view eval, checkpoint already
+trained). Every number this project has is synthetic; one real capture is
+needed for external validity, and Mip-NeRF 360 overlaps OUGS's own dataset.
+
+Training recipe for any arm needing retraining: the project's own
+`DEFAULT_TRAIN_KWARGS` with `n_iters=6000, max_splats=100000,
+densify_end=3000` -- 28.4 dB held-out at 30 lego views in 80 s. Drive
+training through the Python API, NEVER the CLI: the CLI defaults to
+`background_color=(0.05,0.05,0.05)` with no flag to change it, so a
+CLI-trained checkpoint is fit against dark grey and then scored against
+white-composited ground truth, costing ~17 dB of held-out PSNR (11.6 dB
+against 28.4 dB for an identical budget). `run_next_best_view.py` now
+asserts the two backgrounds match.
+
+Capacity is a FACTOR, not a confound: run the post-hoc arms at both this
+recipe and the 300k-splat `wide` checkpoints. If conclusions agree that is
+robustness; if they differ that is a finding. Re-running the section 9-10
+calibration at the smaller capacity is then a second transfer axis (does
+(s, c) transfer across capacity as well as across scene?), not a chore.
+
+## 2. Next-best-view selection (demoted)
+
+Demoted from item 1 -- see FINDINGS section 12.2/12.3. The field is crowded
+(ActiveNeRF, FisherRF, Bayes' Rays, GauSS-MI, OUGS, `xue2026`), competing
+head-on means reimplementing four strong baselines on three datasets this
+project does not use, and none of them measures calibration.
+
+What remains genuinely novel here is one sharp question neither paper can
+answer alone: section 7 found that adding geometry (opacity) to the posterior
+made CALIBRATION worse, while OUGS includes all geometry parameters and wins
+at VIEW SELECTION. Those are different questions, not a contradiction. Run
+both uncertainties through the same acquisition loop on a common harness and
+find out whether geometry helps view selection even where it hurts
+calibration.
+
+Per-VIEW uncertainty tracks per-view held-out error at Spearman 0.97 in the
+epistemic regime and 0.61 on a fully-observed checkpoint (FINDINGS section
+8), and a per-view aggregate is exactly what NBV consumes, so the signal is
+there. Baselines: farthest-point (model-free, and the honest bar -- random
+alone would flatter any method) and FisherRF-style acquisition. >=3 seeds:
+a discarded run had a random arm go 11.56 -> 10.84 -> 10.90 dB.
 
 ## 2. `mic`, and the limits of a scalar `c`
 
