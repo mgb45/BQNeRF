@@ -342,28 +342,51 @@ for every query $q$, exactly. This is the property Section~\ref
 {sec:retired-directional-kernel}'s construction never delivers once
 direction is involved, because it \emph{solves} for a mean instead of
 anchoring one directly: there, $\mathbf w^\ast$ is the solution of a linear
-system that direction perturbs away from $w_{q,i}$. Here the mean is never
-solved for. It is fixed at the trained checkpoint by construction, and only
-the spread around it is estimated, so uncertainty is strictly post hoc --
-a property added on top of a render that Eq.~\eqref{eq:mean-preservation}
-leaves untouched -- and cannot corrupt the reconstruction, whatever
-covariance is placed on $\theta$.
+system that direction perturbs away from $w_{q,i}$.
 
-\subsection{A closed-form posterior from the renderer's own weights}
+Anchoring the mean directly, rather than solving for it, is a
+Bayes--Sard construction \cite{karvonen2018bayes}: instead of reporting
+whatever mean a Gaussian-process posterior over $\theta$ would itself
+imply after conditioning on training pixels, pin the posterior mean to an
+already-good parametric fit -- here, the coefficients photometric training
+found -- and let a Gaussian-process-style covariance (Section~\ref
+{sec:posterior}) describe the spread around it. Bayes--Sard cubature was
+introduced for exactly this reason: a from-scratch Bayesian-quadrature
+posterior mean can be a worse point estimate than a classical rule already
+known to be good, so the classical rule's output is kept as the mean and
+the Gaussian process is left to supply only the uncertainty. Here the
+``classical rule'' being protected is alpha compositing at the trained
+checkpoint, and Eq.~\eqref{eq:mean-preservation} is why protecting it costs
+nothing: because the read-out is linear, any distribution over $\theta$
+centred at $\hat\theta$ renders to exactly $C_\alpha(q)$, so this can be
+checked directly from linearity alone without appealing to Bayes--Sard's
+general machinery. What that framing buys instead is Section~\ref
+{sec:posterior}: it says the covariance placed around $\hat\theta$ is not
+an ad hoc add-on, but the genuine Bayesian-quadrature posterior covariance
+of a real probabilistic model, with only its mean overridden. Uncertainty
+is therefore strictly post hoc -- a property added on top of a render that
+Eq.~\eqref{eq:mean-preservation} leaves untouched -- and cannot corrupt the
+reconstruction, whatever covariance is placed on $\theta$.
+
+\subsection{An exact posterior covariance from the renderer's own weights}
 \label{sec:posterior}
 
-We place a Gaussian prior on each splat's coefficients,
-$\theta_i\sim\mathcal N(0,\Lambda^{-1})$, and treat $\hat\theta_i$ as the
-MAP point a Laplace approximation is built around --- in the spirit of
-Bayes' Rays \cite{goli2024}, but for the appearance coefficients of a
-frozen splat map rather than a deformation field, and without retraining
-to reach that MAP point: it is simply what photometric training already
-found. The approximate posterior covariance is the inverse curvature of
-the negative log-posterior at $\hat\theta_i$ --- a Gauss--Newton/Fisher
-approximation built from the renderer's own Jacobian
-$\partial C_\alpha(q)/\partial\theta_i=\beta_{q,i}\phi(d_q)^\top$
-(Eq.~\eqref{eq:renderer-readout}) and a homoscedastic observation-noise
-variance $\sigma_n^2$:
+Splat colour is exactly linear in $\theta_i$ (Eq.~\eqref{eq:renderer-readout}),
+so a Gaussian prior $\theta_i\sim\mathcal N(0,\Lambda^{-1})$ is, by the
+standard weight-space/function-space duality \cite{rasmussen2006gaussian},
+exactly a Gaussian-process prior on splat $i$'s own colour function
+$c_i(\cdot)$ with the degenerate, rank-$B$ kernel
+$k_i(d,d')=\phi(d)^\top\Lambda^{-1}\phi(d')$ -- a direct instance of the
+$f\sim\mathcal{GP}(0,k)$ prior in Section~\ref{sec:rendering-with-splats},
+just with a finite-dimensional, per-splat kernel in place of a joint
+position--direction one over the whole scene. Treating each training pixel
+splat $i$ contributes to as a noisy linear observation of $\theta_i$, with
+a shared observation variance $\sigma_n^2$ (fit from the real training
+residual, Section~\ref{sec:kernel-choice}), turns conditioning
+(Eq.~\eqref{eq:bq-posterior}) into the finite-dimensional Bayesian-linear-
+regression update -- \emph{exactly}, given that per-splat noise model, with
+no linearization of a nonlinear model the way a Laplace approximation
+(e.g.\ Bayes' Rays' deformation field \cite{goli2024}) would need:
 \begin{equation}
     P_i = \Lambda + \frac{1}{\sigma_n^2}\,D_i,
     \qquad
@@ -372,28 +395,38 @@ variance $\sigma_n^2$:
     \label{eq:sh-precision}
 \end{equation}
 \begin{equation}
-    \theta_i \mid \mathcal D \;\approx\; \mathcal N\big(\hat\theta_i,\,
+    \theta_i \mid \mathcal D \;\sim\; \mathcal N\big(\hat\theta_i,\,
     \Sigma_{\theta_i}\big), \qquad \Sigma_{\theta_i} = P_i^{-1},
     \label{eq:posterior}
 \end{equation}
 where $\mathcal D_i$ is the set of real training cameras splat $i$
-plausibly observed and $\beta_{q,i,p}$ is its real compositing weight at
-pixel $q$ of training image $p$. Crucially, $\sum_q\beta_{q,i,p}^2$ sums
-over \emph{every} pixel the splat's real footprint touches in that
-training image, not just the pixel its projected centre lands on: a
-training observation constrains a splat through its whole footprint, and a
-splat covering 400 pixels carries far more information per observation
-than one covering one pixel. An earlier surrogate that sampled $\beta$ only
-at the projected centre, from a fixed-radius candidate ball treated as a
-binary occluder mask, understated this quantity by a median factor of
-$2.1\times10^{18}$ on a real 300{,}000-splat checkpoint --- numerically
-zero --- which made every posterior in that surrogate collapse exactly onto
-its prior. $\Sigma_{\theta_i}$ depends only on which directions splat $i$
-was observed from and how strongly each observation weighted it, never on
-the observed \emph{colours}: it is a Fisher-information/coverage
-statistic. A splat seen from many angularly diverse, strongly-weighted
-directions has small $\Sigma_{\theta_i}$ everywhere; one seen from a narrow
-cone, or only ever weakly, stays uncertain away from that cone.
+plausibly observed, $\beta_{q,i,p}$ is its real compositing weight at pixel
+$q$ of training image $p$, and the mean is overridden per
+Section~\ref{sec:renderer-consistency}'s Bayes--Sard move rather than
+solved from these observations. $D_i$ plays exactly the role the Gram
+matrix and moment vector jointly play in Eq.~\eqref{eq:bq-posterior}, and
+$\Sigma_{\theta_i}$ inherits the classical Bayesian-quadrature variance's
+defining property (Eq.~\eqref{eq:variance}): it depends only on where and
+how strongly splat $i$ was observed, never on the observed \emph{colours}
+-- a Fisher-information/coverage statistic, exactly, not an approximation
+to one. (The one place approximation does enter is treating splats as
+independent rather than solving the full joint linear system across all
+splats at once, taken up directly in Section~\ref{sec:ensemble} and
+Section~\ref{sec:experiments}.)
+
+Crucially, $\sum_q\beta_{q,i,p}^2$ sums over \emph{every} pixel the splat's
+real footprint touches in that training image, not just the pixel its
+projected centre lands on: a training observation constrains a splat
+through its whole footprint, and a splat covering 400 pixels carries far
+more information per observation than one covering one pixel. An earlier
+surrogate that sampled $\beta$ only at the projected centre, from a
+fixed-radius candidate ball treated as a binary occluder mask, understated
+this quantity by a median factor of $2.1\times10^{18}$ on a real
+300{,}000-splat checkpoint --- numerically zero --- which made every
+posterior in that surrogate collapse exactly onto its prior. A splat seen
+from many angularly diverse, strongly-weighted directions has small
+$\Sigma_{\theta_i}$ everywhere; one seen from a narrow cone, or only ever
+weakly, stays uncertain away from that cone.
 
 \subsection{Computing $D_i$ from the rasterizer itself}
 \label{sec:rademacher}
@@ -445,8 +478,11 @@ We also tried extending this posterior beyond appearance: sampling the
 \emph{joint} posterior over every splat's coefficients without the
 block-diagonal independence assumption (matrix-free, via the same
 backward-pass matvec trick, solved by preconditioned CG), and adding
-opacity as a second, geometric term under the same Laplace construction.
-Both are implemented and validated but did not improve calibration on real
+opacity as a second, geometric term. Opacity enters the render through a
+nonlinear (logit) link, unlike the exactly linear appearance read-out of
+Section~\ref{sec:posterior}, so that term is a genuine Gauss--Newton/
+Laplace approximation, not an exact posterior. Both extensions are
+implemented and validated but did not improve calibration on real
 checkpoints (Section~\ref{sec:experiments}); the appearance-only,
 block-diagonal posterior above is the one used throughout.
 
@@ -707,7 +743,7 @@ held-out error slightly \emph{worse}: overlapping splats are jointly
 non-identifiable and anti-correlated along a ray, so coupling widens each
 splat's own marginal uncertainty while the rendered sum --- what is
 actually scored --- is already well determined by the block-diagonal
-approximation. \textbf{Putting opacity into the same Laplace construction}
+approximation. \textbf{Putting opacity into its own Laplace approximation}
 (mean over three held-out lego views, object pixels) drops Spearman from
 0.265 (appearance only) to 0.170 (opacity only) to 0.152 (both), because
 occluded splats accumulate posterior std equal to the prior --- entirely
