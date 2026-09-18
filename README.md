@@ -66,11 +66,22 @@ correction.
   0.0057 -> 0.0100 -> 0.0373 -> 0.0430 with no retraining confound at all
   (`gs_experiment/results/posterior_view_sweep.png`).
 - **Cost**: 8 draws = 323 ms of renders on a 21.5 ms render.
-- **Not yet shown**: calibration against real held-out error. Object-pixel
-  Spearman is currently 0.28, which is weak -- see FINDINGS section 5 and
-  [`ROADMAP.md`](ROADMAP.md). Whole-frame correlations on NeRF-Synthetic are
-  ~0.95 but that is the silhouette, not calibration, and is not quoted as
-  such anywhere here.
+- **Per-VIEW calibration is excellent where the error is epistemic.** On
+  checkpoints trained with a deliberate angular hole in their training
+  views, per-view predicted uncertainty tracks per-view held-out error at
+  Spearman **0.97** (75 deg hole), 0.82 (30 deg), 0.61 (no hole) -- the
+  signal gets better precisely as the error becomes more epistemic, which is
+  what a posterior over fitted parameters should do
+  (`gs_experiment/results/epistemic_regime.png`).
+- **Per-pixel calibration is modest (Spearman 0.25-0.31) and is not
+  claimed.** Pixel-level error is dominated by high-frequency
+  misspecification in every regime tested. Whole-frame correlations on
+  NeRF-Synthetic run ~0.95 but that is the object/background silhouette, not
+  calibration, and is not quoted as such anywhere here.
+- **Two richer posteriors were tried and made it worse**: cross-splat
+  coupling (1000x cost, slightly worse correlation) and
+  opacity-in-the-posterior (2x cost, worse). Both are implemented,
+  validated, and recorded as negative results in FINDINGS sections 6-7.
 
 ## Repo layout
 

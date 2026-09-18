@@ -242,3 +242,81 @@ block diagonal is not costing calibration here.
 So the weak object-pixel correlation (section 5) remains unexplained, and
 the leading suspect is now the one listed there third rather than second:
 geometry is not in the posterior at all.
+
+## 7. Geometry in the posterior: also a negative result
+
+`gs_experiment/rasterized_opacity_precision.py` puts opacity into the
+posterior, in logit space (`o_i = sigmoid(u_i)`, so a Gaussian posterior on
+`u` can never leave `(0, 1)`), with the same empirical-Bayes prior rule
+(`lambda_u = 1/Var_i[logit(o_i)]`) and the same probe construction:
+`dC_c(q)/du_i` is what gsplat's backward returns when opacity is a leaf
+requiring grad, so Rademacher probes give `F_i = sum_{q,c}(dC_c/du_i)^2` in
+a few backward passes per camera (7.4 s for lego `wide`).
+
+Mean over three real held-out lego views, object pixels only:
+
+| conditioning | Spearman vs error | AUSE |
+|---|---|---|
+| SH only | **0.265** | **0.358** |
+| opacity only | 0.170 | 0.365 |
+| SH + opacity | 0.152 | 0.393 |
+
+Adding geometry makes per-pixel calibration WORSE. The likely mechanism is
+visible in the fit: 10%+ of splats have posterior std on logit-opacity equal
+to the prior (4.73), i.e. they are entirely unconstrained -- because they are
+occluded and do not affect the render. Perturbing those by +-4.7 in logit
+space is far outside the regime the linearization was derived in, and can
+turn a buried splat into a visible occluder, an effect the Fisher
+information cannot see. So this is not evidence that geometry is irrelevant;
+it is evidence that a Laplace approximation is the wrong tool for a
+parameter whose posterior is this wide.
+
+## 8. What the signal is actually for (the positive result)
+
+Sections 6 and 7 both made calibration worse, which points at the premise
+rather than the model. A posterior over splat parameters measures
+**epistemic** uncertainty -- what the training views failed to determine. On
+a 300k-splat checkpoint fit to 100 well-spread views, held-out error is
+mostly NOT epistemic: it is misspecification and resolution limits (thin
+geometry, edge aliasing), which no posterior over the fitted parameters can
+see, because the data really does pin those parameters down. A weak
+correlation there is the correct behaviour, not a failure.
+
+`gs_experiment/scripts/render_epistemic_regime.py` tests that directly on
+the `gap_*` checkpoints, each trained with a deliberate angular hole in its
+training views, each posterior conditioned on its own real training cameras,
+every one of the 30 held-out eval views scored:
+
+| checkpoint | gap half-width | training views | per-VIEW Spearman (mean uncertainty vs mean error, 30 views) |
+|---|---|---|---|
+| gap_0 | 0 deg | 100 | 0.613 |
+| gap_2 | 30 deg | 89 | 0.817 |
+| gap_4 | 75 deg | 51 | **0.973** |
+
+The uncertainty tracks held-out error better and better as the error becomes
+more epistemic. At gap_4, view-level calibration is essentially perfect. And
+inside vs. outside the hole on that checkpoint:
+
+| | n | mean error | mean predicted std | per-pixel Spearman | AUSE |
+|---|---|---|---|---|---|
+| inside gap | 18 | 0.2012 | 0.0415 | 0.314 | 0.278 |
+| outside gap | 12 | 0.0141 | 0.0042 | 0.254 | 0.389 |
+
+Both error and predicted uncertainty are ~10x higher inside the hole, and
+per-pixel ranking and AUSE also improve there. The error/std ratio is 4.85
+inside against 3.35 outside -- the signal is underconfident by a roughly
+constant factor, which is a calibration-SCALE issue, not a ranking failure,
+and is the thing a fitted scale would fix.
+
+`gs_experiment/results/epistemic_regime.png` shows this as a scatter of
+per-view predicted std against per-view error, one panel per gap width: an
+uninformative blob at gap_0 becoming a near-perfect line at gap_4.
+
+Two consequences worth stating plainly:
+
+- **Per-pixel calibration is modest everywhere (Spearman 0.25-0.31) and
+  should not be claimed.** Pixel-level error is dominated by high-frequency
+  misspecification in every regime tested.
+- **Per-view calibration is excellent where it matters (0.97).** That is
+  exactly the aggregate next-best-view selection consumes, so NBV now rests
+  on a signal measured to track real error, not an assumed one.

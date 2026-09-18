@@ -4,54 +4,62 @@ Forward experiment plan. See [`README.md`](README.md) for the claim and
 [`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md) for
 what has been shown and what has been retracted. Ordered by priority.
 
-## 1. Geometry in the posterior
+## 1. Next-best-view selection
 
-Positions, scales and opacities are held fixed; only appearance is sampled.
-An error of geometric origin -- a floater in the wrong place with a
-confidently-fit colour -- need not light up. This is now the leading suspect
-for the weak object-pixel error correlation (FINDINGS section 5), since
-cross-splat coupling has been implemented, validated and found NOT to
-explain it (FINDINGS section 6).
+Now the best-supported next step. Per-VIEW uncertainty tracks per-view
+held-out error at Spearman 0.97 in the epistemic regime and 0.61 even on a
+fully-observed checkpoint (FINDINGS section 8) -- and a per-view aggregate
+is exactly what NBV consumes. Aggregate per-pixel uncertainty over each
+candidate view, pick the next training view with it, and check whether
+held-out error drops faster than a random/round-robin schedule. There is an
+`nbv_out/` from an earlier attempt to build on.
 
-Opacity is the cheapest extension and the one most likely to buy the floater
-story: it enters the render with a computable derivative, and sampling it
-costs nothing extra at render time (a draw is still one render).
+## 2. Fit the calibration scale
 
-## 2. Calibration against real held-out error
+The signal ranks views almost perfectly but is underconfident by a roughly
+constant factor (error/std 4.85 inside the gap, 3.35 outside; FINDINGS
+section 8). That is a one-parameter fix, not a modelling one: fit a scalar
+scale on held-out views and report Gaussian NLL before and after. Report
+AUSE alongside, always restricted to object pixels -- whole-frame
+correlations on NeRF-Synthetic are dominated by the object/background split
+and report the silhouette, not calibration.
 
-Report AUSE (rank-based, robust to any residual scale error) alongside
-Gaussian NLL (not robust, and therefore the real test of whether
-`sigma_n^2` and `Lambda` are right). **Always restricted to object pixels** --
-whole-frame correlations on NeRF-Synthetic are dominated by the
-object/background split and report the silhouette, not calibration. Use the
-block-diagonal posterior: coupling costs 1000x and does not improve the
-correlation (FINDINGS section 6).
+Do NOT reach for a richer posterior first. Cross-splat coupling (FINDINGS
+section 6) and opacity-in-the-posterior (section 7) have both been
+implemented, validated and measured: both made calibration worse, at 1000x
+and 2x the cost respectively.
 
-## 3. The angular-gap figure
+## 3. The angular-gap figure (partly done)
 
-"The view nobody trained on": remove training cameras within a growing
-angular cone around one direction and show uncertainty rising specifically
-there. Do this **frozen-map** (nested camera removal from one checkpoint,
-as `render_posterior_view_sweep.py` does for view count), not by comparing
-the independently-trained `gap_0..gap_4` checkpoints -- those confound the
-effect with splat count, positions, opacities, learned coefficients and the
-query-side weights all moving at once.
+"The view nobody trained on". The measurement exists already
+(`render_epistemic_regime.py`, FINDINGS section 8); what is missing is the
+*figure*: a row of renders at increasing gap width with the uncertainty map
+beneath, and a small inset of the camera sphere with the hole growing, so
+the point lands without reading.
+
+Which experiment to use depends on what is being claimed, and the two are
+not interchangeable:
+
+- **Claims about the uncertainty's own behaviour** (does it rise when you
+  condition on less?) must be **frozen-map** -- nested camera removal from
+  ONE checkpoint, as `render_posterior_view_sweep.py` does for view count.
+  Comparing independently-trained checkpoints would confound the effect with
+  splat count, positions, opacities, learned coefficients and the query-side
+  weights all moving at once.
+- **Claims about calibration against real error** must use **retrained**
+  checkpoints (`gap_0..gap_4`). On a frozen map the reconstruction error does
+  not change when you condition the posterior on fewer cameras -- the map was
+  still fit to all of them -- so there is no epistemic error to predict and
+  the question cannot be asked. This is why FINDINGS section 8 uses the
+  retrained gap checkpoints deliberately, and it is not a lapse from the
+  frozen-map discipline.
 
 Worth keeping as a correctness check in its own right: nested camera removal
 can only ever drop positive-semi-definite terms from `D_i`, so posterior
-variance must be non-decreasing as the conditioning set shrinks. A violation
-is unambiguous evidence of an implementation bug, independent of retraining,
-kernel choice or function-class limitations.
+variance must be non-decreasing as the conditioning set shrinks
+(`scripts/frozen_map_monotonicity_test.py`; passes on all 300k splats).
 
-## 4. Next-best-view selection
-
-Aggregate per-pixel uncertainty per candidate view and pick the next
-training view with it; check whether held-out error drops faster than a
-random/round-robin schedule. This is the "so what" -- it converts the work
-from a diagnostic into a tool. Depends on 2: a signal not yet shown to
-correlate with real error is a weak basis for choosing views.
-
-## 5. `u_spatial_BQ`, the finite-representation term
+## 4. `u_spatial_BQ`, the finite-representation term
 
 `gpu_uncertainty.compute_alpha_risk_batched` -- the real alpha weights' RKHS
 worst-case risk under a position-only kernel -- is unaffected by the
