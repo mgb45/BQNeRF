@@ -395,3 +395,63 @@ That is the correct behaviour of an epistemic posterior, not a deficiency of
 it -- on a checkpoint fit to 100 well-spread views there is little epistemic
 uncertainty left to report, and the residual error is misspecification which
 neither the posterior nor the render-derived features above can predict.
+
+## 10. Does the calibration transfer across scenes? Only when anchored
+
+ROADMAP item 2 asked whether the two calibration constants from section 9
+are properties of the construction or of each scene.
+`gs_experiment/scripts/analyse_calibration_transfer.py` settles it over all
+7 NeRF-Synthetic scenes (`wide` checkpoints, 30 eval views each, fitted on
+half and scored on the other half), by leave-one-scene-out: fit on six
+scenes, score the seventh.
+
+The two constants behave completely differently:
+
+| scene | fitted `s` | fitted `sigma_0` | scene's own training `sigma_n` | `sigma_0/sigma_n` |
+|---|---|---|---|---|
+| chair | 3.73 | 0.0110 | 0.0078 | 1.41 |
+| drums | 5.78 | 0.0516 | 0.0244 | 2.11 |
+| ficus | 4.08 | 0.0330 | 0.0114 | 2.89 |
+| hotdog | 5.29 | 0.0053 | 0.0065 | 0.81 |
+| lego | 5.58 | 0.0191 | 0.0129 | 1.48 |
+| mic | 4.97 | 0.0368 | 0.0129 | 2.86 |
+| ship | 5.38 | 0.0102 | 0.0125 | 0.82 |
+
+**`s` is nearly a constant** -- mean 4.97, sd 0.72, max/min 1.55. The
+posterior is underconfident by a factor of about 5 regardless of scene,
+which supports reading it as a property of the construction (the
+block-diagonal approximation, the frozen geometry, and a `sigma_n` fitted on
+training rather than held-out residuals all push the same way).
+
+**`sigma_0` is not** -- max/min 9.8, from 0.0053 (hotdog, smooth and
+well-resolved) to 0.0516 (drums, fine mesh and specularity). That is exactly
+what it should do: `sigma_0` is the scene's own irreducible misspecification
+level, and scenes differ in how hard they are.
+
+So transferring both constants fails, and fails in the informative way:
+
+| | mean held-out NLL | vs constant variance | short of a per-scene fit |
+|---|---|---|---|
+| constant variance | -1.5354 | -- | -- |
+| transfer both constants | -1.5010 | **-0.034 (worse)** | +0.179 |
+| **anchor `sigma_0` to the scene's own `sigma_n`** | **-1.6314** | **+0.096** | **+0.049** |
+| per-scene fit (the target) | -1.6800 | +0.145 | -- |
+
+Anchoring means fitting `sigma_total^2 = s^2 sigma_pred^2 + (c sigma_n)^2`,
+where `sigma_n` is the RMS residual on the scene's OWN TRAINING images --
+already computed by `estimate_noise_variance`, needing no held-out views at
+all -- so the only things transferred are two dimensionless numbers
+(`s ~ 5.0`, `c ~ 1.8`). Dividing by `sigma_n` cuts the across-scene spread
+of the floor from 9.8x to 3.6x.
+
+That recovers **66% of the available calibration gain with no held-out views
+whatsoever**, i.e. calibrated out of the box. It rescues the case that broke
+naive transfer outright (drums: -0.121 -> -0.794 against a -0.853 target)
+and on two scenes it actually BEATS the per-scene fit (hotdog -2.350 vs
+-2.300, lego -1.880 vs -1.863), because pooling across six scenes
+regularizes constants that a 15-view per-scene fit overfits.
+
+The remaining outlier is `mic` (-0.925 anchored against -1.228 own fit),
+whose `sigma_0/sigma_n` of 2.86 is well above the mean 1.77 -- a largely
+specular object, where held-out error is much worse than training residuals
+imply and a single scalar `c` cannot know it.

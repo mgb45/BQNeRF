@@ -14,21 +14,22 @@ candidate view, pick the next training view with it, and check whether
 held-out error drops faster than a random/round-robin schedule. There is an
 `nbv_out/` from an earlier attempt to build on.
 
-## 2. Does the calibration transfer?
+## 2. `mic`, and the limits of a scalar `c`
 
-The two calibration constants (`s ~ 5.5-6.4`, `sigma_0 ~ 0.018-0.043`) are
-currently fitted per checkpoint on held-out views (FINDINGS section 9). They
-came out close on two very different lego checkpoints, which hints they may
-transfer -- but that is not established, and it is the difference between
-"calibrated with a validation split" and "calibrated out of the box". Fit on
-one scene, score on the other six; if `s` is stable, report it as a constant
-of the construction rather than a fitted parameter.
+Item 2 as originally posed is answered (FINDINGS section 10): `s` transfers,
+`sigma_0` does not, and anchoring the floor to each scene's own training
+residual recovers 66% of the calibration gain with no held-out views.
 
-Do NOT reach for a richer posterior. Three have now been implemented,
-validated and measured, and all three cost more and calibrate worse:
-cross-splat coupling (section 6, 1000x), opacity in the posterior (section
-7, 2x), and a render-derived spatially-varying aleatoric floor (section 9,
-free but no gain).
+What is left is the one scene where that fails. `mic` has
+`sigma_0/sigma_n = 2.86` against a mean of 1.77 -- a largely specular object,
+where held-out error is much worse than the training residual implies,
+because view-dependent appearance is exactly what a training residual cannot
+see. `ficus` (2.89) is the same story with fine thin structure. A single
+scalar `c` cannot know this; a cheap per-scene statistic that CAN might
+(e.g. the fitted SH energy in the higher bands, or the spread of training
+residuals across views rather than pooled over them). Worth one experiment
+before concluding that a validation split is genuinely required for
+specular scenes.
 
 ## 3. The angular-gap figure (partly done)
 

@@ -63,10 +63,11 @@ N_CEILING_SIMS = 16
 RNG = np.random.default_rng(0)
 
 
-def collect(ckpt_name, eval_name, view_idxs):
+def collect(prepared, ckpt_name, eval_name, view_idxs, n_draws=None):
     """Per-channel predicted sigma and signed residual on object pixels,
     pooled over the chosen held-out views of one checkpoint."""
-    ckpt_dir, eval_dir = PREPARED / ckpt_name, PREPARED / eval_name
+    n_draws = N_DRAWS if n_draws is None else n_draws
+    ckpt_dir, eval_dir = Path(prepared) / ckpt_name, Path(prepared) / eval_name
     checkpoint = read_3dgs_ply(str(ckpt_dir / "splats.ply"))
     sh_coeffs, degree = checkpoint["sh_coeffs"], checkpoint["sh_degree"]
     cax, train_frames = load_transforms(str(ckpt_dir / "transforms.json"))
@@ -80,7 +81,7 @@ def collect(ckpt_name, eval_name, view_idxs):
     data = accumulate_sh_precision_rasterized(
         checkpoint, train_frames, train_K, tw, th, degree,
         n_probes=N_PROBES, seed=SEED, device="cuda", progress_every=0) / noise_var
-    draws = sample_sh_draws(sh_coeffs, data, band_precision, N_DRAWS, SEED)
+    draws = sample_sh_draws(sh_coeffs, data, band_precision, n_draws, SEED)
     theta_hat = torch.tensor(sh_coeffs, dtype=torch.float32, device="cuda")
     op_hat = torch.tensor(checkpoint["opacities"], dtype=torch.float32, device="cuda")
 
@@ -101,7 +102,7 @@ def collect(ckpt_name, eval_name, view_idxs):
         obj = gt.min(axis=2) < 0.99
         mean_render = render(checkpoint, theta_hat, op_hat, viewmat, Ks, width, height, background)
         ens = np.stack([render(checkpoint, draws[s], op_hat, viewmat, Ks, width, height, background)
-                        for s in range(N_DRAWS)], axis=0)
+                        for s in range(n_draws)], axis=0)
         # Render-derived aleatoric regressors, both per-pixel and broadcast
         # over the 3 channels so they line up with the per-channel residuals.
         t = lambda a: torch.tensor(a, dtype=torch.float32, device="cuda")  # noqa: E731
@@ -114,7 +115,10 @@ def collect(ckpt_name, eval_name, view_idxs):
         feats = np.stack([np.repeat(conc[:, :, None], 3, axis=2)[obj].ravel(),
                           np.repeat(grad[:, :, None], 3, axis=2)[obj].ravel()], axis=1)
         groups.append((ens.std(axis=0)[obj].ravel(), (mean_render - gt)[obj].ravel(), feats))
-    return groups   # (sigma, residual, features) per held-out view, per channel
+    # Also return the scene's OWN training-residual noise level: it is already
+    # computed here, needs no held-out views, and is the natural scene-specific
+    # scale for the aleatoric floor.
+    return groups, float(np.sqrt(noise_var))
 
 
 def ceiling(sigma, metric, n_sims=N_CEILING_SIMS):
@@ -165,7 +169,7 @@ def fit_variance_model(sigma, resid, feats=None):
 def run():
     fig, axes = plt.subplots(1, len(CONDITIONS), figsize=(6.0 * len(CONDITIONS), 5.0), squeeze=False)
     for j, (ckpt, ev, views) in enumerate(CONDITIONS):
-        groups = collect(ckpt, ev, views)
+        groups, _sigma_n = collect(PREPARED, ckpt, ev, views)
         # Fit the calibration on ALTERNATE views and score it on the rest --
         # a scale fitted and evaluated on the same pixels proves nothing.
         fit_idx = list(range(0, len(groups), 2))

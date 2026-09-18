@@ -80,7 +80,13 @@ correction.
   fully-observed checkpoint. A two-parameter fit (scale + aleatoric floor),
   fitted on half the held-out views and scored on the other half, beats a
   constant-variance baseline by **0.68 nats** in the epistemic regime and
-  0.08 nats when the model is fully constrained. Whole-frame correlations on
+  0.08 nats when the model is fully constrained.
+- **Calibrated out of the box, with no held-out views.** Across all 7
+  NeRF-Synthetic scenes the underconfidence factor is nearly constant
+  (`s` = 4.97 +- 0.72), and the aleatoric floor -- which is genuinely
+  scene-specific (9.8x spread) -- is predicted by each scene's own TRAINING
+  residual. Anchoring it that way transfers two dimensionless numbers and
+  recovers 66% of the available calibration gain leave-one-scene-out. Whole-frame correlations on
   NeRF-Synthetic run ~0.95 but that is the object/background silhouette, not
   calibration, and is not quoted as such anywhere here.
 - **Two richer posteriors were tried and made it worse**: cross-splat
