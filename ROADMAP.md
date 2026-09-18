@@ -14,20 +14,21 @@ candidate view, pick the next training view with it, and check whether
 held-out error drops faster than a random/round-robin schedule. There is an
 `nbv_out/` from an earlier attempt to build on.
 
-## 2. Fit the calibration scale
+## 2. Does the calibration transfer?
 
-The signal ranks views almost perfectly but is underconfident by a roughly
-constant factor (error/std 4.85 inside the gap, 3.35 outside; FINDINGS
-section 8). That is a one-parameter fix, not a modelling one: fit a scalar
-scale on held-out views and report Gaussian NLL before and after. Report
-AUSE alongside, always restricted to object pixels -- whole-frame
-correlations on NeRF-Synthetic are dominated by the object/background split
-and report the silhouette, not calibration.
+The two calibration constants (`s ~ 5.5-6.4`, `sigma_0 ~ 0.018-0.043`) are
+currently fitted per checkpoint on held-out views (FINDINGS section 9). They
+came out close on two very different lego checkpoints, which hints they may
+transfer -- but that is not established, and it is the difference between
+"calibrated with a validation split" and "calibrated out of the box". Fit on
+one scene, score on the other six; if `s` is stable, report it as a constant
+of the construction rather than a fitted parameter.
 
-Do NOT reach for a richer posterior first. Cross-splat coupling (FINDINGS
-section 6) and opacity-in-the-posterior (section 7) have both been
-implemented, validated and measured: both made calibration worse, at 1000x
-and 2x the cost respectively.
+Do NOT reach for a richer posterior. Three have now been implemented,
+validated and measured, and all three cost more and calibrate worse:
+cross-splat coupling (section 6, 1000x), opacity in the posterior (section
+7, 2x), and a render-derived spatially-varying aleatoric floor (section 9,
+free but no gain).
 
 ## 3. The angular-gap figure (partly done)
 

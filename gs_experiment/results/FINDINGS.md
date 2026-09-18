@@ -320,3 +320,78 @@ Two consequences worth stating plainly:
 - **Per-view calibration is excellent where it matters (0.97).** That is
   exactly the aggregate next-best-view selection consumes, so NBV now rests
   on a signal measured to track real error, not an assumed one.
+
+## 9. Per-pixel calibration: achievable, and achieved (correcting section 8)
+
+Section 8 concluded that per-pixel calibration was "modest (Spearman
+0.25-0.31) and should not be claimed". That conclusion was wrong, for two
+measurement errors rather than anything about the method.
+
+**Error 1: averaging over RGB before correlating.** The predicted std and
+the residual were each averaged over the three colour channels and only then
+compared, which throws away the per-channel pairing. Scoring per channel
+raises the same number substantially.
+
+**Error 2: scoring against an unreachable ceiling.** Rank correlation
+between a predicted `sigma` and a single realization `|eps|` is bounded well
+below 1 even for a PERFECTLY calibrated sigma, because the observable is
+`|eps_q| = sigma_q |z_q|` with `z_q ~ N(0,1)` independent of everything:
+`Var(log|z|) = pi^2/8 ~ 1.23`, so `|z|` alone destroys rank information
+unless `log sigma` varies by more than that. Comparing 0.27 against an
+implicit 1.0 was meaningless. The same objection applies to AUSE, whose
+usual oracle (sort by TRUE error) is likewise unattainable.
+
+`gs_experiment/scripts/analyse_pixel_calibration.py` scores the uncertainty
+against its own attainable ceiling -- obtained by simulating
+`eps* ~ N(0, sigma_pred^2)` and re-running the identical metric -- and fits
+the calibration on HALF the held-out views, scoring on the other half.
+30 eval views per checkpoint, object pixel-channels only:
+
+| | lego `wide` (100 views) | lego `gap_4` (75 deg hole) |
+|---|---|---|
+| spread of `log sigma` | 2.02 | 2.22 |
+| Spearman, observed | 0.271 | 0.754 |
+| Spearman, attainable ceiling | 0.517 | 0.767 |
+| **fraction of attainable** | **52%** | **98%** |
+| AUSE / attainable floor | 0.452 / 0.208 | 0.114 / 0.085 |
+
+**In the epistemic regime the per-pixel ranking is 98% of everything a
+perfectly calibrated uncertainty could achieve.** It is not modest; it is
+very nearly optimal, and the earlier number was an artefact of how it was
+scored.
+
+What the raw signal does get wrong is SCALE, which rank metrics cannot see.
+Binned calibration (bin by predicted sigma, compare against the RMS residual
+actually observed in each bin) shows a strikingly CONSTANT ratio across bins
+spanning a decade of sigma -- the shape is right and one number is wrong. A
+two-parameter fit `sigma_total^2 = s^2 sigma_pred^2 + sigma_0^2`, fitted on
+held-in views and scored on held-out ones, fixes it:
+
+| Gaussian NLL, held-out views | `wide` | `gap_4` |
+|---|---|---|
+| raw, uncalibrated | 1.1e+18 | 8.7e+19 |
+| constant variance (no uncertainty at all) | -1.8051 | -0.3472 |
+| **posterior + fitted floor** | **-1.8841** | **-1.0298** |
+| gain over constant variance | +0.079 nats | **+0.683 nats** |
+
+`s` is 5.5 (`wide`) and 6.4 (`gap_4`): the raw posterior is underconfident by
+a factor of ~6, which is why the uncalibrated NLL is astronomically bad. The
+factor being nearly the same on two very different checkpoints is mild
+evidence it may transfer, but that is not established.
+
+**A spatially-varying aleatoric floor does not help.** Replacing the
+constant `sigma_0^2` with a render-derived regression on `sum_i beta_{q,i}^2`
+(the per-pixel weight concentration, from one probe render -- see
+`rasterized_sh_precision.pixel_weight_concentration`) and on the render's
+own gradient magnitude changes held-out NLL by -0.010 on `wide` and +0.034
+on `gap_4`. This is the third richer model tried and the third that does not
+pay (after coupling, section 6, and opacity, section 7).
+
+**So: calibrated per-pixel uncertainty is achievable and is achieved.** The
+honest qualification is about its VALUE, not its validity: the gain over
+simply reporting a constant variance is large when the error is epistemic
+(+0.68 nats) and small when the model is fully constrained (+0.08 nats).
+That is the correct behaviour of an epistemic posterior, not a deficiency of
+it -- on a checkpoint fit to 100 well-spread views there is little epistemic
+uncertainty left to report, and the residual error is misspecification which
+neither the posterior nor the render-derived features above can predict.

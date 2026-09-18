@@ -249,3 +249,31 @@ def estimate_noise_variance(checkpoint, frames, K, width, height, image_dir,
                             dtype=np.float32) / 255.0
             sq.append(np.mean((recon - gt) ** 2))
     return float(np.mean(sq))
+
+
+def pixel_weight_concentration(means, quats, scales, opacities, viewmat, Ks, width, height,
+                               n_probes: int = 32, generator=None, sh=None, sh_degree=None):
+    """`sum_i beta_{q,i}^2` per PIXEL -- the forward twin of
+    `probe_squared_footprint_weights` (which gives the same quantity summed
+    the other way, per splat).
+
+    Rendering per-splat Rademacher features `r_i` gives
+    `I(q) = sum_i beta_{q,i} r_i`, so `E[I(q)^2] = sum_i beta_{q,i}^2`. One
+    render with the probes as channels; no backward pass needed.
+
+    This is a resolution statistic, not an uncertainty: it is large where one
+    splat dominates a pixel (the local representation is coarse relative to
+    the detail there) and small where many splats blend smoothly. That makes
+    it a natural regressor for the ALEATORIC part of pixel error -- the
+    misspecification an epistemic posterior over fitted parameters cannot
+    see, because the training views really do determine those parameters.
+    """
+    import gsplat
+
+    n_splats = means.shape[0]
+    probes = torch.randint(0, 2, (n_splats, n_probes), generator=generator,
+                           device=means.device, dtype=means.dtype) * 2 - 1
+    with torch.no_grad():
+        image, _, _ = gsplat.rasterization(means, quats, scales, opacities, probes, viewmat, Ks,
+                                           width=width, height=height, sh_degree=None)
+    return (image[0] ** 2).mean(dim=-1)   # (H, W)
