@@ -163,7 +163,8 @@ error over the unit ball of that function space.
 \subsection{Uncertainty in radiance fields and Gaussian splatting}
 
 Uncertainty methods for radiance fields and 3DGS broadly operate on model
-parameters, rendered predictions, or observation coverage. Stochastic
+parameters, rendered predictions, or observation coverage; a recent taxonomy
+organizes the field along these lines \cite{klasson2024sources}. Stochastic
 Gaussian Splatting learns distributions over Gaussian parameters using
 variational inference \cite{savant2024}. Bayes' Rays applies a Laplace
 approximation to a deformation field \cite{goli2024}. FisherRF uses Fisher
@@ -174,14 +175,81 @@ harmonics for active mapping \cite{xue2026}. Mip-Splatting addresses a related
 but distinct source of error: aliasing under changes in image sampling rate
 \cite{yu2024}.
 
-Galappaththige et al.\ recently proposed a post-hoc method for predictive
-photometric uncertainty in 3DGS \cite{galappaththige2026predictive}. Their
-method freezes a trained map and learns an additional per-primitive
-uncertainty channel from training-view reconstruction residuals. These
-channels are represented with spherical harmonics and rendered with the same
-alpha-compositing weights as colour. A Gaussian prior, implemented through
-$L^2$ regularisation, drives unsupported directions towards a prescribed
-maximum uncertainty.
+Two lines of concurrent work put a per-primitive spherical-harmonic
+representation on uncertainty itself, rather than on colour. Galappaththige
+et al.\ freeze a trained map and \emph{learn} an additional per-primitive
+uncertainty channel from training-view reconstruction residuals
+\cite{galappaththige2026predictive}: the channel is rendered with the same
+alpha-compositing weights as colour, and a Gaussian prior (implemented as
+$L^2$ regularisation) drives unsupported directions towards a prescribed
+maximum. Their channel is trained to predict the observed photometric
+\emph{residual}, which is a different quantity from a posterior over the
+colour coefficients themselves. Han and Dumery similarly give each Gaussian
+an SH-valued uncertainty field, but fit it with a hand-designed
+``back-to-back'' loss that pushes uncertainty down along observed viewing
+directions and up along the opposing ones \cite{han2025viewdependent}. Both
+require an optimisation pass after the map is frozen. The construction in
+Section~\ref{sec:method} differs from both in kind, not just in loss: the
+per-splat coefficient posterior's precision (Eq.~\eqref{eq:sh-precision}) is
+read off directly as a closed-form Fisher/coverage statistic of the frozen
+map -- how strongly, and from which directions, each splat was already
+constrained by training -- so no channel is trained, tuned, or regularised
+into existence; only a Cholesky solve and a render.
+
+Sampling posterior renders through an otherwise-unmodified rasterizer to get
+predictive uncertainty, the strategy in Section~\ref{sec:method}, also
+appears concurrently in two settings that put the posterior over a different
+part of the model. Jia et al.\ track Gaussian \emph{geometry} (means and
+covariances) with a Normal-Inverse-Wishart posterior fit jointly with
+training and re-render posterior geometry samples for predictive intervals
+and active view selection \cite{jia2026rendering}; Wu et al.\ apply the same
+render-the-ensemble idea to per-Gaussian \emph{density} for sparse-view X-ray
+CT reconstruction with 3DGS \cite{wu2026perturbed}. Neither targets the
+appearance coefficients a photometric posterior needs, and Section~\ref{sec:method}'s
+own attempt to add a geometry (opacity) term to an otherwise appearance-only
+posterior made calibration worse, not better -- an entirely fixed,
+frozen-map construction and an in-the-loop geometric one are not
+interchangeable, and which one helps is not obvious a priori. Horseshoe
+Splatting instead puts a sparsity-inducing prior on per-splat \emph{covariance}
+structure and fits the whole posterior variationally during training
+\cite{wu2026horseshoe}, again a geometric rather than photometric target and,
+unlike the post-hoc construction here, not separable from the training
+procedure.
+
+Closest in spirit to Section~\ref{sec:renderer-consistency}'s central move
+-- exploit the renderer's exact linearity in the per-primitive unknowns to
+get a closed form the unmodified rasterizer verifies by construction,
+instead of solving a directional Bayesian-quadrature system that does not
+track it -- is concurrent work in a different modality. Zhao et al.\ derive
+a closed-form posterior variance for radiative (X-ray) Gaussian splatting by
+using the strict linearity of X-ray attenuation in per-Gaussian density, and
+report it as the exact infinite-sample limit of an ensemble/sampling
+estimator at roughly $8\times$ lower cost \cite{zhao2026posterior}. Their
+finding that this variance is a data-\emph{constraint} map rather than an
+error map -- it ranks true error well overall but the ranking collapses well
+below chance inside the reconstructed object, where whole-frame correlation
+is dominated by the object/background split -- is close to the finding in
+Section~\ref{sec:experiments} that whole-frame Spearman correlation on
+NeRF-Synthetic scenes is driven by the same silhouette split, not by
+calibration on the object itself; that this shows up in two independent
+constructions, in two different modalities (X-ray density and SH colour),
+is evidence it is a structural property of renderer-linear closed-form
+posteriors rather than an artifact of either implementation.
+
+Finally, on the question of whether a fitted correction transfers across
+scenes without held-out views, Chu et al.\ propose View-Structured Conformal
+Prediction, which factors a pre-calibration scale into a renderer-derived
+spatial shape and a transferable scalar view-difficulty multiplier, and
+report a held-out per-view quantile that gives finite-sample coverage even
+when transferred to a new scene \cite{chu2026conformal}. That is a
+distribution-free guarantee on coverage; the anchoring in
+Section~\ref{sec:kernel-choice} instead transfers two dimensionless
+constants of a parametric NLL fit by tying the aleatoric floor to each
+scene's own training residual. The two are not mutually exclusive and answer
+related but different questions -- a certified coverage guarantee versus a
+calibrated predictive density -- and a conformal wrapper around the
+posterior here is a natural next comparison rather than a competitor to rule
+out.
 
 
 \subsection{Bayesian quadrature for representation analysis}
