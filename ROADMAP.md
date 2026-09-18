@@ -18,15 +18,25 @@ posterior) as an ablations subsection -- all with real figures copied from
 specific closed form and its efficient computation for a specific part of
 the model, not a category claim.
 
-What is still open: the Abstract and Introduction are empty placeholders
-and were out of scope for the Method rewrite -- they need to be written
-against the now-current Related Work/Method/Experiments rather than the
-retired construction. The draft has not been compiled (no LaTeX toolchain
-in this environment); only static checks were run (label/ref/cite
-resolution, brace and environment balance, figure paths) -- compile it with
-`latexmk -pdf main.tex` and check page count against RA-L's 8-page limit
-before submission, since six new tables/figures were added. Do this before
-any submission.
+Also reframed the appearance posterior itself as a Bayes-Sard construction
+(Karvonen, Oates & Sarkka, NeurIPS 2018) rather than a Laplace
+approximation: the covariance is the exact posterior of a degenerate-kernel
+Bayesian-linear-regression model (a direct instance of Background's own
+Bayesian-quadrature machinery), with only the mean overridden -- so the
+paper's Bayesian-quadrature throughline now actually reaches the Method
+section again, not just Background and Related Work.
+
+The draft now compiles clean: `latexmk -pdf main.tex` (with
+`texlive-latex-base`, `texlive-latex-extra`, `texlive-fonts-recommended`,
+`texlive-bibtex-extra`, `texlive-publishers` for `IEEEtran.bst`, and
+`latexmk` installed) produces a 7-page PDF, no undefined references, no
+undefined citations, no LaTeX errors -- within RA-L's 8-page limit, with no
+manual page-balancing attempted yet.
+
+What is still open: the Abstract and Introduction are empty placeholders --
+they need to be written against the now-current Related Work/Method/
+Experiments rather than the retired construction. Do this before any
+submission.
 
 ## 1. Comparative baselines, calibration-led
 
