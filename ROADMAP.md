@@ -4,7 +4,30 @@ Forward experiment plan. See [`README.md`](README.md) for the claim and
 [`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md) for
 what has been shown and what has been retracted. Ordered by priority.
 
+## 0. Rewrite the paper to match the current method
+
+`paper/main.tex` was last touched at commit `4bea5e7`, before the section-0
+correction and the retirement of the directional-kernel/sparse-GP
+construction in favour of the posterior-ensemble method in FINDINGS sections
+1-4. Its Abstract, Introduction and Method (Sections III-IV) still describe
+and derive the RETIRED construction; only Related Work has been brought
+current (FINDINGS section 11: novelty check against the 2025-2026
+literature, several papers posted within the last three months). Rewrite
+Sections III-VI to state the actual construction -- the SH-coefficient
+posterior from Eq. equivalent of `rasterized_sh_precision.py`, the
+Rademacher-probe computation of `sum_q beta_{q,i}^2`, posterior-ensemble
+rendering, and the calibration/transfer results of sections 9-10 -- and
+frame the contribution per FINDINGS section 11's verdict: a specific closed
+form and its efficient computation for a specific part of the model, not a
+category claim, since the category (post-hoc SH-valued uncertainty for
+3DGS) is now actively contested. Do this before any submission.
+
 ## 1. Next-best-view selection
+
+Read `arXiv:2511.09397` (OUGS: object-aware active view selection in 3DGS via
+Gaussian-parameter-covariance-to-Fisher-information) before starting --
+noted in FINDINGS section 11 as active competition for exactly this
+direction, and it may already answer the question below.
 
 Now the best-supported next step. Per-VIEW uncertainty tracks per-view
 held-out error at Spearman 0.97 in the epistemic regime and 0.61 even on a

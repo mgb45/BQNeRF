@@ -455,3 +455,137 @@ The remaining outlier is `mic` (-0.925 anchored against -1.228 own fit),
 whose `sigma_0/sigma_n` of 2.86 is well above the mean 1.77 -- a largely
 specular object, where held-out error is much worse than training residuals
 imply and a single scalar `c` cannot know it.
+
+## 11. Novelty check against the concurrent literature (2025-2026)
+
+The method changed twice since the paper's Related Work section was last
+written (section 0's correction, then the retirement of the directional
+kernel for the posterior-ensemble construction in sections 1-4). A
+literature pass was done against the CURRENT construction -- closed-form
+per-splat Bayesian linear regression over SH coefficients, precision built
+from the real rasterizer's own compositing weights via a Rademacher-probe
+backward pass, sampled and pushed through the unmodified rasterizer, mean
+pinned exactly to the trained checkpoint -- rather than against what the
+paper draft still describes. Findings, closest-prior-art first:
+
+- **The core "post-hoc, no retraining, mean pinned to the real render"
+  framing is not unique to this project, but the reason our posterior
+  precision is closed-form is not shared by the two closest photometric
+  competitors.** Galappaththige et al. (`galappaththige2026predictive`,
+  ECCV 2026, arXiv:2603.22786) also freeze the map and add a per-primitive,
+  SH-represented channel post-hoc -- but they get it by *training* a
+  Bayesian-regularized linear least-squares fit against real photometric
+  residuals, i.e. their channel is supervised on the error itself. Han and
+  Dumery (`han2025viewdependent`, arXiv:2504.07370) also give each splat an
+  SH-valued field, fit with a hand-designed loss that suppresses uncertainty
+  along observed directions and inflates it along the antipodal one. Both
+  need an optimization loop after freezing. Ours needs none: `P_i = Lambda +
+  D_i / sigma_n^2` (section 3) is read off the map directly -- a Fisher/
+  coverage statistic of how much and from where each splat was already
+  constrained -- with no loss function, no gradient descent, and no target
+  to regress against. That the field has now converged on "SH per splat" as
+  the representation for uncertainty three times independently (these two
+  plus GAVIS/`xue2026`, already cited) is worth noting in itself: it is
+  clearly the right basis to reach for, and the open ground is in how the
+  coefficients are obtained, not in using SH at all.
+
+- **The Rademacher-probe trick for `sum_q beta_{q,i}^2` is a real technique
+  (Hutchinson's trace estimator) applied somewhere new (a stock differentiable
+  rasterizer's autograd graph), not an original estimator.** FisherRF
+  (`jiang2024`, already cited) computes a comparable per-primitive
+  information quantity for active view selection, but with a bespoke CUDA
+  kernel for the exact diagonal Hessian/Fisher matrix. The contribution here
+  is narrower and should be described that way: the same kind of quantity
+  falls out of one generic backward pass through gsplat's *existing*,
+  unmodified autodiff graph, with no custom kernel, by exploiting that `beta`
+  is channel-independent and pushing independent Rademacher probes through
+  as independent render channels. Worth a citation to FisherRF for the
+  general idea of "Fisher information from the renderer," with the
+  distinction stated precisely rather than implied.
+
+- **Posterior-ensemble rendering through an unchanged rasterizer is used
+  concurrently, but always for a different part of the model.** Jia et al.
+  (`jia2026rendering`, arXiv:2607.05522) sample from a Normal-Inverse-Wishart
+  posterior over Gaussian *geometry* (means/covariances), fit jointly with
+  training, and re-render for predictive intervals. Wu et al.
+  (`wu2026perturbed`, arXiv:2603.06852, ECCV 2026) render an ensemble of
+  perturbed *densities* for sparse-view X-ray CT. Horseshoe Splatting
+  (`wu2026horseshoe`, ICLR 2026) puts a sparsity prior on per-splat
+  *covariance* and fits it variationally, in-the-loop. None samples the
+  appearance/SH coefficients of a frozen, already-trained map the way
+  sections 3-4 do, and section 7's own negative result (adding an opacity
+  posterior on top of the SH one made calibration WORSE, not better) is
+  direct evidence that "which part of the model gets the posterior" is not
+  a free choice -- geometry-in-the-loop and appearance-only-post-hoc are
+  different constructions with different failure modes, not two
+  instantiations of one idea.
+
+- **The single most load-bearing finding for the current write-up --
+  that whole-frame correlation is mostly the silhouette, and the real
+  signal is in the epistemic regime -- has an independent, cross-modality
+  replication.** Zhao et al. (`zhao2026posterior`, arXiv:2607.13682) derive
+  a closed-form posterior variance for radiative (X-ray) Gaussian splatting
+  from the exact linearity of X-ray attenuation in per-Gaussian density --
+  the same meta-move as section 3 (exploit the renderer's linearity in the
+  unknowns to get a closed form the unchanged rasterizer verifies exactly,
+  rather than solving a system that does not track it), applied to a
+  different physical forward model -- and title their paper on the finding
+  that this variance "ranks true error on 14 of 15 scenes" overall but
+  "collapses" inside the reconstructed object (median Spearman 0.11, 0/15
+  scenes passing), matching a deep ensemble baseline exactly. That is our
+  own section 5/8/9 arc (whole-frame Spearman 0.95 is background/object
+  split; object-restricted correlation is weak except in the epistemic
+  regime) reached independently, in a different modality, by a different
+  team. This raises the finding from "something our implementation does"
+  to "a structural property of renderer-linear closed-form posteriors,"
+  which is a stronger and more citable claim than either paper makes alone.
+
+- **Cross-scene calibration transfer (section 10) is being attacked from a
+  different, complementary angle concurrently.** Chu et al.
+  (`chu2026conformal`, arXiv:2609.10307, posted this month) propose
+  View-Structured Conformal Prediction: split the pre-calibration scale into
+  a renderer-derived spatial shape and a transferable per-view difficulty
+  scalar, then use a held-out per-view quantile for a finite-sample coverage
+  guarantee that holds even on an unseen scene. Section 10 instead transfers
+  two dimensionless constants of a parametric Gaussian-NLL fit by anchoring
+  the aleatoric floor to the scene's own training residual -- no
+  distribution-free guarantee, but no held-out views either. These answer
+  related but different questions (certified coverage vs. a calibrated
+  predictive density) and are not competitors; wrapping the anchored
+  posterior here in a conformal layer, scored against `chu2026conformal`'s
+  own coverage metric, is a well-defined follow-up rather than something
+  this project needs to preempt.
+
+- **What is NOT concurrent, and should be stated as a real gap rather than
+  covered by any of the above**: the item-1 roadmap direction (aggregate
+  per-pixel uncertainty over candidate views for next-best-view selection)
+  already has active competition -- OUGS (arXiv:2511.09397) does Gaussian-
+  parameter-covariance-to-Fisher-information-to-uncertainty for object-aware
+  active view selection in 3DGS. It is not cited above because it targets a
+  downstream task (view selection) rather than the uncertainty construction
+  itself, but it should be read before ROADMAP item 1 is attempted, since it
+  may already answer the exact question that item poses.
+
+**Net verdict.** The specific closed-form construction in sections 1-4 (SH-
+coefficient posterior with a renderer-native, training-free precision, and
+posterior-ensemble rendering through an unmodified rasterizer restricted to
+appearance) does not have a direct hit in the literature found -- every
+close paper differs in at least one of: what part of the model gets the
+posterior (appearance vs. geometry vs. density), whether the uncertainty
+representation is trained/fit or read off in closed form, or the rendering
+modality (photometric SH vs. X-ray density). But every *individual move* --
+SH-valued per-splat uncertainty, post-hoc/frozen-map construction,
+posterior-ensemble rendering through the real rasterizer, Fisher information
+from a renderer, exploiting renderer linearity for an exact closed form, and
+even the silhouette-dominated-whole-frame-correlation finding -- has been
+reached by at least one concurrent 2025-2026 paper, several within the last
+three months. The honest framing for the paper draft is a *combination and
+mechanism* novelty claim (this specific closed form, this specific
+efficient computation of it, applied to this specific part of the model),
+not a category claim ("nobody does closed-form post-hoc SH uncertainty for
+3DGS") -- the category is now crowded. The paper's Related Work
+(`paper/main.tex`) has been updated with the papers above; its Method,
+Abstract and Introduction still describe the RETIRED directional-kernel
+sparse-GP construction (last touched at commit `4bea5e7`, before sections
+0-10 of this file) and need a rewrite pass to match sections 1-4 before
+submission -- tracked as a new, high-priority ROADMAP item.
