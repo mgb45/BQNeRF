@@ -105,7 +105,7 @@ there. Baselines: farthest-point (model-free, and the honest bar -- random
 alone would flatter any method) and FisherRF-style acquisition. >=3 seeds:
 a discarded run had a random arm go 11.56 -> 10.84 -> 10.90 dB.
 
-## 2. `mic`, and the limits of a scalar `c`
+## 3. `mic`, and the limits of a scalar `c`
 
 Item 2 as originally posed is answered (FINDINGS section 10): `s` transfers,
 `sigma_0` does not, and anchoring the floor to each scene's own training
@@ -122,7 +122,7 @@ residuals across views rather than pooled over them). Worth one experiment
 before concluding that a validation split is genuinely required for
 specular scenes.
 
-## 3. The angular-gap figure (partly done)
+## 4. The angular-gap figure (partly done)
 
 "The view nobody trained on". The measurement exists already
 (`render_epistemic_regime.py`, FINDINGS section 8); what is missing is the
@@ -152,7 +152,7 @@ can only ever drop positive-semi-definite terms from `D_i`, so posterior
 variance must be non-decreasing as the conditioning set shrinks
 (`scripts/frozen_map_monotonicity_test.py`; passes on all 300k splats).
 
-## 4. `u_spatial_BQ`, the finite-representation term
+## 5. `u_spatial_BQ`, the finite-representation term
 
 `gpu_uncertainty.compute_alpha_risk_batched` -- the real alpha weights' RKHS
 worst-case risk under a position-only kernel -- is unaffected by the
