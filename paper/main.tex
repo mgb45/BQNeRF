@@ -263,12 +263,27 @@ therefore used as a geometric property of the representation. This turns a
 tool for uncertain numerical integration into a post-hoc diagnostic for
 finite scene maps.
 
-\section{A Renderer-Consistent View of Gaussian Splat Maps}
+\section{A Renderer-Consistent Posterior over Splat Appearance}
 \label{sec:method}
 
 Building on Section~\ref{sec:rendering-with-splats}'s observation that
-alpha compositing is itself a quadrature rule: for a position-only kernel
-and point-mass primitives, the Bayesian-quadrature-\emph{optimal}
+alpha compositing is a quadrature rule, the natural first attempt is to put
+a Bayesian-quadrature posterior directly on the rendering integral, with a
+joint position--direction kernel, and solve for the Bayes--Hermite-optimal
+weights. Section~\ref{sec:retired-directional-kernel} records why that
+attempt was retired, because the failure motivates every choice below.
+Section~\ref{sec:renderer-consistency} then states the property the
+construction must have; Sections~\ref{sec:posterior}--\ref{sec:rademacher}
+give the posterior actually used, over each splat's own stored
+spherical-harmonic coefficients, with its precision read directly off the
+renderer's own compositing weights; Section~\ref{sec:ensemble} pushes it
+forward by rendering samples from it; Section~\ref{sec:kernel-choice} fits
+the remaining constants and calibrates the result.
+
+\subsection{Why a point-evaluation directional kernel fails}
+\label{sec:retired-directional-kernel}
+
+For a position-only kernel and point-mass primitives, the Bayesian-quadrature-\emph{optimal}
 solved-for weights $\mathbf w^\ast=K^{-1}\mathbf z$ coincide exactly with
 the real compositing weights $w_{q,i}=T_{q,i}\alpha_{q,i}$, for any kernel
 bandwidth. That equivalence breaks the moment a directional term is
@@ -287,12 +302,11 @@ supposed to refine.
 
 The fix is not a better directional kernel. A splat's stored
 spherical-harmonic coefficients are not a point observation of the
-radiance field at a location and direction; they are a learned, localized
-basis function, and the representation that photometric training actually
-optimizes. Treating them as inducing variables of a sparse Gaussian
-process --- rather than as point evaluations --- lets the posterior mean
-be pinned to the real renderer output \emph{by construction}, so that
-uncertainty is purely post hoc and can never corrupt the reconstruction.
+radiance field at a location and direction; they are the parameters
+photometric training already fit. Treating them as the unknowns of a
+regression problem, rather than as point evaluations to be explained by a
+\emph{solved} quadrature rule, sidesteps the cancellation above entirely,
+because no linear system is ever solved for the posterior mean.
 
 \subsection{The renderer as an exact posterior mean}
 \label{sec:renderer-consistency}
@@ -316,188 +330,418 @@ exactly the linear read-out
     \label{eq:renderer-readout}
 \end{equation}
 
-Now let $f(x,d)\sim\mathcal{GP}(0,k)$ be an unknown continuous radiance
-field, and treat each stored coefficient as an \emph{interdomain inducing
-variable} of $f$ --- a linear functional of $f$ localized to splat $i$'s
-own spatial support and its $\ell$-th spherical-harmonic mode, rather than
-a point evaluation $f(x_i,d_i)$. For a render functional $F_q=\mathcal
-L_q[f]$, the joint Gaussian process over the inducing variables $U$ and
-$F_q$ gives the standard sparse-GP conditional,
+Because Eq.~\eqref{eq:renderer-readout} is linear in $\theta$, mean
+preservation needs no special machinery: for \emph{any} distribution over
+$\theta$ with mean $\hat\theta$ (the coefficients 3DGS actually trained),
 \begin{equation}
-    F_q\mid U\sim\mathcal N\big(A_qU,\;u_{\mathrm{rep}}(q)\big),
-    \qquad A_q=k_{qU}K_{UU}^{-1},
-    \label{eq:sparse-gp-conditional}
+    \mathbb E\big[C_\alpha(q)\big] = b_q^\top\mathbb E[\theta]
+    = b_q^\top\hat\theta = C_\alpha(q)\big|_{\theta=\hat\theta}
+    \label{eq:mean-preservation}
 \end{equation}
-with $u_{\mathrm{rep}}(q)=k_{qq}-k_{qU}K_{UU}^{-1}k_{Uq}$ the usual
-generalized-Bayesian-quadrature representation error, now for linear
-functionals of the inducing variables rather than point observations.
-Choosing the inducing functionals so that $A_q=b_q^\top$ ---
-renderer-aligned interdomain inducing variables, or equivalently a
-Bayes--Sard construction that makes the SH basis an exactly-integrated
-mean space --- and setting $\mathbb E[U]=\hat\theta$ (the coefficients
-3DGS actually trained) gives
-\begin{equation}
-    \mathbb E[F_q]=A_q\hat\theta=b_q^\top\hat\theta=C_\alpha(q).
-    \label{eq:mean-is-renderer}
-\end{equation}
-The posterior mean under this construction is not an approximation to
-alpha compositing: it \emph{is} alpha compositing, exactly, for every
-query. This is the property the point-evaluation, joint
-position--direction kernel described above never delivers once direction
-is involved.
+for every query $q$, exactly. This is the property Section~\ref
+{sec:retired-directional-kernel}'s construction never delivers once
+direction is involved, because it \emph{solves} for a mean instead of
+anchoring one directly: there, $\mathbf w^\ast$ is the solution of a linear
+system that direction perturbs away from $w_{q,i}$. Here the mean is never
+solved for. It is fixed at the trained checkpoint by construction, and only
+the spread around it is estimated, so uncertainty is strictly post hoc --
+a property added on top of a render that Eq.~\eqref{eq:mean-preservation}
+leaves untouched -- and cannot corrupt the reconstruction, whatever
+covariance is placed on $\theta$.
 
-\subsection{Two independent uncertainty terms}
+\subsection{A closed-form posterior from the renderer's own weights}
+\label{sec:posterior}
 
-The field decomposes as $f=f_{\mathrm{GS}}+f_\perp$, where $f_{\mathrm
-{GS}}$ lies in the subspace the finite splat/SH representation spans and
-$f_\perp$ is everything else. The rendered pixel is $F_q=b_q^\top U +
-\mathcal L_q[f_\perp]$, so the predictive variance splits into the
-finite-representation term $u_{\mathrm{rep}}(q)=\mathcal L_q\mathcal
-L_q[k_\perp]$ (uncertainty in modes the map does not represent at all)
-and a second term from treating the trained coefficients $\hat\theta$ as
-estimated, not exact. Approximating $U\mid\mathcal D\approx\mathcal
-N(\hat\theta,\Sigma_\theta)$ (a post-hoc Laplace approximation, with
-$\Sigma_\theta\approx(\Lambda_0+\sigma_{\mathrm{obs}}^{-2}J^\top J)^{-1}$
-for a linear renderer's Jacobian $J_q=b_q^\top$) and integrating over $U$
-gives the complete predictive distribution,
+We place a Gaussian prior on each splat's coefficients,
+$\theta_i\sim\mathcal N(0,\Lambda^{-1})$, and treat $\hat\theta_i$ as the
+MAP point a Laplace approximation is built around --- in the spirit of
+Bayes' Rays \cite{goli2024}, but for the appearance coefficients of a
+frozen splat map rather than a deformation field, and without retraining
+to reach that MAP point: it is simply what photometric training already
+found. The approximate posterior covariance is the inverse curvature of
+the negative log-posterior at $\hat\theta_i$ --- a Gauss--Newton/Fisher
+approximation built from the renderer's own Jacobian
+$\partial C_\alpha(q)/\partial\theta_i=\beta_{q,i}\phi(d_q)^\top$
+(Eq.~\eqref{eq:renderer-readout}) and a homoscedastic observation-noise
+variance $\sigma_n^2$:
 \begin{equation}
-    F_q\mid\mathcal D\sim\mathcal N\!\Big(C_\alpha(q),\;
-    \underbrace{u_{\mathrm{rep}}(q)}_{\text{spatial}}
-    +\underbrace{b_q^\top\Sigma_\theta b_q}_{\text{directional}}
-    +\sigma_{\mathrm{obs}}^2\Big).
-    \label{eq:full-predictive}
-\end{equation}
-We report the first two terms, dropping the constant observation-noise
-floor:
-\begin{equation}
-    u_q = u_{\mathrm{spatial\,BQ}}(q) + u_{\mathrm{SH}}(q).
-    \label{eq:decomposition}
-\end{equation}
-
-\paragraph{Spatial term.}
-\label{sec:rendering-aware}
-$u_{\mathrm{spatial\,BQ}}(q)$ is $u_{\mathrm{rep}}(q)$ under the simplest
-point-evaluation inducing variables in position alone (a rendering-aware
-kernel $k_q(\xi,\xi')=a_q(\xi)k_{\mathrm{pos}}(\xi,\xi')a_q(\xi')$ for the
-query-specific renderer weight $a_q$, with no directional factor at all):
-the real compositing weights' own worst-case risk,
-\begin{equation}
-    u_{\mathrm{spatial\,BQ}}(q)=z_{q,0}-2\,\mathbf w_q^\top\mathbf z_q
-    +\mathbf w_q^\top K\mathbf w_q,
-    \label{eq:spatial-risk}
-\end{equation}
-evaluated at the real weights $\mathbf w_q=[\beta_{q,i}]$ rather than
-solved for --- no matrix inverse is needed, since Eq.~\eqref{eq:spatial-risk}
-is a quadratic form in an already-known vector. Because
-Eq.~\eqref{eq:spatial-risk} is uniquely minimized at $\mathbf w^\ast=
-K^{-1}\mathbf z_q$ (the classical Bayes--Hermite result), it never falls
-below the position-only Bayesian-quadrature-optimal variance; scoring the
-real weights directly, rather than solving for and reporting a different
-estimator's variance, is what keeps this term paired with the mean it is
-actually computed for.
-
-\paragraph{Directional term.} $\Sigma_\theta$ is block-diagonal across
-splats under an independence approximation, so $u_{\mathrm{SH}}(q)=
-\sum_i\beta_{q,i}^2\,\phi(d_q)^\top\Sigma_{\theta_i}\phi(d_q)$, with each
-splat's own coefficient posterior a per-splat Bayesian linear regression
-over its real observed training directions $\mathcal D_i$,
-\begin{equation}
-    \Sigma_{\theta_i}^{-1}=\lambda I+\sum_{p\in\mathcal D_i}
-    \beta_{p,i}^2\,\phi(d_p)\phi(d_p)^\top,
+    P_i = \Lambda + \frac{1}{\sigma_n^2}\,D_i,
+    \qquad
+    D_i = \sum_{p\in\mathcal D_i}\Big(\sum_q \beta_{q,i,p}^2\Big)\,
+    \phi(d_{i,p})\phi(d_{i,p})^\top,
     \label{eq:sh-precision}
 \end{equation}
-where $\beta_{p,i}$ is splat $i$'s own real alpha-compositing weight in
-training observation $p$ --- how much it actually contributed to whatever
-pixel its own projected centre landed on in that training camera, not a
-binary visible/occluded flag. We obtain every $\beta_{p,i}$ by
-rerendering the fixed training cameras (no retraining): querying at each
-splat's own projected bearing in each camera it plausibly observed, and
-taking its own slot in the real depth-ordered alpha-compositing
-transmittance weights along that ray. Crucially, $\Sigma_{\theta_i}$ does
-not depend on observed \emph{colours} at all, only on which directions
-were observed and how strongly each observation weighted that splat --- a
-Fisher-information/coverage statistic, which is exactly the quantity the
-earlier point-evaluation directional kernel (Section~\ref{sec:method})
-was structurally unable to express correctly. A splat seen from many
-angularly diverse, strongly-weighted directions has small
-$\Sigma_{\theta_i}$ everywhere; one seen from a narrow cone, or only ever
-weakly, stays uncertain away from that cone.
+\begin{equation}
+    \theta_i \mid \mathcal D \;\approx\; \mathcal N\big(\hat\theta_i,\,
+    \Sigma_{\theta_i}\big), \qquad \Sigma_{\theta_i} = P_i^{-1},
+    \label{eq:posterior}
+\end{equation}
+where $\mathcal D_i$ is the set of real training cameras splat $i$
+plausibly observed and $\beta_{q,i,p}$ is its real compositing weight at
+pixel $q$ of training image $p$. Crucially, $\sum_q\beta_{q,i,p}^2$ sums
+over \emph{every} pixel the splat's real footprint touches in that
+training image, not just the pixel its projected centre lands on: a
+training observation constrains a splat through its whole footprint, and a
+splat covering 400 pixels carries far more information per observation
+than one covering one pixel. An earlier surrogate that sampled $\beta$ only
+at the projected centre, from a fixed-radius candidate ball treated as a
+binary occluder mask, understated this quantity by a median factor of
+$2.1\times10^{18}$ on a real 300{,}000-splat checkpoint --- numerically
+zero --- which made every posterior in that surrogate collapse exactly onto
+its prior. $\Sigma_{\theta_i}$ depends only on which directions splat $i$
+was observed from and how strongly each observation weighted it, never on
+the observed \emph{colours}: it is a Fisher-information/coverage
+statistic. A splat seen from many angularly diverse, strongly-weighted
+directions has small $\Sigma_{\theta_i}$ everywhere; one seen from a narrow
+cone, or only ever weakly, stays uncertain away from that cone.
 
-\subsection{Kernel choice and fitting}
+\subsection{Computing $D_i$ from the rasterizer itself}
+\label{sec:rademacher}
+
+Eq.~\eqref{eq:sh-precision} needs $\sum_q\beta_{q,i,p}^2$ for every splat
+and every training camera. \texttt{gsplat} does not expose $\beta$
+directly, but it does render $I(q)=\sum_i\beta_{q,i}c_i$ for an arbitrary
+per-splat scalar feature $c_i$ substituted in place of colour, so
+backpropagating an image-space loss $r$ through the unmodified rasterizer
+gives, by the chain rule,
+\begin{equation}
+    \frac{\partial}{\partial c_i}\sum_q r_q I(q) = \sum_q \beta_{q,i}\,r_q,
+    \label{eq:rademacher-grad}
+\end{equation}
+exactly, at the cost of one backward pass. Taking $r_q$ to be independent
+Rademacher ($\pm1$) noise, $\mathbb E\big[(\sum_q\beta_{q,i}r_q)^2\big]
+=\sum_q\beta_{q,i}^2$ --- Hutchinson's trace-estimator trick, applied here
+to extract the exact per-splat quantity Eq.~\eqref{eq:sh-precision} needs
+from the rasterizer's own autodiff graph, with no custom kernel and no
+approximation of $\beta$ by a bearing-ball or KD-tree candidate search.
+Because $\beta$ is purely geometric (it does not depend on which feature
+$c_i$ carries), independent probes ride as independent \emph{colour
+channels} of a single render, so several probes --- enough to average
+$\sum_q\beta_{q,i}^2$ down to low variance --- cost one forward-plus-backward
+pass per training camera, not one pass per probe. On a 300{,}000-splat,
+100-camera checkpoint this accumulation takes 5.0\,s and gives a data/prior
+precision ratio at the $\ell=0$ (DC colour) band with median 25.7 and 85\%
+of splats data-dominated, against $10^{-13}$ and 0\% for the retired
+surrogate at $45\times$ the wall-clock cost.
+
+\subsection{Posterior-ensemble rendering}
+\label{sec:ensemble}
+
+The predictive pixel distribution induced by Eq.~\eqref{eq:posterior} has a
+closed form under a cross-splat independence approximation,
+$u(q)=\sum_i\beta_{q,i}^2\,\phi(d_q)^\top\Sigma_{\theta_i}\phi(d_q)$, but we
+do not evaluate it as a quadratic form. The cheapest and most legible way
+to push a posterior through a quadrature rule is to sample from it: draw
+$\theta^{(s)}\sim\mathcal N(\hat\theta,\Sigma_\theta)$ for $s=1,\ldots,k$
+and render each draw with the real, unmodified rasterizer. The per-pixel
+sample spread across the $k$ renders is the uncertainty; the sample mean
+recovers $C_\alpha(q)$ by Eq.~\eqref{eq:mean-preservation}. No
+matrix-vector product against $b_q$, no explicit $\Sigma_\theta$, and no
+retraining are needed --- just a one-time Cholesky factorization of each
+$P_i$ (306\,ms for a 300{,}000-splat scene) and $k$ extra forward renders
+($k=8$ costs 323\,ms against a 21.5\,ms single render).
+
+We also tried extending this posterior beyond appearance: sampling the
+\emph{joint} posterior over every splat's coefficients without the
+block-diagonal independence assumption (matrix-free, via the same
+backward-pass matvec trick, solved by preconditioned CG), and adding
+opacity as a second, geometric term under the same Laplace construction.
+Both are implemented and validated but did not improve calibration on real
+checkpoints (Section~\ref{sec:experiments}); the appearance-only,
+block-diagonal posterior above is the one used throughout.
+
+\subsection{Prior, noise, and calibration}
 \label{sec:kernel-choice}
 
-The position kernel $k_{\mathrm{pos}}$ is an RBF, with bandwidth fit per
-checkpoint by maximizing GP marginal likelihood on local (position,
-colour) windows sampled from the trained map, jointly with a real
-homoscedastic observation-noise variance (real splat positions routinely
-include near-duplicate points, which forces a noiseless fit toward an
-artificially short bandwidth just to keep exactly interpolating through
-them). The SH-coefficient prior precision $\lambda$ in
-Eq.~\eqref{eq:sh-precision} is currently a fixed scalar rather than
-fit from data; a marginal-likelihood fit for it, and a quantitative
-calibration check of $u_q$ against real held-out rendering error, are
-open (see the project roadmap).
+$\Lambda$ is fit by empirical Bayes directly from the checkpoint's own
+coefficient population, per spherical-harmonic band $\ell$ and colour
+channel $c$: $\lambda_{\ell,c}=1/\mathrm{Var}_i[\theta_{i,c,k}: k\in
+\mathrm{band}\ \ell]$. A single scalar prior is badly mis-specified
+regardless of any other choice: on the lego \texttt{wide} checkpoint, the
+fitted $\ell=0$ (DC colour) precision is 1.55/1.92/3.48 (RGB) against
+$\ell=2$'s 10.6--11.0, an order of magnitude apart. $\sigma_n^2$ is fit as
+the mean squared residual between the real render and the real training
+images on the checkpoint's own training views (0.0129 for lego
+\texttt{wide}) --- no held-out data is used anywhere in fitting the
+posterior itself.
+
+The raw posterior from Eq.~\eqref{eq:posterior} is well-ranked but
+under-confident by a roughly constant factor: binning predicted $\sigma$
+against the RMS residual actually observed in each bin gives a ratio that
+is nearly flat across a decade of $\sigma$, i.e.\ the \emph{shape} is right
+and one scalar is wrong. We fit that scalar, plus an additive floor for the
+error a posterior over fitted parameters structurally cannot see
+(misspecification, resolution limits), on held-in views and score on
+held-out ones:
+\begin{equation}
+    \sigma_{\mathrm{total}}^2(q) = s^2\,u(q) + \sigma_0^2.
+    \label{eq:calibration}
+\end{equation}
+Fit this way per scene, $s$ is 5.5 (lego \texttt{wide}) and 6.4 (lego
+\texttt{gap\_4}, Section~\ref{sec:experiments}) --- the raw posterior is
+underconfident by a factor of about 5--6 on two very different
+checkpoints. Across all seven NeRF-Synthetic scenes, $s$ is close to
+constant (mean 4.97, s.d.\ 0.72) while $\sigma_0$ varies by up to
+$9.8\times$, tracking how hard each scene is to reconstruct rather than
+any property of the construction. Anchoring the floor to each scene's own
+training residual, $\sigma_0=c\,\sigma_n$ with a single transferred
+$c\approx1.8$, and transferring $s\approx5.0$ as well, requires no
+held-out views on a new scene at all and recovers 66\% of the calibration
+gain a per-scene fit would give (Section~\ref{sec:experiments}).
 
 \section{Using the Uncertainty}
 
 \subsection{Uncertainty maps}
 
-We form uncertainty images by evaluating Eq.~\eqref{eq:decomposition} at
-every real ray--surface hit in a held-out view (depth-unprojected from
-\texttt{gsplat}'s own expected-depth output), reporting $u_{\mathrm{spatial\,
-BQ}}$, $u_{\mathrm{SH}}$, and their sum alongside the renderer's own
-output $C_\alpha(q)$ --- never a Bayesian-quadrature-solved mean.
+We form uncertainty images by drawing $k$ posterior samples
+(Section~\ref{sec:ensemble}) and rendering each through \texttt{gsplat} at
+every real ray--surface hit in a held-out view, reporting the renderer's
+own output $C_\alpha(q)$ (never a solved-for mean) alongside the per-pixel
+sample standard deviation and, once fit, the calibrated
+$\sigma_{\mathrm{total}}(q)$ of Eq.~\eqref{eq:calibration}.
 
-\begin{figure*}[t]
+\begin{figure}[t]
     \centering
-    \includegraphics[width=\textwidth]{figures/sparse_gp_uncertainty.png}
-    \caption{Three NeRF-Synthetic scenes, one held-out view each
-    (300{,}000-splat checkpoints). Left to right: ground truth,
-    $C_\alpha(q)$ (the real renderer output, never solved for), $u_{\mathrm
-    {spatial\,BQ}}(q)$, $u_{\mathrm{SH}}(q)$, and their sum (shared per-scene
-    log-scale colour range across the three uncertainty columns).}
-    \label{fig:sparse-gp}
-\end{figure*}
+    \includegraphics[width=\columnwidth]{figures/posterior_ensemble.png}
+    \caption{Lego \texttt{wide} (300{,}000 splats, 100 training views), one
+    held-out view. Four of eight posterior draws, the per-pixel std across
+    all eight, and the real held-out error for reference. Draws are
+    visually indistinguishable and the std map is uniformly small: a
+    well-trained checkpoint fit to 100 views really is confident about its
+    own appearance.}
+    \label{fig:posterior-ensemble}
+\end{figure}
 
 \section{Experiments}
 \label{sec:experiments}
 
-We test the property the renderer-consistent construction is designed to
-guarantee, and the qualitative behaviour of the two uncertainty terms it
-produces, on three real NeRF-Synthetic scenes (lego, chair, ship; one
-held-out view each, 300{,}000-splat checkpoints; Figure~\ref{fig:sparse-gp}).
+All experiments use real \texttt{gsplat} training, real checkpoints and
+real cameras on NeRF-Synthetic scenes; no synthetic stand-in for $\beta$ or
+the coefficient posterior is used anywhere.
 
 \subsection{The mean never departs from the renderer}
 
-$C_\alpha(q)$ is, by construction, the real \texttt{gsplat} alpha-composited
-output --- not a quantity solved for under a Bayesian-quadrature posterior.
-On all three scenes the rendered mean column is visually identical to
-the ground-truth reconstruction, with none of the chromatic speckle the
-earlier directional point-evaluation kernel produced wherever it was
-asked to solve for a directionally-aware posterior mean
-(Section~\ref{sec:method}).
+$C_\alpha(q)$ in Figure~\ref{fig:posterior-ensemble} is, by construction
+(Eq.~\eqref{eq:mean-preservation}), the real \texttt{gsplat} output. Every
+posterior draw is visually near-identical to it on the fully-observed
+checkpoint, with none of the chromatic speckle the retired directional
+point-evaluation kernel produced (Section~\ref{sec:retired-directional-kernel}).
 
-\subsection{The two uncertainty terms are visibly distinct}
+\subsection{Spread tracks how much data the posterior is conditioned on}
 
-$u_{\mathrm{spatial\,BQ}}$ is sharp and structure-following on every
-scene, concentrating on fine geometric detail --- edges, thin structures
-such as the ship's rigging --- consistent with it measuring finite
-spatial support. $u_{\mathrm{SH}}$ is smoother and more spatially
-coherent, consistent with it tracking real training-view angular
-coverage, a property that varies more smoothly across a surface than
-per-splat spatial density does. The two terms are not redundant: regions
-of high $u_{\mathrm{spatial\,BQ}}$ do not coincide exactly with regions of
-high $u_{\mathrm{SH}}$, and the sum visibly combines both --- a spatial
-question and a directional question, answerable independently, as
-Eq.~\eqref{eq:decomposition} intends.
+Figure~\ref{fig:view-sweep} freezes one checkpoint's geometry, opacities,
+coefficients, query camera and render, and varies only how many of its own
+real training cameras $\Sigma_\theta$ is conditioned on --- strictly
+nested, with no retraining confound of any kind. Per-pixel std on the
+object rises monotonically as the conditioning set shrinks
+(Table~\ref{tab:view-sweep}): a correctness property (nested conditioning
+can only drop positive semi-definite terms from $D_i$, so posterior
+variance cannot decrease as cameras are removed) and a sanity result.
 
-Rerendering every real training camera to build $\Sigma_{\theta_i}$
-(Eq.~\eqref{eq:sh-precision}) took 8--11 minutes per 300{,}000-splat
-scene; both query-side terms evaluate in under a second per view once
-$\Sigma_\theta$ is built. A quantitative calibration check of $u_q$
-against real held-out rendering error, and a marginal-likelihood fit for
-$\lambda$, are left to future work rather than assumed from the
-qualitative result above.
+\begin{table}[t]
+    \centering
+    \caption{One frozen lego checkpoint, posterior conditioned on a
+    shrinking subset of its own training cameras.}
+    \label{tab:view-sweep}
+    \begin{tabular}{@{}crrr@{}}
+        \toprule
+        training views & $\ell{=}0$ data/prior (median) & std (mean) & std (max) \\
+        \midrule
+        100 & 25.7  & 0.0057 & 0.023 \\
+        25  & 6.27  & 0.0100 & 0.041 \\
+        8   & 1.55  & 0.0373 & 0.231 \\
+        3   & 0.344 & 0.0430 & 0.251 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/posterior_view_sweep.png}
+    \caption{Same checkpoint, same held-out camera; only the number of
+    training cameras the posterior sees changes. Draws are pixel-identical
+    at 100 views and visibly disagree at 8 and 3.}
+    \label{fig:view-sweep}
+\end{figure}
+
+\subsection{Per-view calibration in the epistemic regime}
+
+A posterior over fitted parameters measures \emph{epistemic} uncertainty
+--- what training failed to determine --- so it should track held-out
+error best when that error is actually epistemic. We test this on three
+\emph{retrained} checkpoints, each with a deliberate angular hole of
+increasing width in its training views (retraining, not frozen-map
+conditioning, is required here, since a frozen map's reconstruction error
+does not change when the posterior is conditioned on fewer of the same
+cameras). Table~\ref{tab:epistemic} and Figure~\ref{fig:epistemic} score
+per-view mean predicted std against per-view mean held-out error over 30
+eval views per checkpoint.
+
+\begin{table}[t]
+    \centering
+    \caption{Per-view Spearman correlation between predicted uncertainty
+    and held-out error, as the training-view gap widens.}
+    \label{tab:epistemic}
+    \begin{tabular}{@{}cccc@{}}
+        \toprule
+        checkpoint & gap half-width & training views & per-view Spearman \\
+        \midrule
+        \texttt{gap\_0} & $0^\circ$  & 100 & 0.613 \\
+        \texttt{gap\_2} & $30^\circ$ & 89  & 0.817 \\
+        \texttt{gap\_4} & $75^\circ$ & 51  & \textbf{0.973} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/epistemic_regime.png}
+    \caption{Per-view predicted std against per-view held-out error, one
+    panel per gap width. An uninformative blob at no gap becomes a
+    near-perfect line at a $75^\circ$ gap.}
+    \label{fig:epistemic}
+\end{figure}
+
+\subsection{Per-pixel calibration, scored against its own attainable ceiling}
+
+A whole-frame Spearman correlation between predicted std and $|$error$|$
+that includes background pixels reaches 0.95 on these scenes, but that is
+almost entirely the object/background silhouette split, since both are
+near zero on background; every number below is restricted to object
+pixels. Rank correlation between a predicted $\sigma$ and a single noise
+realization $|\epsilon|=\sigma|z|$ is, even restricted that way, bounded
+well below 1 for a perfectly calibrated $\sigma$, since $|z|$ alone injects
+$\mathrm{Var}(\log|z|)=\pi^2/8$ of irreducible rank noise. We therefore
+score observed Spearman against the ceiling the same $\sigma_{\mathrm
+{pred}}$ would attain if it were exactly correct (simulating
+$\epsilon^\ast\sim\mathcal N(0,\sigma_{\mathrm{pred}}^2)$ and re-running the
+identical metric), fitting Eq.~\eqref{eq:calibration} on half the held-out
+views and scoring on the other half (Table~\ref{tab:pixel-calibration},
+Figure~\ref{fig:pixel-calibration}).
+
+\begin{table}[t]
+    \centering
+    \caption{Per-pixel calibration, object pixel-channels, 30 held-out
+    views.}
+    \label{tab:pixel-calibration}
+    \begin{tabular}{@{}lrr@{}}
+        \toprule
+         & lego \texttt{wide} & lego \texttt{gap\_4} \\
+        \midrule
+        Spearman, observed          & 0.271 & 0.754 \\
+        Spearman, attainable ceiling & 0.517 & 0.767 \\
+        fraction of attainable       & \textbf{52\%} & \textbf{98\%} \\
+        NLL gain over constant var.\ & +0.079 nats & +0.683 nats \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+In the epistemic regime the per-pixel ranking is 98\% of everything a
+perfectly calibrated uncertainty could achieve; on a checkpoint fit to 100
+well-spread views there is little epistemic uncertainty left to report,
+and the fitted-floor gain is correspondingly small (+0.08 nats) rather than
+absent (+0.68 nats when there is real epistemic error to find) --- the
+correct behaviour of an epistemic posterior, not a deficiency of it.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/pixel_calibration.png}
+    \caption{Binned calibration: observed RMS residual against predicted
+    $\sigma$ (bin mean), against perfect calibration and the fitted
+    two-parameter correction of Eq.~\eqref{eq:calibration}. The ratio is
+    close to constant across a decade of $\sigma$ in both regimes --- the
+    shape is right, one number (the underconfidence factor $s$) is wrong.}
+    \label{fig:pixel-calibration}
+\end{figure}
+
+\subsection{Calibration transfers across scenes, but only when anchored}
+
+Table~\ref{tab:transfer} and Figure~\ref{fig:transfer} fit
+Eq.~\eqref{eq:calibration} on all seven NeRF-Synthetic scenes,
+leave-one-scene-out. $s$ (mean 4.97, s.d.\ 0.72) is close to a property of
+the construction; $\sigma_0$ (up to $9.8\times$ apart) is not --- it is
+each scene's own irreducible misspecification level. Anchoring
+$\sigma_0=c\,\sigma_n$ to the scene's own training residual $\sigma_n$
+(already needed to fit $D_i$, Section~\ref{sec:kernel-choice}; no held-out
+views) transfers only two dimensionless numbers ($s\approx5.0$,
+$c\approx1.8$) and recovers 66\% of the gap between naive transfer and a
+full per-scene fit; on two scenes (hotdog, lego) it beats the per-scene fit
+outright, because pooling across six scenes regularizes constants a
+15-view per-scene fit overfits. The remaining outlier is \texttt{mic}, a
+largely specular object whose training residual under-predicts held-out
+error more than any other scene.
+
+\begin{table}[t]
+    \centering
+    \caption{Held-out Gaussian NLL, leave-one-scene-out (higher is better).}
+    \label{tab:transfer}
+    \begin{tabular}{@{}lrrr@{}}
+        \toprule
+         & mean NLL & vs.\ const.\ var. & vs.\ per-scene fit \\
+        \midrule
+        constant variance & $-1.535$ & -- & -- \\
+        transfer $s,\sigma_0$ & $-1.501$ & $-0.034$ & $-0.179$ \\
+        anchor $\sigma_0$ to $\sigma_n$ & $\mathbf{-1.631}$ & $\mathbf{+0.096}$ & $\mathbf{-0.049}$ \\
+        per-scene fit (target) & $-1.680$ & $+0.145$ & -- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/calibration_transfer.png}
+    \caption{Left: fitted underconfidence factor $s$ per scene. Right:
+    held-out NLL under constant variance, naive transfer, anchored
+    transfer, and a per-scene fit, all leave-one-scene-out.}
+    \label{fig:transfer}
+\end{figure}
+
+\subsection{Richer posteriors that did not help}
+
+Two extensions from Section~\ref{sec:ensemble} were tested against real
+held-out error and rejected on that basis, not on cost alone.
+\textbf{Cross-splat coupling} (Table~\ref{tab:coupling},
+Figure~\ref{fig:coupling}) raises per-pixel std by a median factor of 1.13
+at $1000\times$ the sampling cost and makes object-pixel Spearman against
+held-out error slightly \emph{worse}: overlapping splats are jointly
+non-identifiable and anti-correlated along a ray, so coupling widens each
+splat's own marginal uncertainty while the rendered sum --- what is
+actually scored --- is already well determined by the block-diagonal
+approximation. \textbf{Putting opacity into the same Laplace construction}
+(mean over three held-out lego views, object pixels) drops Spearman from
+0.265 (appearance only) to 0.170 (opacity only) to 0.152 (both), because
+occluded splats accumulate posterior std equal to the prior --- entirely
+unconstrained --- and perturbing them by that much in logit space can turn
+a buried splat into a visible occluder, an effect a linearized Fisher
+approximation cannot see. Both results are consistent with the same
+reading: the appearance-only, block-diagonal posterior is not leaving
+calibration on the table by being simple.
+
+\begin{table}[t]
+    \centering
+    \caption{Lego \texttt{wide}, 25 training views, object pixels.}
+    \label{tab:coupling}
+    \begin{tabular}{@{}lrr@{}}
+        \toprule
+         & block-diagonal & cross-splat coupled \\
+        \midrule
+        std (mean) & 0.0100 & 0.0110 \\
+        Spearman vs.\ $|$error$|$ & \textbf{0.241} & 0.202 \\
+        wall-clock, 8 draws & 0.2\,s & 209\,s \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\columnwidth]{figures/coupled_comparison.png}
+    \caption{Block-diagonal (top) vs.\ full cross-splat-coupled (bottom)
+    posterior, same checkpoint. Renders and per-pixel std are visually
+    similar; the coupled posterior is not the fix for the residual
+    object-pixel error the block-diagonal one leaves unexplained.}
+    \label{fig:coupling}
+\end{figure}
+
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 

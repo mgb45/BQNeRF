@@ -4,23 +4,29 @@ Forward experiment plan. See [`README.md`](README.md) for the claim and
 [`gs_experiment/results/FINDINGS.md`](gs_experiment/results/FINDINGS.md) for
 what has been shown and what has been retracted. Ordered by priority.
 
-## 0. Rewrite the paper to match the current method
+## 0. Rewrite the paper to match the current method (Abstract/Intro left)
 
-`paper/main.tex` was last touched at commit `4bea5e7`, before the section-0
-correction and the retirement of the directional-kernel/sparse-GP
-construction in favour of the posterior-ensemble method in FINDINGS sections
-1-4. Its Abstract, Introduction and Method (Sections III-IV) still describe
-and derive the RETIRED construction; only Related Work has been brought
-current (FINDINGS section 11: novelty check against the 2025-2026
-literature, several papers posted within the last three months). Rewrite
-Sections III-VI to state the actual construction -- the SH-coefficient
-posterior from Eq. equivalent of `rasterized_sh_precision.py`, the
+Related Work, Method, "Using the Uncertainty" and Experiments now state the
+actual construction: the SH-coefficient posterior of
+`rasterized_sh_precision.py` (Eq. `sh-precision`/`posterior`), the
 Rademacher-probe computation of `sum_q beta_{q,i}^2`, posterior-ensemble
-rendering, and the calibration/transfer results of sections 9-10 -- and
-frame the contribution per FINDINGS section 11's verdict: a specific closed
-form and its efficient computation for a specific part of the model, not a
-category claim, since the category (post-hoc SH-valued uncertainty for
-3DGS) is now actively contested. Do this before any submission.
+rendering (`render_posterior_ensemble.py`/`render_posterior_view_sweep.py`),
+the calibration fit and cross-scene anchoring transfer of FINDINGS sections
+9-10, and the two rejected extensions (cross-splat coupling, opacity-in-
+posterior) as an ablations subsection -- all with real figures copied from
+`gs_experiment/results/` and framed per FINDINGS section 11's verdict: a
+specific closed form and its efficient computation for a specific part of
+the model, not a category claim.
+
+What is still open: the Abstract and Introduction are empty placeholders
+and were out of scope for the Method rewrite -- they need to be written
+against the now-current Related Work/Method/Experiments rather than the
+retired construction. The draft has not been compiled (no LaTeX toolchain
+in this environment); only static checks were run (label/ref/cite
+resolution, brace and environment balance, figure paths) -- compile it with
+`latexmk -pdf main.tex` and check page count against RA-L's 8-page limit
+before submission, since six new tables/figures were added. Do this before
+any submission.
 
 ## 1. Next-best-view selection
 
