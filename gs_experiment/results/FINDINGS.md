@@ -758,3 +758,64 @@ A display bug surfaced here and is fixed: "fraction of attainable" is now
 reported as `n/a` for an anti-correlated predictor. A negative fraction is a
 category error rather than a weak score -- such a method is worse than
 uninformative -- and the signed raw Spearman carries the verdict.
+
+## 14. Cross-scene comparison, and a correction to section 13
+
+Section 13 reported the saturated-regime comparison from **lego alone** and
+concluded "we lose per-pixel, and it goes in the paper as a loss". Run across
+all 7 NeRF-Synthetic scenes plus **bonsai** (a real Mip-NeRF 360 capture,
+2.07M splats, 262 training views, 30 held-out views), that conclusion does
+not hold: lego is one of the scenes we lose on, not a representative one.
+`scripts/summarise_comparison.py`, aggregating only what the frozen protocol
+wrote.
+
+| metric (8 scenes) | ours | residual-supervised | ours wins |
+|---|---|---|---|
+| per-pixel Spearman, mean | **0.313** | 0.267 | 4/8 |
+| **per-view Spearman, mean** | **0.757** | **-0.037** | **8/8** |
+| AUSE, mean (lower better) | **0.392** | 0.481 | 5/8 |
+| NLL gain over constant, mean | **+0.133** | **-0.193** | 7/8 |
+| cost, mean | **10.2 s** | 142.9 s | **14x** |
+
+Per-pixel is a genuine split: we lose on chair, drums, hotdog and lego, win
+on ficus, mic, ship and bonsai, with a slightly higher mean. The single-scene
+claim in section 13 was an over-generalisation from n=1 and is withdrawn.
+
+What survives, and strengthens:
+
+- **Per-view separation is total: 8/8, mean 0.757 against -0.037.** The
+  supervised baseline's mean per-view correlation is NEGATIVE across scenes.
+  It is not a weaker view-level signal; it is not a view-level signal at all.
+- **On average the supervised baseline is worse than reporting a constant**
+  (mean NLL gain -0.193 against our +0.133, ours winning 7/8). It collapses
+  hardest on `mic` (-0.935) and `ship` (-0.715) -- the specular object and
+  the one with thin rigging, i.e. exactly where training-view residuals
+  mislead about held-out behaviour. `mic` is also the scene section 10
+  flagged as the outlier for calibration transfer (`sigma_0/sigma_n = 2.86`),
+  which is the same phenomenon seen from the calibration side.
+- **The real capture behaves like the synthetic scenes.** bonsai: ours
+  0.266 per-pixel / 0.709 per-view / +0.016 NLL; supervised 0.114 / -0.370 /
+  -0.000. Every other number in this project is NeRF-Synthetic, so this is
+  the first evidence the construction is not an artefact of synthetic data.
+- **The `beta^2` Fisher weighting is decisively justified.** The
+  uniform-coverage ablation wins 0 of 8 on every metric, means 0.070
+  per-pixel against our 0.313, and goes negative per-pixel on chair, hotdog
+  and ship. Plain angular coverage does retain a per-view signal (mean 0.551)
+  -- which makes sense, since "seen from few directions" is genuinely
+  view-level information -- but loses the per-pixel signal almost entirely.
+- **The floors fail as floors should.** Weight concentration has a negative
+  mean per-pixel correlation (-0.045). Render gradient is the only
+  competitive floor (mean 0.219 per-pixel, 0 outright wins, 1 AUSE win on
+  chair) and its per-view mean is 0.228 with two negative scenes -- it finds
+  edges, which correlates with error within a view and says nothing about
+  which view is bad.
+
+`gs_experiment/results/comparison_summary.png` shows the two panels side by
+side: within-view (mixed) against across-view (one method consistently high,
+the supervised baseline negative on 5 of 8 scenes).
+
+The section 13 reading is unchanged and now rests on 8 scenes instead of 1:
+a construction fitted to observed residuals learns an aleatoric map that is
+competitive within a view and carries no information across views; an
+epistemic posterior does the reverse. The correction is only to the strength
+of the per-pixel claim, which is a tie rather than a loss.
