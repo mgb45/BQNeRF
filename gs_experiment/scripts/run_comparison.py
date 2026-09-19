@@ -22,6 +22,7 @@ import torch
 from PIL import Image
 
 from gs_experiment import conformal
+from gs_experiment.protocol_gsu import rgb_l1_error, score_views
 from gs_experiment.baselines import fit_residual_supervised_sh, render_sh_field, uniform_coverage_sh
 from gs_experiment.evaluation import Prediction, compare, format_table, object_mask
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
@@ -105,7 +106,7 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
         w, h = im.size
     K = fov_x_to_intrinsics(ecax, w, h)
     bg = t(BACKGROUND_COLOR)
-    acc = {k: {"sigma": [], "resid": [], "view": [], "secs": prep.get(k, 0.0)}
+    acc = {k: {"sigma": [], "resid": [], "view": [], "secs": prep.get(k, 0.0), "gsu": []}
            for k in list(prep) + ["weight concentration", "render gradient"]}
     for k in ("weight concentration", "render gradient"):
         acc[k]["secs"] = 0.0
@@ -150,7 +151,13 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
         maps["render gradient"] = np.repeat(np.sqrt(gx ** 2 + gy ** 2)[:, :, None], 3, axis=2)
         timings["render gradient"] = time.time() - t0
 
+        # U-3DGS's protocol: WHOLE frame, RGB-averaged to a scalar per pixel,
+        # scored per view and averaged. Collected alongside ours so the same
+        # runs can be reported under both (protocol_gsu.py).
+        gsu_err = rgb_l1_error(gt, mean_render)
         for name, m in maps.items():
+            gsu_unc = m.mean(axis=2) if m.ndim == 3 else m
+            acc[name]["gsu"].append((gsu_err, gsu_unc))
             acc[name]["sigma"].append(np.maximum(m[obj].ravel(), 1e-12))
             acc[name]["resid"].append(resid)
             acc[name]["view"].append(np.full(resid.shape, vi))
@@ -165,12 +172,20 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
           f"frozen protocol ===")
     print(format_table(rows))
 
+    gsu = {name: score_views(a["gsu"]) for name, a in acc.items()}
+    print("\n--- same runs under U-3DGS's published protocol "
+          "(whole frame, RGB-averaged, Pearson, per-view mean) ---")
+    print(f"{'method':<24}{'AUSE':>9}{'+-':>8}{'pearson':>10}{'+-':>8}")
+    for name, g in gsu.items():
+        print(f"{name:<24}{g['AUSE']:>9.4f}{g['AUSE_std']:>8.3f}"
+              f"{g['pearson']:>10.4f}{g['pearson_std']:>8.3f}")
+
     conf = [conformal.wrap_prediction(p) for p in preds]
     print()
     print(conformal.format_table(conf))
 
     out = RESULTS_DIR / f"comparison_{scene}_{ckpt_name}.json"
-    json.dump({"metrics": rows, "conformal": conf}, open(out, "w"), indent=1)
+    json.dump({"metrics": rows, "conformal": conf, "gsu_protocol": gsu}, open(out, "w"), indent=1)
     # Raw per-method arrays, so any future metric can be computed without
     # re-rendering anything. The renders are the expensive part; the scoring
     # is not, and a metric added later should never force a re-run.
