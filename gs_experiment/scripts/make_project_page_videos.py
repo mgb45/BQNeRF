@@ -56,8 +56,11 @@ from gs_experiment.scripts.render_reconstruction import LOCAL_RUNS, RESULTS_DIR,
 
 VIDEO_DIR = RESULTS_DIR / "project_page"
 N_DRAWS = 16
-FLICKER_FPS = 8
-FLYTHROUGH_FPS = 8
+# Half the original 8 fps. At 8 the flicker read as noise and the flythrough
+# moved past each held-out view before the third and fifth panels could be
+# compared -- the whole point of putting them side by side.
+FLICKER_FPS = 4
+FLYTHROUGH_FPS = 4
 # The single-panel hero is upscaled; the five-panel strip is already ~2000px
 # wide at native resolution, and upscaling it only quadrupled file size.
 FLICKER_UPSCALE = 2

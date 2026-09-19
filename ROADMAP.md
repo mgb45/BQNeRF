@@ -28,60 +28,20 @@ resolution, brace and environment balance, figure paths) -- compile it with
 before submission, since six new tables/figures were added. Do this before
 any submission.
 
-## 1. Comparative baselines, calibration-led
+## 1. DONE -- comparative baselines, calibration-led
 
-The evaluation protocol is pre-registered and frozen in
-`gs_experiment/evaluation.py` (FINDINGS section 12.1) -- committed before any
-baseline exists, and every method scored by it and no other. Lead with
-calibration: OUGS reports no calibration numbers at all and
-`zhao2026posterior` reports variance collapse inside the object, so that is
-the unoccupied ground (FINDINGS section 12.2).
+Completed; results in FINDINGS sections 13-18. Six baselines reimplemented in
+our harness and scored by the pre-registered protocol on identical
+checkpoints: residual-supervised SH (Galappaththige-style), all-parameter
+Fisher (FisherRF/OUGS-style), uniform-coverage SH (Han-style ablation), deep
+ensemble, and two model-free floors. Two regimes, two capacities, 8 scenes
+including a real Mip-NeRF 360 capture, plus a split-conformal layer.
 
-Reimplemented in our own harness, on IDENTICAL checkpoints:
-
-- **Galappaththige-style** (`galappaththige2026predictive`) -- frozen map, per-
-  splat SH channel fit by regularised linear least squares against real
-  photometric residuals. The hard test: it is supervised on the very error
-  we are scored against, so it *should* win, and the linear-LS normal
-  equations are solvable with the CG/matvec operator already in
-  `coupled_sh_posterior.py`. Implement it in its strongest form; losing to a
-  strong implementation is worth more than beating a strawman.
-- **FisherRF-style** (`jiang2024`) -- per-primitive diagonal Fisher over ALL
-  Gaussian parameters, via the same Rademacher-probe backward. Tests directly
-  whether restricting the posterior to appearance is a win or a loss.
-- **Han-style coverage field** (`han2025viewdependent`) -- tests whether the
-  Fisher weighting beats a hand-designed angular-coverage weighting.
-- **Deep ensemble** -- N independent trainings, per-pixel variance. Not in the
-  bibliography but universal, and `zhao2026posterior` benchmarks against it.
-  At the calibrated recipe (below) this is ~1 h for 5 members x 7 scenes.
-- **Model-free floors** -- angular coverage count, nearest-training-view angle,
-  render gradient magnitude. The "is any of this needed" bar.
-
-Published-numbers-only, stated as such: `jia2026rendering` and
-`wu2026horseshoe` are in-the-loop methods whose fair reimplementation means
-adopting their whole training recipe; `zhao2026posterior` and
-`wu2026perturbed` are X-ray modality. Cite, do not reimplement badly.
-
-Scenes: 7 NeRF-Synthetic plus **bonsai** (`bonsai_prepared/gap_0`, a real
-Mip-NeRF 360 capture, 262 training views + 30-view eval, checkpoint already
-trained). Every number this project has is synthetic; one real capture is
-needed for external validity, and Mip-NeRF 360 overlaps OUGS's own dataset.
-
-Training recipe for any arm needing retraining: the project's own
-`DEFAULT_TRAIN_KWARGS` with `n_iters=6000, max_splats=100000,
-densify_end=3000` -- 28.4 dB held-out at 30 lego views in 80 s. Drive
-training through the Python API, NEVER the CLI: the CLI defaults to
-`background_color=(0.05,0.05,0.05)` with no flag to change it, so a
-CLI-trained checkpoint is fit against dark grey and then scored against
-white-composited ground truth, costing ~17 dB of held-out PSNR (11.6 dB
-against 28.4 dB for an identical budget). `run_next_best_view.py` now
-asserts the two backgrounds match.
-
-Capacity is a FACTOR, not a confound: run the post-hoc arms at both this
-recipe and the 300k-splat `wide` checkpoints. If conclusions agree that is
-robustness; if they differ that is a finding. Re-running the section 9-10
-calibration at the smaller capacity is then a second transfer axis (does
-(s, c) transfer across capacity as well as across scene?), not a chore.
+Headline: per-pixel and per-view uncertainty are different quantities. In the
+epistemic regime we win 27 of 28 comparisons and buy the same 90% conformal
+interval 11x narrower than the closest competitor; in the saturated regime
+per-pixel wins split evenly and a deep ensemble is better calibrated, though
+its margin collapses 45-65% at full capacity for 240-290x the compute.
 
 ## 2. Next-best-view selection (demoted)
 
