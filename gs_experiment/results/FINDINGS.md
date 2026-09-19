@@ -1014,3 +1014,52 @@ rank correlation, not a hard bound, and a value near or slightly above 1.0
 should be read as "this uncertainty ranks about as well as its own spread
 allows", not as a paradox. This does not affect any cross-method comparison,
 which the protocol already directs to raw Spearman, AUSE and NLL.
+
+## 18. Conformal coverage: everyone covers, the question is how wide
+
+`gs_experiment/conformal.py` wraps every method in split conformal at a 90%
+target, calibrated on even-indexed held-out views and scored on odd-indexed
+ones. `chu2026conformal` is not a competitor -- it answers a different
+question (distribution-free finite-sample coverage rather than a calibrated
+density) and composes with any sigma -- so the comparison is not "who covers"
+but "how wide an interval each sigma needs to buy the same guarantee".
+
+Mean over 7 scenes, 90% target:
+
+| | | EPISTEMIC (75 deg gap) | | | SATURATED (all views) | |
+|---|---|---|---|---|---|---|
+| method | coverage | median width | x ours | coverage | median width | x ours |
+| **ours (SH posterior)** | 89.4% | **0.176** | 1.0 | 89.3% | **0.069** | 1.0 |
+| uniform-coverage SH | 90.8% | 0.278 | 1.6 | 88.9% | 0.079 | 1.1 |
+| weight concentration | 91.0% | 0.330 | 1.9 | 87.7% | 0.072 | 1.1 |
+| all-parameter Fisher | 91.2% | 0.468 | 2.7 | 86.0% | 0.071 | 1.0 |
+| render gradient | 90.9% | 0.725 | 4.1 | 87.3% | 0.126 | 1.8 |
+| residual-supervised SH | 91.3% | 1.970 | **11.2** | 84.3% | 0.065 | 1.0 |
+
+**In the epistemic regime, our uncertainty buys the same 90% guarantee with
+an interval 11x narrower than the residual-supervised baseline**, 4.1x
+narrower than the render-gradient floor and 2.7x narrower than the
+all-parameter Fisher posterior. That is the practically useful form of the
+whole comparison: if you want an interval you can act on, this is how much
+tighter it gets.
+
+**In the saturated regime conformal cannot separate the methods at all** --
+every method lands within 1.0-1.1x of ours except the render-gradient floor.
+Consistent with sections 13-14: where there is little epistemic error to
+find, there is little for an epistemic posterior to contribute, and the
+honest statement is that the methods are equivalent there rather than that
+ours wins.
+
+### Coverage deviation is itself diagnostic
+
+Split conformal guarantees marginal coverage under exchangeability of
+calibration and test points. Held-out VIEWS are not exchangeable at pixel
+level -- residuals are spatially correlated and views differ in difficulty --
+so coverage can drift from nominal, and how far it drifts turns out to track
+whether a method's sigma follows per-view difficulty. In the saturated
+regime the residual-supervised baseline under-covers at 84.3% and the
+all-parameter Fisher at 86.0%, the two methods with the weakest per-view
+correlation (sections 14-15); ours sits at 89.3%, closest to nominal of any
+method in either regime. A method whose sigma is blind to which view is hard
+will systematically under-cover on the hard ones, and conformal exposes that
+without being told about views at all.
