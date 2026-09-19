@@ -819,3 +819,56 @@ a construction fitted to observed residuals learns an aleatoric map that is
 competitive within a view and carries no information across views; an
 epistemic posterior does the reverse. The correction is only to the strength
 of the per-pixel claim, which is a tie rather than a loss.
+
+## 15. All-parameter Fisher (FisherRF/OUGS-style): appearance-only is a win, not a simplification
+
+`gs_experiment/rasterized_parameter_fisher.py` builds the nearest competitor
+in construction: a diagonal Fisher over EVERY Gaussian parameter -- position,
+log-scale, quaternion, logit-opacity and SH -- estimated by the same
+Rademacher probes, sampled and rendered through the same rasterizer, scored
+by the same frozen protocol on the same checkpoints. The only difference from
+ours is which parameters carry the posterior.
+
+Across the 8 saturated scenes:
+
+| metric | ours (SH only) | all-parameter Fisher | ours wins |
+|---|---|---|---|
+| per-pixel Spearman, mean | **0.313** | 0.090 | 8/8 except chair |
+| per-view Spearman, mean | **0.757** | 0.279 | 8/8 |
+| AUSE, mean (lower better) | **0.392** | 0.557 | 7/8 |
+| NLL gain over constant, mean | **+0.133** | +0.027 | 8/8 |
+| cost, mean | **10.2 s** | 16.8 s | -- |
+
+and in the epistemic regime (lego `gap_4`) the gap is far wider: ours
+0.750 / 0.973 / +0.662 against 0.130 / 0.253 / -0.048.
+
+The all-parameter posterior goes NEGATIVE per-pixel on drums (-0.153) and mic
+(-0.066), and negative per-view on drums (-0.459). Its only win anywhere is
+per-pixel on chair (0.302 against our 0.247).
+
+**This corroborates FINDINGS section 7 in a controlled setting.** There,
+adding an opacity posterior to ours made calibration worse, and the suspected
+mechanism was that a Laplace/linearised treatment is invalid for parameters
+whose posterior is wide -- an unconstrained splat gets a prior-sized
+perturbation far outside the linear regime, and a buried splat perturbed into
+visibility changes the render in a way no Jacobian anticipated. Extending
+that from opacity alone to all of geometry reproduces the same failure and
+amplifies it. Restricting the posterior to appearance is therefore a
+*modelling decision that pays*, not a simplification we should apologise for,
+and that is now measured against the competing premise rather than asserted.
+
+**What this does NOT show.** OUGS's own claim is about next-best-view
+selection, and its Table 1 reports reconstruction quality, not calibration
+(section 12.2). It also adds object-aware semantic masking, which is absent
+here. So the finding is precisely "an all-parameter diagonal Fisher posterior
+calibrates worse than an SH-only one under identical estimation and scoring",
+not "OUGS is wrong at the task it claims". Whether geometry helps VIEW
+SELECTION even though it hurts calibration is still open, and is exactly the
+experiment ROADMAP item 2 keeps.
+
+Two caveats on the reimplementation, stated so the comparison is not read as
+stronger than it is: OUGS accumulates its Fisher during training as an EMA of
+squared gradients, which is unavailable post-hoc, so the same diagonal is
+estimated directly on the frozen map here (a cleaner estimator of the same
+quantity, but not identical); and FisherRF uses a bespoke exact CUDA kernel
+where this is an unbiased Monte-Carlo estimate.

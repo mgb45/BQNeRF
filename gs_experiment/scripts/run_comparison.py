@@ -25,6 +25,12 @@ from gs_experiment.baselines import fit_residual_supervised_sh, render_sh_field,
 from gs_experiment.evaluation import Prediction, compare, format_table, object_mask
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
 from gs_experiment.ply_io import read_3dgs_ply
+from gs_experiment.rasterized_parameter_fisher import (
+    accumulate_parameter_fisher,
+    empirical_parameter_precision,
+    render_draw,
+    sample_parameter_draws,
+)
 from gs_experiment.rasterized_sh_precision import (
     accumulate_sh_precision_rasterized, estimate_noise_variance, pixel_weight_concentration,
 )
@@ -77,6 +83,15 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
     prep["residual-supervised SH"] = time.time() - t0
 
     t0 = time.time()
+    param_fisher = accumulate_parameter_fisher(
+        checkpoint, train_frames, train_K, tw, th, n_probes=16, seed=SEED,
+        device="cuda", background_color=BACKGROUND_COLOR)
+    param_draws = sample_parameter_draws(
+        checkpoint, param_fisher, empirical_parameter_precision(checkpoint),
+        sigma_n ** 2, N_DRAWS, seed=SEED)
+    prep["all-parameter Fisher"] = time.time() - t0
+
+    t0 = time.time()
     cov_prec = uniform_coverage_sh(checkpoint, train_frames, train_K, tw, th, degree,
                                    band_precision) + np.diag(band_precision[0])
     cov_draws = sample_sh_draws(sh_coeffs, cov_prec - np.diag(band_precision[0]),
@@ -115,6 +130,11 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
         t0 = time.time()
         maps["uniform-coverage SH"] = _ensemble_std(checkpoint, cov_draws, op_hat, viewmat, Ks, w, h, bg)
         timings["uniform-coverage SH"] = time.time() - t0
+
+        t0 = time.time()
+        pens = np.stack([render_draw(d, viewmat, Ks, w, h, degree, bg) for d in param_draws], axis=0)
+        maps["all-parameter Fisher"] = pens.std(axis=0)
+        timings["all-parameter Fisher"] = time.time() - t0
 
         t0 = time.time()
         gen = torch.Generator(device="cuda").manual_seed(SEED + vi)
