@@ -39,7 +39,9 @@ def load():
     for f in files:
         scene = Path(f).stem.replace("comparison_", "").replace("_wide", "").replace("_gap_0", "")
         scenes.append(scene)
-        for row in json.load(open(f)):
+        blob = json.load(open(f))
+        rows_ = blob["metrics"] if isinstance(blob, dict) else blob   # new shape / legacy list
+        for row in rows_:
             data.setdefault(row["name"], {})[scene] = row
     return scenes, data
 

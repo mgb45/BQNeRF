@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from gs_experiment import conformal
 from gs_experiment.baselines import fit_residual_supervised_sh, render_sh_field, uniform_coverage_sh
 from gs_experiment.evaluation import Prediction, compare, format_table, object_mask
 from gs_experiment.nerf_transforms import fov_x_to_intrinsics, load_transforms, opencv_viewmat_from_c2w
@@ -163,9 +164,22 @@ def run(scene="lego", ckpt_name="wide", eval_name="eval"):
     print(f"\n=== {scene}/{ckpt_name}: {len(eval_frames)} held-out views, object pixels, "
           f"frozen protocol ===")
     print(format_table(rows))
+
+    conf = [conformal.wrap_prediction(p) for p in preds]
+    print()
+    print(conformal.format_table(conf))
+
     out = RESULTS_DIR / f"comparison_{scene}_{ckpt_name}.json"
-    json.dump(rows, open(out, "w"), indent=1)
-    print(f"\nwrote {out}")
+    json.dump({"metrics": rows, "conformal": conf}, open(out, "w"), indent=1)
+    # Raw per-method arrays, so any future metric can be computed without
+    # re-rendering anything. The renders are the expensive part; the scoring
+    # is not, and a metric added later should never force a re-run.
+    raw = RESULTS_DIR / f"raw_{scene}_{ckpt_name}.npz"
+    np.savez_compressed(raw, sigma_n=sigma_n,
+                        **{f"{k}|{p.name}": v for p in preds
+                           for k, v in (("sigma", p.sigma), ("residual", p.residual),
+                                        ("view_id", p.view_id))})
+    print(f"\nwrote {out} and {raw}")
     return rows
 
 
