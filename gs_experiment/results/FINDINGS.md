@@ -872,3 +872,89 @@ squared gradients, which is unavailable post-hoc, so the same diagonal is
 estimated directly on the frozen map here (a cleaner estimator of the same
 quantity, but not identical); and FisherRF uses a bespoke exact CUDA kernel
 where this is an unbiased Monte-Carlo estimate.
+
+## 16. Deep ensemble: the strongest baseline, and its advantage is largely a capacity artefact
+
+The deep ensemble -- N independent trainings, per-pixel spread across members
+-- is the reference epistemic baseline and the one `zhao2026posterior`
+benchmarks against. It is also the only baseline here that requires
+retraining, so its cost belongs in every comparison.
+
+Matching capacity forced a design choice. An ensemble's members are DIFFERENT
+checkpoints, so it cannot be dropped into a comparison that runs every
+post-hoc method on one shared map: its mean render, and therefore its
+residuals, would differ from every other method's, and the protocol requires
+an identical target. So `scripts/run_ensemble_comparison.py` trains N members
+on identical views differing only in seed, uses member 0 as the shared
+reference every post-hoc method is built on and scored against, and takes the
+ensemble's uncertainty as the spread across members. Because that slightly
+disadvantages the ensemble -- its spread is centred on the ensemble mean, not
+member 0 -- a supplementary row scores it against its own mean too. Both were
+committed to before either was seen.
+
+### At reduced capacity the ensemble wins clearly (7 scenes)
+
+| metric | ours | deep ensemble (5x) | ensemble wins |
+|---|---|---|---|
+| per-pixel Spearman, mean | 0.219 | **0.452** | **7/7** |
+| per-view Spearman, mean | 0.705 | **0.811** | 4/7 |
+| AUSE, mean (lower better) | 0.540 | **0.278** | -- |
+| NLL gain over constant, mean | +0.069 | **+0.272** | **7/7** |
+| cost, mean | **7.7 s** | 366 s | 47x |
+
+The mechanism is structural rather than a tuning gap. At 17k-100k splats the
+dominant error source is REPRESENTATIONAL -- too few splats, and where they
+land depends on the seed. An ensemble sees exactly that, because different
+seeds place splats differently. Our posterior conditions on fixed geometry
+and measures appearance uncertainty only; it cannot see "there are not enough
+splats here". That is a real limitation of the construction.
+
+### But the comparison was run at the capacity that most favours it
+
+Our own per-pixel Spearman improves by +0.101 on every one of the 7 scenes
+going from the reduced budget to the 300k-splat `wide` recipe. If the
+ensemble's edge comes from representational error, it should shrink where the
+map can actually represent the scene. Tested directly, 5 members at full
+`wide` capacity (30k iterations, 300k splats; 1835 s and 2613 s of training):
+
+| scene | capacity | ours | ensemble | per-pixel gap | NLL gap | cost ratio |
+|---|---|---|---|---|---|---|
+| lego | reduced | 0.182 | 0.447 | 0.265 | 0.100 | 102x |
+| lego | **full** | 0.245 | 0.391 | **0.146** | **0.047** | 240x |
+| mic | reduced | 0.203 | 0.511 | 0.307 | 0.238 | 36x |
+| mic | **full** | 0.319 | 0.427 | **0.108** | **0.035** | 290x |
+
+The per-pixel gap shrinks by 45% (lego) and 65% (mic); the NLL gap by 53% and
+85%. Per-view at full capacity is a wash -- lego 0.610 against 0.710, mic
+**0.785 against 0.758**, i.e. ours ahead on mic where at reduced capacity the
+ensemble led 0.965 to 0.617.
+
+### The honest reading
+
+A 5-member deep ensemble remains better calibrated per-pixel than our
+posterior at both capacities. That is not in dispute and should be stated
+plainly. But:
+
+- the margin is strongly capacity-dependent and collapses by roughly half to
+  five-sixths at production capacity, which localises what an ensemble adds
+  (splat-placement and optimisation variability) and shows that component is
+  small once the map is adequate;
+- at full capacity the remaining gap is 0.11-0.15 Spearman and 0.035-0.047
+  nats, for **240-290x the compute**, and the ensemble needs five trainings
+  where ours needs a checkpoint you already have;
+- per-view, the aggregate that next-best-view selection actually consumes,
+  the two are indistinguishable at full capacity.
+
+The supplementary own-mean row is mixed and is reported as such: on mic it is
+much stronger than the shared-reference row (0.502 per-pixel, +0.386 NLL
+against 0.427 and +0.100), on lego slightly weaker (0.338 against 0.391).
+Scoring an ensemble against its own mean flatters it where members disagree
+about the mean itself, which is exactly the representational variability
+above.
+
+`gs_experiment/results/ensemble_capacity.png` shows the convergence.
+
+This also settles the capacity question ROADMAP item 1 raised: capacity is a
+real factor, not a confound to be averaged over, and a comparison run only at
+a reduced budget would have reported a conclusion that does not survive at
+the operating point anyone would actually use.

@@ -55,19 +55,28 @@ from gs_experiment.scripts.render_reconstruction import LOCAL_RUNS, RESULTS_DIR
 
 N_MEMBERS = 5
 N_DRAWS = 16
-TRAIN_OVERRIDES = dict(n_iters=6000, max_splats=100000, densify_end=3000, log_every=10**9)
+# Capacity is a FACTOR, not a confound (ROADMAP item 1). "configA" is the
+# calibrated budget; "wide" is the project's full recipe, and exists here
+# because the ensemble's advantage at reduced capacity may be an artefact of
+# representational error that shrinks when the map can actually represent the
+# scene -- which is a testable claim, not a caveat.
+CAPACITIES = {
+    "configA": dict(n_iters=6000, max_splats=100000, densify_end=3000, log_every=10**9),
+    "wide": dict(log_every=10**9),          # DEFAULT_TRAIN_KWARGS unchanged: 30k iters, 300k splats
+}
+TRAIN_OVERRIDES = CAPACITIES["configA"]
 
 
-def ensemble_dir(scene):
-    return LOCAL_RUNS / f"{scene}_prepared" / "ensemble_configA"
+def ensemble_dir(scene, capacity="configA"):
+    return LOCAL_RUNS / f"{scene}_prepared" / f"ensemble_{capacity}"
 
 
-def train_members(scene, pool_dir):
+def train_members(scene, pool_dir, capacity="configA"):
     """N checkpoints on identical views, differing only in seed. Cached: each
     is ~80 s and nothing about them changes between runs."""
     from gs_experiment.scripts.train_minimal_gsplat import DEFAULT_TRAIN_KWARGS, train
 
-    out = ensemble_dir(scene)
+    out = ensemble_dir(scene, capacity)
     out.mkdir(parents=True, exist_ok=True)
     # One scene directory, shared by every member -- identical views by construction.
     member_scene = out / "scene"
@@ -88,7 +97,7 @@ def train_members(scene, pool_dir):
         ply = out / f"member_{m}.ply"
         if not ply.exists():
             kw = dict(DEFAULT_TRAIN_KWARGS)
-            kw.update(TRAIN_OVERRIDES)
+            kw.update(CAPACITIES[capacity])
             kw["seed"] = 1000 + m
             assert kw["background_color"] == BACKGROUND_COLOR, "train/eval background mismatch"
             t0 = time.time()
@@ -99,10 +108,10 @@ def train_members(scene, pool_dir):
     return member_scene, paths, secs
 
 
-def run(scene="lego", pool="wide", eval_name="eval"):
+def run(scene="lego", pool="wide", eval_name="eval", capacity="configA"):
     pool_dir = LOCAL_RUNS / f"{scene}_prepared" / pool
     eval_dir = LOCAL_RUNS / f"{scene}_prepared" / eval_name
-    member_scene, plies, train_secs = train_members(scene, pool_dir)
+    member_scene, plies, train_secs = train_members(scene, pool_dir, capacity)
     members = [read_3dgs_ply(str(p)) for p in plies]
     reference = members[0]
     sh_coeffs, degree = reference["sh_coeffs"], reference["sh_degree"]
@@ -110,7 +119,7 @@ def run(scene="lego", pool="wide", eval_name="eval"):
     with Image.open(str(member_scene / (train_frames[0][0] + ".png"))) as im:
         tw, th = im.size
     train_K = fov_x_to_intrinsics(cax, tw, th)
-    print(f"{scene}: {N_MEMBERS} members, reference has {sh_coeffs.shape[0]} splats, "
+    print(f"{scene} [{capacity}]: {N_MEMBERS} members, reference has {sh_coeffs.shape[0]} splats, "
           f"{len(train_frames)} training views, {train_secs:.0f}s of training")
 
     sigma_n = float(np.sqrt(estimate_noise_variance(
@@ -175,9 +184,10 @@ def run(scene="lego", pool="wide", eval_name="eval"):
                         requires_retraining="ensemble" in n, name=n)
              for n, a in acc.items()]
     rows = compare(preds)
-    print(f"\n=== {scene}: deep ensemble vs ours, matched capacity, frozen protocol ===")
+    print(f"\n=== {scene} [{capacity}]: deep ensemble vs ours, matched capacity, frozen protocol ===")
     print(format_table(rows))
-    out = RESULTS_DIR / f"ensemble_{scene}.json"
+    out = RESULTS_DIR / (f"ensemble_{scene}.json" if capacity == "configA"
+                         else f"ensemble_{scene}_{capacity}.json")
     json.dump(rows, open(out, "w"), indent=1)
     print(f"\nwrote {out}")
     return rows
