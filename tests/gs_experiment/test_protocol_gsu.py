@@ -82,3 +82,28 @@ def test_score_views_averages_per_view_rather_than_pooling():
     out = score_views([easy, hard])
     assert out["n_views"] == 2
     assert abs(out["AUSE"] - np.mean([gsu_ause(*easy), gsu_ause(*hard)])) < 1e-12
+
+
+def test_dssim_error_uses_their_ssim_and_is_zero_for_identical_images():
+    """Their Table 1 reports DSSIM columns computed with their own windowed
+    SSIM; a substitute would differ at the borders, so the port refuses to
+    run without their checkout rather than quietly using a different one."""
+    pytest.importorskip("torch")
+    from gs_experiment.protocol_gsu import dssim_error
+    if not SRC.exists():
+        pytest.skip("third_party/GS-U not cloned")
+    rng = np.random.default_rng(0)
+    img = rng.random((48, 64, 3)).astype(np.float32)
+    same = dssim_error(img, img)
+    assert same.shape == (48, 64)
+    assert np.abs(same).max() < 1e-4, same.max()
+    worse = dssim_error(img, np.clip(img + rng.normal(0, 0.2, img.shape), 0, 1).astype(np.float32))
+    assert worse.mean() > same.mean()
+
+
+def test_dssim_error_refuses_to_substitute_a_different_ssim(tmp_path):
+    pytest.importorskip("torch")
+    from gs_experiment.protocol_gsu import dssim_error
+    with pytest.raises(FileNotFoundError):
+        dssim_error(np.zeros((8, 8, 3), np.float32), np.zeros((8, 8, 3), np.float32),
+                    third_party_root=tmp_path)

@@ -18,8 +18,10 @@ their actual function source rather than against our reading of it.
 Their protocol, as implemented:
 
 * **whole frame**, no object mask;
-* error is `|gt - pred|` averaged over RGB to a per-pixel scalar (a DSSIM
-  variant is also reported); uncertainty is likewise a per-pixel scalar;
+* error is `|gt - pred|` averaged over RGB to a per-pixel scalar, AND a
+  DSSIM variant `1 - SSIM_map` averaged the same way. Their Table 1 reports
+  both, so both are needed to add a row to it; uncertainty is likewise a
+  per-pixel scalar;
 * **Pearson**, not Spearman;
 * **AUSE** over `linspace(0, 0.999, 100)`, normalised by the full-set mean
   error, dropping pixels where error or uncertainty is exactly zero;
@@ -32,6 +34,8 @@ them. It is simply a different question from the one our protocol asks.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 
@@ -98,8 +102,38 @@ def gsu_pearson(error: np.ndarray, uncertainty: np.ndarray) -> float:
 
 
 def rgb_l1_error(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
-    """Their error map: absolute difference averaged over colour channels."""
+    """Their L1 error map: absolute difference averaged over colour channels."""
     return np.abs(np.asarray(gt) - np.asarray(pred)).mean(axis=-1)
+
+
+def dssim_error(gt: np.ndarray, pred: np.ndarray, third_party_root=None) -> np.ndarray:
+    """Their DSSIM error map, `1 - SSIM_map`, averaged over channels.
+
+    Uses THEIR `utils.loss_utils.ssim(..., map=True)` when the released
+    checkout is present, because their Table 1's DSSIM columns were produced
+    by that exact windowed SSIM (11-wide Gaussian, sigma 1.5) and a
+    reimplementation would differ at the edges. Raises if unavailable rather
+    than silently substituting a different SSIM -- a number that is not
+    theirs must not be reported in their table.
+    """
+    import sys
+
+    import torch
+
+    root = Path(third_party_root or Path(__file__).resolve().parents[1] / "third_party" / "GS-U")
+    if not (root / "utils" / "loss_utils.py").exists():
+        raise FileNotFoundError(
+            f"U-3DGS checkout not found at {root}; their SSIM is required to reproduce "
+            "their DSSIM columns. Clone github.com/Chumsy0725/GS-U into third_party/.")
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from utils.loss_utils import ssim as their_ssim
+
+    g = torch.tensor(np.asarray(gt, dtype=np.float32)).permute(2, 0, 1).unsqueeze(0)
+    p = torch.tensor(np.asarray(pred, dtype=np.float32)).permute(2, 0, 1).unsqueeze(0)
+    with torch.no_grad():
+        m = their_ssim(g, p, map=True).squeeze(0).mean(dim=0)
+    return (1.0 - m).cpu().numpy()
 
 
 def score_views(per_view: list[tuple[np.ndarray, np.ndarray]]) -> dict:

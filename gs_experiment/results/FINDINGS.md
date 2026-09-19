@@ -1063,3 +1063,70 @@ correlation (sections 14-15); ours sits at 89.3%, closest to nominal of any
 method in either regime. A method whose sigma is blind to which view is hard
 will systematically under-cover on the hard ones, and conformal exposes that
 without being told about views at all.
+
+## 19. The conclusions do not depend on our protocol
+
+A protocol we invented cannot be compared against anyone's published table,
+and "our numbers are good under our metric" is not a claim a reviewer should
+accept. `gs_experiment/protocol_gsu.py` reproduces U-3DGS's
+`uncertainty_metrics.py` from their released code, cross-validated against
+their actual function source (which caught a real porting bug: they build the
+sparsification grid with `torch.linspace`, i.e. float32, and the integer
+truncation of `(1-r)*n` lands on different indices in float64 -- worth 6e-6
+of AUSE). Their protocol differs from ours in five ways: whole frame rather
+than object pixels, RGB-averaged rather than per-channel, Pearson rather than
+Spearman, per-view averaged rather than pooled, and dropping pixels where
+error or uncertainty is exactly zero.
+
+Every run re-scored under both, 15 scene/regime conditions, no failures.
+
+**Under their protocol, epistemic regime (7 scenes):**
+
+| method | AUSE(L1) ↓ | Pearson(L1) ↑ |
+|---|---|---|
+| **ours (SH posterior)** | **0.255** | **0.719** |
+| residual-supervised SH | 0.323 | 0.572 |
+| weight concentration | 0.336 | 0.671 |
+| uniform-coverage SH | 0.342 | 0.667 |
+| render gradient | 0.398 | 0.450 |
+| all-parameter Fisher | 0.560 | 0.008 |
+
+**Under their protocol, saturated regime (7 synthetic + bonsai):**
+
+| method | AUSE(L1) ↓ | Pearson(L1) ↑ |
+|---|---|---|
+| ours (SH posterior) | **0.321** | 0.578 |
+| residual-supervised SH | 0.329 | **0.579** |
+| render gradient | 0.360 | 0.418 |
+| uniform-coverage SH | 0.514 | 0.485 |
+| all-parameter Fisher | 0.551 | 0.109 |
+| weight concentration | 0.555 | 0.461 |
+
+**The two-regime dissociation is protocol-independent.** We lead clearly where
+error is epistemic and are statistically indistinguishable from the
+residual-supervised baseline where it is not (0.321 against 0.329 AUSE, 0.578
+against 0.579 Pearson) -- the same conclusion our own protocol reached, under
+a metric chosen by someone else.
+
+### Where the protocols disagree, and why that is informative
+
+| regime | ours: Spearman (object px) | theirs: Pearson (whole frame) |
+|---|---|---|
+| epistemic | 0.661 | 0.719 |
+| saturated | 0.320 | 0.634 |
+
+Whole-frame scoring flatters every method, and flatters the weak ones most.
+The residual-supervised baseline goes from -0.373 (our object-pixel Spearman,
+epistemic) to +0.572 (their whole-frame Pearson) -- from actively
+anti-correlated to apparently respectable. The reason is the silhouette:
+background pixels have near-zero error AND near-zero uncertainty for every
+method, and that shared structure is correlation the metric counts but no
+method earned. This is the hazard OUGS's own Figure 1 warns about, visible
+here inside a different paper's metric, and it is the concrete argument for
+reporting object-restricted numbers alongside whole-frame ones rather than
+instead of them.
+
+Note also that their protocol reports L1 AND DSSIM variants of both metrics
+(their Table 1 has four columns). `protocol_gsu.dssim_error` uses THEIR
+windowed SSIM rather than a substitute, and raises if the checkout is absent
+-- a number that is not theirs must not appear in their table.
