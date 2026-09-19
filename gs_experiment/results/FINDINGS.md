@@ -958,3 +958,59 @@ This also settles the capacity question ROADMAP item 1 raised: capacity is a
 real factor, not a confound to be averaged over, and a comparison run only at
 a reduced budget would have reported a conclusion that does not survive at
 the operating point anyone would actually use.
+
+## 17. The epistemic regime across all scenes, at full capacity
+
+Sections 13-16 compared methods where error is largely misspecification. This
+is the other regime, built properly: `scripts/build_gap_checkpoints.py`
+removes every training view within 75 degrees of one reference direction and
+RETRAINS at the project's full `wide` recipe -- retraining because section 8
+showed a frozen map has no epistemic error to predict, and at full capacity
+because section 16 showed a reduced budget reports conclusions that do not
+survive. The cone removes a different fraction per scene (hotdog keeps
+15/100 views, ficus 62/100), since it depends on how the capture orbit sits
+relative to the reference direction.
+
+Mean over 7 scenes, object pixels, frozen protocol:
+
+| method | per-pixel Sp | per-view Sp | AUSE | NLL gain | wins (of 4 metrics x 7 scenes) |
+|---|---|---|---|---|---|
+| **ours (SH posterior)** | **0.661** | **0.951** | **0.183** | **+0.456** | **27/28** |
+| uniform-coverage SH | 0.388 | 0.896 | 0.356 | +0.135 | 1/28 |
+| weight concentration | 0.151 | 0.719 | 0.531 | +0.039 | 0 |
+| all-parameter Fisher | -0.007 | -0.057 | 0.672 | +0.001 | 0 |
+| render gradient | -0.018 | -0.849 | 0.733 | -0.008 | 0 |
+| residual-supervised SH | **-0.373** | **-0.843** | 1.090 | -0.008 | 0 |
+
+Ours wins 7/7 on per-pixel Spearman, AUSE and NLL gain, and 6/7 on per-view
+(uniform-coverage edges ship by 0.001). The two methods that fit OBSERVED
+structure -- the residual-supervised channel and the render-gradient floor --
+are strongly ANTI-correlated at view level (-0.843 and -0.849 mean), and the
+residual-supervised one is anti-correlated per-pixel on 6 of 7 scenes. They
+are not merely uninformative here; they point confidently at the wrong
+places, because what they learned is where error sat in the regions the
+training views covered, and the question being asked is about the region
+those views excluded.
+
+The all-parameter Fisher baseline collapses to approximately zero on every
+metric (mean per-pixel -0.007, per-view -0.057), reinforcing section 15: the
+geometry terms do not merely fail to help, they wash out the appearance
+signal that does work.
+
+This is the strongest result in the project. It is also the regime the method
+is FOR, and section 13-14's saturated-regime numbers should be read as the
+honest boundary of the claim rather than the claim itself.
+
+### A caveat on our own metric
+
+On 3 of 7 scenes our fraction-of-attainable exceeds 1.0 (ficus 1.09, hotdog
+1.07, ship 1.04). That is not a method scoring better than perfectly; it is a
+limitation of how the ceiling is estimated. The ceiling simulates
+`eps* ~ N(0, sigma^2)` -- residuals independent across pixels and Gaussian
+given sigma. Real residuals are neither: they are spatially correlated and
+heavier-tailed, which makes the ranking task genuinely easier than the
+simulation assumes. So the ceiling is a MODEL-BASED estimate of attainable
+rank correlation, not a hard bound, and a value near or slightly above 1.0
+should be read as "this uncertainty ranks about as well as its own spread
+allows", not as a paradox. This does not affect any cross-method comparison,
+which the protocol already directs to raw Spearman, AUSE and NLL.
