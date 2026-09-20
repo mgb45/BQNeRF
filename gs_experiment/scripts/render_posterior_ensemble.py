@@ -158,14 +158,19 @@ def sample_sh_draws(sh_coeffs, data_precision, band_precision, n_draws, seed, de
     draws = torch.empty((n_draws, n_splats, 3, n_coeffs), dtype=torch.float32, device=device)
     for c in range(3):
         prior = torch.diag(torch.tensor(band_precision[c], dtype=torch.float32, device=device))
-        chol = torch.linalg.cholesky(d_term + prior)  # (N, K, K), lower
+        chol_t = torch.linalg.cholesky(d_term + prior).transpose(-1, -2).contiguous()  # upper L^T
+        # Noise is drawn in one shot, in exactly the shape and order the
+        # previous implementation used, so draws stay bit-identical.
         noise = torch.randn((n_draws, n_splats, n_coeffs, 1), generator=generator, dtype=torch.float32, device=device)
-        # L^T x = r, solved per draw against the shared (N, K, K) factor
-        perturbation = torch.linalg.solve_triangular(
-            chol.transpose(-1, -2).unsqueeze(0).expand(n_draws, -1, -1, -1), noise, upper=True
-        ).squeeze(-1)
-        draws[:, :, c, :] = theta[:, c, :].unsqueeze(0) + perturbation
-        del chol, noise, perturbation
+        # ...but the SOLVE loops over draws rather than broadcasting the
+        # factor across them. `chol_t.expand(n_draws, ...)` is a view that
+        # solve_triangular materialises: at 1.07M splats and 16 draws that is
+        # a 16.4 GiB allocation and an immediate OOM. It only ever fit because
+        # the synthetic scenes here are 300k splats; real captures are not.
+        for s_i in range(n_draws):
+            draws[s_i, :, c, :] = theta[:, c, :] + torch.linalg.solve_triangular(
+                chol_t, noise[s_i], upper=True).squeeze(-1)
+        del chol_t, noise
         torch.cuda.empty_cache()
     return draws
 

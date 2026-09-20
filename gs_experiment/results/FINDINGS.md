@@ -1130,3 +1130,82 @@ Note also that their protocol reports L1 AND DSSIM variants of both metrics
 (their Table 1 has four columns). `protocol_gsu.dssim_error` uses THEIR
 windowed SSIM rather than a substitute, and raises if the checkout is absent
 -- a number that is not theirs must not appear in their table.
+
+## 20. Running on their checkpoint, under their scorer -- and a silent convention bug
+
+Strategy shift: rather than reimplement competitors, take their published
+table and add one row. Our method is post-hoc, so it can consume THEIR
+trained checkpoint, and their `uncertainty_metrics.py` can score our output
+directly -- nothing of theirs is reimplemented anywhere in that path.
+
+Setup, all verified: their `train.py` on Mip-NeRF 360 bonsai reproduces
+expected quality (PSNR 32.42, SSIM 0.944, published 3DGS is ~32); their
+`train_errors.py` reproduces their own uncertainty (AUSE-L1 0.282,
+Pearson-L1 0.526, against their 9-scene published average of 0.328/0.369 --
+bonsai is an easier indoor scene, so slightly better is right); and gsplat
+reproduces their renders on their checkpoint to **0.03 dB** (32.318 vs
+32.348), with 57.5 dB agreement between the two rasterizers, which is what
+licenses using our renderer for our row.
+
+### The bug
+
+First attempt put us at AUSE-L1 0.495 / Pearson-L1 0.088 -- mid-tier, below
+every method in their table. Diagnosis showed our sigma was nearly flat: a
+2.3x dynamic range against their 7.2x, and only **1.09x** larger on the
+worst-5%-error pixels against their 3.49x. The initial reading was that the
+empirical-Bayes prior is mis-specified for real unbounded scenes. That was
+wrong.
+
+**87.2% of splats had recorded zero observations across all 255 training
+cameras.** `accumulate_sh_precision_rasterized` converts c2w matrices with
+`nerf_transforms.opencv_viewmat_from_c2w`, which applies an OpenGL->OpenCV
+axis flip because NeRF-Synthetic's c2w is OpenGL. COLMAP/3DGS rotations are
+ALREADY OpenCV, so every accumulation camera pointed backwards. Passing the
+c2w pre-multiplied by the same flip (it is its own inverse) fixes it:
+unobserved splats drop to **2.4%**.
+
+What made this hard to catch is that the rendering path was correct
+throughout -- it uses `inv(c2w)` directly and reproduced their PSNR to 0.03
+dB -- while the accumulation path silently used the other convention. Two
+paths, two conventions, and only one of them was checked. The failure mode is
+not a crash or an obviously broken image; it is a plausible-looking flat
+uncertainty map.
+
+**No existing result is affected.** Every NeRF-Synthetic run builds frames
+from `load_transforms`, which returns OpenGL c2w, where that flip is correct.
+The bug existed only in the new bridge to 3DGS-format models.
+
+### Result on bonsai
+
+| | AUSE-L1 ↓ | Pearson-L1 ↑ | AUSE-DSSIM ↓ | Pearson-DSSIM ↑ |
+|---|---|---|---|---|
+| U-3DGS (their code) | **0.282** | **0.526** | **0.230** | **0.567** |
+| ours, population prior | 0.308 | 0.313 | 0.377 | 0.171 |
+| ours, evidence prior | 0.308 | 0.317 | 0.378 | 0.176 |
+| *(ours before the fix)* | *0.495* | *0.088* | *0.473* | *0.053* |
+| Var3DGS (their Table 1) | 0.558 | 0.118 | 0.495 | 0.160 |
+| Manifold (their Table 1) | 0.520 | 0.070 | 0.559 | -0.005 |
+| FisherRF (their Table 1) | 0.708 | -0.055 | 0.606 | 0.009 |
+
+On L1 we land second, close to their method (0.308 against 0.282) and well
+clear of all three of their published baselines. On DSSIM we are clearly
+behind (0.377 against 0.230). That is not a defect: their fit target is a
+convex mix of L1 and DSSIM, so they optimise that metric directly and we do
+not target it at all.
+
+### The evidence prior does not pay
+
+`rasterized_sh_precision.fit_band_precision_evidence` implements MacKay
+type-II ML for the band/channel prior precision, replacing the
+population-variance rule. With the accumulation fixed it changes nothing
+measurable (AUSE-L1 0.308 either way, Pearson 0.317 against 0.313), because
+the data term now dominates for 87% of splats and the prior barely enters. It
+is kept, since it is the principled choice and costs 35 s, but it is the
+FOURTH richer-model attempt in this project that does not pay, after
+cross-splat coupling, opacity-in-the-posterior and the spatially-varying
+aleatoric floor.
+
+It is also worth recording that its earlier Cholesky breakdown -- which
+looked like a real conditioning limit -- was entirely an artefact of the
+broken accumulation. With sound input the fitted prior is positive-definite
+for every one of 1.07M splats.

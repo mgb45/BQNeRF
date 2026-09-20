@@ -277,3 +277,79 @@ def pixel_weight_concentration(means, quats, scales, opacities, viewmat, Ks, wid
         image, _, _ = gsplat.rasterization(means, quats, scales, opacities, probes, viewmat, Ks,
                                            width=width, height=height, sh_degree=None)
     return (image[0] ** 2).mean(dim=-1)   # (H, W)
+
+
+def fit_band_precision_evidence(sh_coeffs, data_precision, n_iters: int = 30,
+                                device: str = "cuda", chunk: int = 200_000, verbose: bool = False):
+    """Type-II maximum likelihood (MacKay evidence) fit of the per-band,
+    per-channel prior precision, replacing the population-variance rule
+    `empirical_band_precision`.
+
+    Why this exists. The population rule sets `lambda_l = 1/Var_i[theta_i,l]`
+    across all splats. On object-centric synthetic scenes that is a sensible
+    scale, but it ignores the data entirely: the variance it measures includes
+    all the spread the training views ALREADY explain. On a real unbounded
+    capture -- 1.07M splats spanning foreground, room and far-field background
+    -- that population variance is enormous, `lambda` comes out tiny, and the
+    prior swamps the data term for essentially every splat. The symptom is a
+    posterior that is nearly flat: on Mip-NeRF 360 bonsai our sigma had a
+    2.3x dynamic range against U-3DGS's 7.2x, and was only 1.09x larger on the
+    worst-5% error pixels against their 3.49x.
+
+    MacKay's update fixes exactly that, by measuring how much of each
+    coefficient the data actually determines:
+
+        gamma_l   = sum_i sum_{k in band l} (1 - lambda_l * Sigma_i,kk)
+        lambda_l <- gamma_l / sum_i sum_{k in band l} (theta_i,k - mu_l)^2
+
+    `gamma_l` is the effective number of well-determined parameters in that
+    band. Where the data constrains a coefficient, `Sigma_kk` is small,
+    `gamma` approaches its count, and the prior is allowed to be loose; where
+    it does not, `gamma` falls and the prior tightens. Coefficients are
+    centred on their band/channel population mean, so the prior is
+    hierarchical -- shrinkage is toward the population, not toward black.
+
+    `data_precision` must ALREADY be divided by sigma_n^2, i.e. be the same
+    matrix the posterior uses. Returns `(3, n_coeffs)` to drop straight into
+    `sample_sh_draws` in place of `empirical_band_precision`.
+    """
+    theta = np.asarray(sh_coeffs, dtype=np.float64)          # (N, 3, K)
+    n_splats, _, n_coeffs = theta.shape
+    bands = [(lo, min(hi, n_coeffs)) for lo, hi in
+             ((0, 1), (1, 4), (4, 9), (9, 16)) if lo < n_coeffs]
+    out = np.empty((3, n_coeffs), dtype=np.float64)
+    d_cpu = torch.tensor(np.asarray(data_precision), dtype=torch.float32)
+
+    for c in range(3):
+        lam = np.array([1.0 / max(np.var(theta[:, c, lo:hi]), 1e-12) for lo, hi in bands])
+        mu = np.array([theta[:, c, lo:hi].mean() for lo, hi in bands])
+        sq = np.array([float(((theta[:, c, lo:hi] - m) ** 2).sum())
+                       for (lo, hi), m in zip(bands, mu)])
+        counts = np.array([n_splats * (hi - lo) for lo, hi in bands], dtype=np.float64)
+
+        for it in range(n_iters):
+            diag_full = np.zeros(n_coeffs)
+            lam_vec = np.zeros(n_coeffs)
+            for b, (lo, hi) in enumerate(bands):
+                lam_vec[lo:hi] = lam[b]
+            lam_t = torch.tensor(lam_vec, dtype=torch.float32, device=device)
+            for start in range(0, n_splats, chunk):                # chunked: (N,K,K) inverse
+                blk = d_cpu[start:start + chunk].to(device)
+                sigma_diag = torch.diagonal(
+                    torch.linalg.inv(blk + torch.diag(lam_t)), dim1=-2, dim2=-1)
+                diag_full += sigma_diag.double().sum(dim=0).cpu().numpy()
+                del blk, sigma_diag
+            gamma = np.array([counts[b] - lam[b] * diag_full[lo:hi].sum()
+                              for b, (lo, hi) in enumerate(bands)])
+            new = np.clip(gamma, 1e-6, None) / np.maximum(sq, 1e-12)
+            if np.max(np.abs(np.log(new / lam))) < 1e-4:
+                lam = new
+                break
+            lam = new
+        if verbose:
+            print(f"    channel {c}: lambda per band {np.round(lam, 4)} "
+                  f"(population rule gave "
+                  f"{np.round([1.0 / max(np.var(theta[:, c, lo:hi]), 1e-12) for lo, hi in bands], 4)})")
+        for b, (lo, hi) in enumerate(bands):
+            out[c, lo:hi] = lam[b]
+    return out
