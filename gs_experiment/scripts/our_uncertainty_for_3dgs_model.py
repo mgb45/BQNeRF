@@ -62,11 +62,12 @@ from gs_experiment.rasterized_sh_precision import (
     accumulate_sh_precision_rasterized,
     fit_band_precision_evidence,
 )
-from gs_experiment.scripts.render_posterior_ensemble import empirical_band_precision, sample_sh_draws
+from gs_experiment.scripts.render_posterior_ensemble import empirical_band_precision
 
 N_DRAWS = 16
 N_PROBES = 32
 SEED = 0
+SPLAT_CHUNK = 400_000     # Cholesky/solve block; bounds peak VRAM independent of scene size
 
 
 def load_cameras(model_dir: Path, n_test: int):
@@ -102,6 +103,34 @@ def intrinsics(cam, width, height) -> np.ndarray:
     s = width / cam["width"]
     return np.array([[cam["fx"] * s, 0.0, width / 2.0],
                      [0.0, cam["fy"] * s, height / 2.0], [0.0, 0.0, 1.0]])
+
+
+def draw_one(theta, d_term, lam_rows, seed, device):
+    """One posterior draw of the SH coefficients, streamed.
+
+    `sample_sh_draws` materialises every draw at once: `(n_draws, N, 3, K)`
+    is 18 GB at the 6M splats a Mip-NeRF 360 outdoor scene produces, before
+    counting the `(N, K, K)` Cholesky factor. Here draws are generated one at
+    a time and splats in chunks, so peak memory is set by SPLAT_CHUNK rather
+    than by scene size, and the caller can fold each draw into a running
+    variance and discard it.
+    """
+    n_splats, _, n_coeffs = theta.shape
+    out = torch.empty((n_splats, 3, n_coeffs), dtype=torch.float32, device=device)
+    for c in range(3):
+        lam = torch.diag(torch.tensor(lam_rows[c], dtype=torch.float32, device=device))
+        for start in range(0, n_splats, SPLAT_CHUNK):
+            end = min(start + SPLAT_CHUNK, n_splats)
+            gen = torch.Generator(device=device).manual_seed(
+                (seed * 1_000_003 + c) * 1_000_003 + start)
+            blk = torch.tensor(d_term[start:end], dtype=torch.float32, device=device) + lam
+            chol_t = torch.linalg.cholesky(blk).transpose(-1, -2).contiguous()
+            noise = torch.randn((end - start, n_coeffs, 1), generator=gen,
+                                dtype=torch.float32, device=device)
+            out[start:end, c, :] = theta[start:end, c, :] + torch.linalg.solve_triangular(
+                chol_t, noise, upper=True).squeeze(-1)
+            del blk, chol_t, noise
+    return out
 
 
 def render(ck_t, sh, viewmat, K, width, height, degree, bg):
@@ -184,23 +213,33 @@ def run(model_dir, source, images_dir, iteration=30000, out_name="error_masks_ou
         band = empirical_band_precision(ck["sh_coeffs"], degree)
     else:
         raise ValueError(f"unknown prior mode {prior!r}")
-    draws = sample_sh_draws(ck["sh_coeffs"], data, band, N_DRAWS, SEED)
     fit_secs = time.time() - t0
     print(f"  posterior fitted in {fit_secs:.1f}s")
 
     out_dir = model_dir / renders_folder / split / out_name
     out_dir.mkdir(parents=True, exist_ok=True)
+    theta = t(ck["sh_coeffs"])
     t0 = time.time()
-    for i, cam in enumerate(test_cams):
-        vm = t(view_matrix(cam))[None]
-        ens = np.stack([render(ck_t, draws[s].transpose(1, 2).contiguous(), vm, K,
-                               width, height, degree, bg).cpu().numpy()
-                        for s in range(N_DRAWS)], axis=0)
+    # Welford over draws, per view: never holds the ensemble, so this scales
+    # to any splat count and any number of draws.
+    mean = [np.zeros((height, width, 3), np.float64) for _ in test_cams]
+    m2 = [np.zeros((height, width, 3), np.float64) for _ in test_cams]
+    for s_i in range(N_DRAWS):
+        draw = draw_one(theta, data, band, SEED + s_i, device)
+        sh_draw = draw.transpose(1, 2).contiguous()
+        for v, cam in enumerate(test_cams):
+            img = render(ck_t, sh_draw, t(view_matrix(cam))[None], K,
+                         width, height, degree, bg).cpu().numpy().astype(np.float64)
+            d = img - mean[v]
+            mean[v] += d / (s_i + 1)
+            m2[v] += d * (img - mean[v])
+        del draw, sh_draw
+        torch.cuda.empty_cache()
+    for v in range(len(test_cams)):
         # Their maps are one scalar per pixel, so collapse CHANNELS as they do.
         # gsplat returns (H, W, 3) while their images are (3, H, W), so the
-        # channel axis is -1 here, not 0 -- averaging axis 0 silently produces
-        # a (W, 3) array that only fails downstream on a shape check.
-        np.save(out_dir / f"{i:05d}.npy", ens.std(axis=0).mean(axis=-1))
+        # channel axis is -1 here, not 0.
+        np.save(out_dir / f"{v:05d}.npy", np.sqrt(m2[v] / max(N_DRAWS - 1, 1)).mean(axis=-1))
     infer_secs = time.time() - t0
     print(f"  wrote {len(test_cams)} maps to {out_dir} ({infer_secs:.1f}s)")
     json.dump({"sigma_n": sigma_n, "fit_seconds": fit_secs, "infer_seconds": infer_secs,
