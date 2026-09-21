@@ -1,0 +1,179 @@
+{
+ "dense capture": [
+  {
+   "scene": "bicycle",
+   "dataset": "Mip-NeRF 360",
+   "n": 25,
+   "U-3DGS": 0.8109023973617789,
+   "ours": 0.5000039098441359
+  },
+  {
+   "scene": "bonsai",
+   "dataset": "Mip-NeRF 360",
+   "n": 37,
+   "U-3DGS": 0.8819946458384328,
+   "ours": 0.4099731236222966
+  },
+  {
+   "scene": "counter",
+   "dataset": "Mip-NeRF 360",
+   "n": 30,
+   "U-3DGS": 0.6909458472199899,
+   "ours": 0.43138066672062214
+  },
+  {
+   "scene": "drjohnson",
+   "dataset": "Deep Blending",
+   "n": 33,
+   "U-3DGS": 0.6292152890850587,
+   "ours": 0.6354637881866181
+  },
+  {
+   "scene": "flowers",
+   "dataset": "Mip-NeRF 360",
+   "n": 22,
+   "U-3DGS": 0.6476078837770187,
+   "ours": 0.40381232834891306
+  },
+  {
+   "scene": "garden",
+   "dataset": "Mip-NeRF 360",
+   "n": 24,
+   "U-3DGS": 0.5771843036919284,
+   "ours": 0.6545581898956229
+  },
+  {
+   "scene": "kitchen",
+   "dataset": "Mip-NeRF 360",
+   "n": 35,
+   "U-3DGS": 0.5787689286426868,
+   "ours": 0.2356562149492862
+  },
+  {
+   "scene": "playroom",
+   "dataset": "Deep Blending",
+   "n": 29,
+   "U-3DGS": 0.6143490531898353,
+   "ours": 0.7261466233759102
+  },
+  {
+   "scene": "room",
+   "dataset": "Mip-NeRF 360",
+   "n": 39,
+   "U-3DGS": 0.5816747342224204,
+   "ours": 0.6447054630296463
+  },
+  {
+   "scene": "stump",
+   "dataset": "Mip-NeRF 360",
+   "n": 16,
+   "U-3DGS": 0.700249957078605,
+   "ours": 0.45186900436981076
+  },
+  {
+   "scene": "train",
+   "dataset": "Tanks & Temples",
+   "n": 38,
+   "U-3DGS": 0.381520930975155,
+   "ours": 0.12867662965911325
+  },
+  {
+   "scene": "treehill",
+   "dataset": "Mip-NeRF 360",
+   "n": 18,
+   "U-3DGS": 0.7773654003232499,
+   "ours": 0.3345979180223555
+  },
+  {
+   "scene": "truck",
+   "dataset": "Tanks & Temples",
+   "n": 32,
+   "U-3DGS": 0.34330389095634584,
+   "ours": 0.17931079085822862
+  }
+ ],
+ "trajectory gap": [
+  {
+   "scene": "bicycle",
+   "dataset": "Mip-NeRF 360",
+   "n": 20,
+   "U-3DGS": -0.0577782695097224,
+   "ours": -0.17028203230895142,
+   "farthest-point": -0.35622985222641756,
+   "median_iso_deg": 14.37576583472901
+  },
+  {
+   "scene": "bonsai",
+   "dataset": "Mip-NeRF 360",
+   "n": 30,
+   "U-3DGS": 0.5578771315141854,
+   "ours": 0.5697441708444806,
+   "farthest-point": 0.47825939791139593,
+   "median_iso_deg": 16.976600121639056
+  },
+  {
+   "scene": "counter",
+   "dataset": "Mip-NeRF 360",
+   "n": 24,
+   "U-3DGS": 0.8231136655327521,
+   "ours": 0.9276554343464534,
+   "farthest-point": 0.47212826752122583,
+   "median_iso_deg": 16.460827812842247
+  },
+  {
+   "scene": "flowers",
+   "dataset": "Mip-NeRF 360",
+   "n": 18,
+   "U-3DGS": 0.7021095140967448,
+   "ours": 0.7466264735002116,
+   "farthest-point": 0.7012316745509006,
+   "median_iso_deg": 7.718490602137418
+  },
+  {
+   "scene": "garden",
+   "dataset": "Mip-NeRF 360",
+   "n": 19,
+   "U-3DGS": 0.36996481823948396,
+   "ours": 0.7583582087781163,
+   "farthest-point": 0.766913876813458,
+   "median_iso_deg": 12.642949461378837
+  },
+  {
+   "scene": "kitchen",
+   "dataset": "Mip-NeRF 360",
+   "n": 28,
+   "U-3DGS": 0.5971294499932299,
+   "ours": 0.7095685459900982,
+   "farthest-point": 0.3936734705580982,
+   "median_iso_deg": 24.167500988119187
+  },
+  {
+   "scene": "playroom",
+   "dataset": "Deep Blending",
+   "n": 23,
+   "U-3DGS": 0.8185693063045592,
+   "ours": 0.8670671870039878,
+   "farthest-point": 0.33502637767281507,
+   "median_iso_deg": 8.438680592925767
+  },
+  {
+   "scene": "stump",
+   "dataset": "Mip-NeRF 360",
+   "n": 13,
+   "U-3DGS": 0.18575737330722566,
+   "ours": 0.19214734931834365,
+   "farthest-point": 0.15457549859752534,
+   "median_iso_deg": 22.093047168564002
+  },
+  {
+   "scene": "treehill",
+   "dataset": "Mip-NeRF 360",
+   "n": 15,
+   "U-3DGS": -0.7281017263435885,
+   "ours": -0.9215879107665544,
+   "farthest-point": -1.0877112470881543,
+   "median_iso_deg": 11.134739878608158
+  }
+ ],
+ "30 deg arc gap": []
+}
