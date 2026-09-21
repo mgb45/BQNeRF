@@ -1578,3 +1578,66 @@ sections 24 and 25 do; it is, with one exception, the Mip-NeRF 360 scenes
 re-cut. That is still n=9 against section 21's n=3, and it has the
 compensating virtue of being the same scenes as the dense row -- the
 comparison is a construction changing, not a dataset changing.
+
+## 27. The gap row at n=9: the section 21 result does not generalise on AUSE
+
+Section 21 reported trajectory hold-outs on three scenes and found ours
+ahead 2 wins and 1 tie on AUSE-L1. Nine scenes now carry the same
+construction, scored the same way.
+
+| gap scene | n | AUSE theirs | AUSE ours | corr theirs | corr ours | sel. theirs | sel. ours |
+|---|---|---|---|---|---|---|---|
+| bicycle | 20 | **0.396** | 0.427 | **0.240** | 0.162 | **−0.058** | −0.170 |
+| bonsai | 30 | 0.533 | **0.285** | 0.148 | **0.350** | 0.558 | **0.570** |
+| counter | 24 | **0.360** | 0.364 | **0.268** | 0.262 | 0.823 | **0.928** |
+| flowers | 18 | **0.312** | 0.423 | **0.385** | 0.198 | 0.702 | **0.747** |
+| garden | 19 | **0.441** | 0.540 | **0.212** | 0.093 | 0.370 | **0.758** |
+| kitchen | 28 | 0.844 | **0.774** | −0.070 | **0.082** | 0.597 | **0.710** |
+| playroom | 23 | 0.430 | **0.326** | 0.165 | **0.295** | 0.819 | **0.867** |
+| stump | 13 | 0.544 | **0.536** | 0.031 | **0.073** | 0.186 | **0.192** |
+| treehill | 15 | **0.506** | 0.543 | **0.043** | −0.002 | **−0.728** | −0.922 |
+| **mean** | | 0.485 | **0.469** | 0.158 | **0.168** | 0.363 | **0.409** |
+| **ours wins** | | | **4/9** | | **4/9** | | **7/9** |
+
+### The within-view claim is withdrawn to a tie
+
+On AUSE-L1 we win four of nine and the means differ by 0.016, which is a
+tie. On Pearson it is four of nine and 0.010. Section 21's "2 wins and 1
+tie" was n=3, and the three scenes it used -- bonsai, kitchen, counter --
+are three of the four we still win. **The gap row does not show that our
+uncertainty locates error better inside a view; it shows the two methods
+are indistinguishable there.**
+
+This is the same failure as sections 14, 20 and 25, and it is worth being
+explicit that the pattern is now four for four: every time a result has been
+read off three scenes or fewer in this project, scaling it has moved it.
+
+### Selection survives, and it is the claim that was being made anyway
+
+Per-view selection efficiency is 7 of 9 with a mean of 0.409 against 0.363.
+That is the quantity sections 21 and 25 argued matters for an agent, and it
+is the one that holds up. The honest statement of the gap result is
+therefore narrower and sharper than before: **in a coverage gap the two
+methods locate error within a view equally well, and ours ranks views by
+trustworthiness better.**
+
+### Two scenes where both methods are worse than random
+
+`treehill` scores −0.728 and −0.922, and `bicycle` −0.058 and −0.170.
+Negative selection efficiency means the views a method flags as least
+trustworthy are *better* than average, so an agent acting on either would
+systematically revisit the wrong places. Both are outdoor scenes with large
+unbounded backgrounds, and both are scenes where the trajectory hold-out
+leaves the held-out arc looking outward at sky and distant foliage -- easy
+to render and heavily weighted in a whole-frame metric. This is the
+"unvisited regions are often simply easy" caveat of section 21 appearing as
+an outright sign flip rather than a weak correlation, and it is a real
+limitation of per-view selection on unbounded outdoor captures rather than
+a property of either method.
+
+### What remains open
+
+Four captures could not be given a trajectory gap at all (section 26) and
+are running now under the 30 degree arc construction that the
+`EPISTEMIC_PLAN.md` amendment adopted. They add Tanks & Temples and the
+second Deep Blending scene to the row.
