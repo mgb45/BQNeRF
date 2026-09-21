@@ -41,6 +41,7 @@ held-out views sit inside a real coverage hole.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -184,7 +185,23 @@ def run(scene, half_width_deg=45.0, image_dirs=("images_2", "images_4"), root=No
     if out.exists():
         shutil.rmtree(out)
     have = [d for d in image_dirs if (src / d).is_dir()]
-    write_model(out, src, have, extr, intr, ids, names, test_idx, train_idx)
+    rename, order = write_model(out, src, have, extr, intr, ids, names, test_idx, train_idx)
+    # Per-test-view isolation, in the order their renderer will emit
+    # (00000.npy, 00001.npy, ...) -- i.e. test cameras sorted by their new
+    # name, which is positions 0, 8, 16, ... Recording it here avoids having
+    # to reconstruct the mapping downstream, where an off-by-one would be
+    # invisible.
+    pos_of = {i: o for o, i in order}
+    test_sorted = sorted(test_idx, key=lambda i: pos_of[i])
+    iso_sorted = angular_isolation(centres, np.array(test_sorted), train_idx)
+    json.dump({"scene": scene, "split_mode": split_mode, "train_fraction": train_fraction,
+               "half_width_deg": half_width_deg,
+               "n_train": int(len(train_idx)), "n_test": int(len(test_idx)),
+               "n_dropped": int(len(dropped)),
+               "test_view_order": [rename[i] for i in test_sorted],
+               "test_original_names": [names[i] for i in test_sorted],
+               "test_isolation_deg": [float(x) for x in iso_sorted]},
+              open(out / "gap_manifest.json", "w"), indent=1)
     print(f"{scene}: {len(names)} cams -> {len(train_idx)} train, {len(test_idx)} test, "
           f"{len(dropped)} dropped  [{desc}]")
     print(f"  held-out isolation (deg to NEAREST training view): "

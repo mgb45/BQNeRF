@@ -1209,3 +1209,70 @@ It is also worth recording that its earlier Cholesky breakdown -- which
 looked like a real conditioning limit -- was entirely an artefact of the
 broken accumulation. With sound input the fitted prior is positive-definite
 for every one of 1.07M splats.
+
+## 21. The epistemic result on real captures, under the competitor's own scorer
+
+Sections 19-20 established that our conclusions survive U-3DGS's protocol, and
+that on a densely-captured real scene (bonsai, 255 training views) their method
+beats ours: AUSE-L1 0.282 against our 0.308. That is the saturated regime,
+where FINDINGS sections 13-17 predict we tie or lose.
+
+This is the other regime, built on real captures. `build_colmap_gap_scene.py`
+trains on a contiguous PREFIX of the capture sequence and evaluates on the
+unvisited remainder -- the SLAM case, where an agent has mapped where it has
+been and is asked what it can trust about where it has not. Their unmodified
+`train.py` consumes the result, their `train_errors.py` produces their
+uncertainty, and their `uncertainty_metrics.py` produces every number below.
+
+| scene | train | test | median isolation | U-3DGS AUSE-L1 | ours AUSE-L1 | U-3DGS Pearson | ours Pearson |
+|---|---|---|---|---|---|---|---|
+| kitchen | 195 | 28 | 24.2 deg | 0.844 | **0.774** | **-0.070** | **0.082** |
+| counter | 168 | 24 | 16.5 deg | **0.360** | 0.364 | 0.268 | 0.262 |
+| bonsai | 204 | 30 | 17.0 deg | 0.533 | **0.285** | 0.148 | **0.350** |
+
+**The ordering inverts on the same scene.** bonsai densely captured: theirs
+0.282 / 0.526, ours 0.308 / 0.313. bonsai trajectory hold-out: theirs
+0.533 / 0.148, ours 0.285 / 0.350. Same scene, same pipeline, same scorer;
+only the hold-out structure changes. On kitchen, the most isolated hold-out,
+their uncertainty goes ANTI-correlated with error (-0.070) exactly as the
+residual-supervised baseline did on synthetic gaps (section 17).
+
+### Per-view, which is the question an agent actually asks
+
+Aggregate AUSE answers "within this view, where is the error". An agent
+choosing where to go next needs something prospective and per-view: given a
+pose it has not occupied, how much should it trust the render there?
+`analyse_slam_gap.py` scores that against the angular isolation recorded at
+construction time.
+
+| | uncertainty ~ isolation | uncertainty ~ error |
+|---|---|---|
+| U-3DGS | **0.767** | 0.548 |
+| ours | 0.716 | **0.636** |
+
+Ours ranks views by the error actually incurred better on **3 of 3** scenes
+(0.640/0.896/0.371 against 0.544/0.773/0.328). Theirs tracks raw isolation
+slightly better. That distinction is worth stating rather than flattening:
+their signal is more purely geometric -- it knows where the agent has not
+been -- while ours is better calibrated to the error that absence causes.
+
+### A caveat that cuts against the easy story
+
+**Error correlates only weakly with isolation: 0.34, 0.37, 0.28.** On real
+captures, distance from the nearest training view is a poor predictor of how
+wrong the render will be, because the unvisited region may simply be easy.
+"Knows which poses were unvisited" and "predicts the error there" are
+therefore genuinely different quantities, and only the second is useful for
+deciding where to look next. A method scored only on the first would look
+better than it deserves.
+
+### The experiment nearly did not test anything
+
+`room` was the obvious room-like scene to use and is excluded. Its trajectory
+hold-out has a median isolation of 2.2 degrees -- the capture revisits the
+same viewing directions, so the "unvisited" remainder is thoroughly covered
+and no epistemic gap exists. Run blind it would have produced a null result
+indistinguishable from a genuine negative finding. Its cone split swings to
+the opposite extreme (137 degrees, never observed from any direction), which
+is not a plausible capture either. The angular-isolation check that caught
+this is now computed and stored at construction time for every gap scene.
