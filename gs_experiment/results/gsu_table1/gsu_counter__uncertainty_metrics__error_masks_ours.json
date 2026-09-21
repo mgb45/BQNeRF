@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_counter",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.01814585387085875,
+      "psnr": 29.103752199808756,
+      "ssim": 0.9101098835468292,
+      "lpips": 0.20078525791565577
+    },
+    "L1": {
+      "rgb_mean-error": 0.018145854243387778,
+      "rgb_mean-error_std": 0.003675482243076611,
+      "uncertainty_metrics": {
+        "pearson": 0.21012859398296888,
+        "pearson_std": 0.055925878356074946,
+        "AUSE": 0.3665980398654938,
+        "AUSE_std": 0.057189540348548853
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.08989012315869331,
+      "rgb_mean-error_std": 0.02028641280746267,
+      "uncertainty_metrics": {
+        "pearson": 0.17089632605574814,
+        "pearson_std": 0.10541375807970929,
+        "AUSE": 0.394108181198438,
+        "AUSE_std": 0.09384974929151445
+      }
+    }
+  }
+}

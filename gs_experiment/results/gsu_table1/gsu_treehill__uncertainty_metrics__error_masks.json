@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_treehill",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.04762696847319603,
+      "psnr": 22.5164278878106,
+      "ssim": 0.6342906918790605,
+      "lpips": 0.3256245967414644
+    },
+    "L1": {
+      "rgb_mean-error": 0.04762697219848633,
+      "rgb_mean-error_std": 0.010504047734093913,
+      "uncertainty_metrics": {
+        "pearson": 0.26842251420021057,
+        "pearson_std": 0.08311809599399567,
+        "AUSE": 0.34765155282285476,
+        "AUSE_std": 0.053589462966153814
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.36570927169587875,
+      "rgb_mean-error_std": 0.07315335847510518,
+      "uncertainty_metrics": {
+        "pearson": 0.6251029372215271,
+        "pearson_std": 0.12817542254924774,
+        "AUSE": 0.15058419936233097,
+        "AUSE_std": 0.03843726937395429
+      }
+    }
+  }
+}

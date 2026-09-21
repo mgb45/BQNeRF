@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_kitchen",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.06555713726473705,
+      "psnr": 19.408035278320312,
+      "ssim": 0.7668060213327408,
+      "lpips": 0.2770327611693314
+    },
+    "L1": {
+      "rgb_mean-error": 0.06555713832910572,
+      "rgb_mean-error_std": 0.015787930107788683,
+      "uncertainty_metrics": {
+        "pearson": 0.08199477853095286,
+        "pearson_std": 0.14550997277280225,
+        "AUSE": 0.7742690816521645,
+        "AUSE_std": 0.3118328095452868
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.2331939632339137,
+      "rgb_mean-error_std": 0.055393876571824575,
+      "uncertainty_metrics": {
+        "pearson": 0.18704300909578456,
+        "pearson_std": 0.11158581400955411,
+        "AUSE": 0.5810642891696521,
+        "AUSE_std": 0.19085947977597728
+      }
+    }
+  }
+}

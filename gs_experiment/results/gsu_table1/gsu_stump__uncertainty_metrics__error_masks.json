@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_stump",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.03223451040685177,
+      "psnr": 26.75360405445099,
+      "ssim": 0.7730194590985775,
+      "lpips": 0.21534754056483507
+    },
+    "L1": {
+      "rgb_mean-error": 0.03223451226949692,
+      "rgb_mean-error_std": 0.007947756395334026,
+      "uncertainty_metrics": {
+        "pearson": 0.23493768274784088,
+        "pearson_std": 0.054238297045230865,
+        "AUSE": 0.41041852347552776,
+        "AUSE_std": 0.05145707562107792
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.22698053251951933,
+      "rgb_mean-error_std": 0.07175070267082154,
+      "uncertainty_metrics": {
+        "pearson": 0.42515838146209717,
+        "pearson_std": 0.05126413330435753,
+        "AUSE": 0.27928243950009346,
+        "AUSE_std": 0.05227313738174854
+      }
+    }
+  }
+}

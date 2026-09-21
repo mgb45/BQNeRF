@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_room",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.016041828295550283,
+      "psnr": 31.73595110575358,
+      "ssim": 0.9217058832828815,
+      "lpips": 0.22025192165986085
+    },
+    "L1": {
+      "rgb_mean-error": 0.016041829776114378,
+      "rgb_mean-error_std": 0.004757721826614372,
+      "uncertainty_metrics": {
+        "pearson": 0.4468301236629486,
+        "pearson_std": 0.09320850670337677,
+        "AUSE": 0.30565161009629566,
+        "AUSE_std": 0.10384114727727331
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.07829408968488376,
+      "rgb_mean-error_std": 0.024740350715738515,
+      "uncertainty_metrics": {
+        "pearson": 0.5521562099456787,
+        "pearson_std": 0.12359870970249176,
+        "AUSE": 0.21277483075093,
+        "AUSE_std": 0.07530885522316628
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_truck",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.03025696921395138,
+      "psnr": 25.550202012062073,
+      "ssim": 0.8860571905970573,
+      "lpips": 0.14244072558358312
+    },
+    "L1": {
+      "rgb_mean-error": 0.03025697113480419,
+      "rgb_mean-error_std": 0.004686243736390644,
+      "uncertainty_metrics": {
+        "pearson": 0.497687965631485,
+        "pearson_std": 0.040870778262615204,
+        "AUSE": 0.2770638964138925,
+        "AUSE_std": 0.051805547878398826
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.11394279357045889,
+      "rgb_mean-error_std": 0.021019231690588225,
+      "uncertainty_metrics": {
+        "pearson": 0.5596280097961426,
+        "pearson_std": 0.0757860541343689,
+        "AUSE": 0.2241035606712103,
+        "AUSE_std": 0.03260535374872154
+      }
+    }
+  }
+}

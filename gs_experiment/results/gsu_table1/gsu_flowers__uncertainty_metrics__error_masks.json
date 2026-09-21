@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_flowers",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.056829085065559906,
+      "psnr": 21.548584417863328,
+      "ssim": 0.6042340912602164,
+      "lpips": 0.3371063863689249
+    },
+    "L1": {
+      "rgb_mean-error": 0.056829088790850205,
+      "rgb_mean-error_std": 0.005620331281106988,
+      "uncertainty_metrics": {
+        "pearson": 0.3139045536518097,
+        "pearson_std": 0.05831434205174446,
+        "AUSE": 0.320057097483765,
+        "AUSE_std": 0.033150900987802774
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.3957658830014142,
+      "rgb_mean-error_std": 0.05757681326778555,
+      "uncertainty_metrics": {
+        "pearson": 0.7399333715438843,
+        "pearson_std": 0.06883848458528519,
+        "AUSE": 0.13158433003859085,
+        "AUSE_std": 0.02734871100621558
+      }
+    }
+  }
+}

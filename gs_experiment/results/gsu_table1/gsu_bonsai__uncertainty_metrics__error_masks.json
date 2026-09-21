@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_bonsai",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.014559264571682828,
+      "psnr": 32.415268150535795,
+      "ssim": 0.9436077878281878,
+      "lpips": 0.20619135047938375
+    },
+    "L1": {
+      "rgb_mean-error": 0.014559265024758674,
+      "rgb_mean-error_std": 0.004553064032803285,
+      "uncertainty_metrics": {
+        "pearson": 0.5255125164985657,
+        "pearson_std": 0.11842294782400131,
+        "AUSE": 0.2818172920394588,
+        "AUSE_std": 0.061633449038237746
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.05639216293757026,
+      "rgb_mean-error_std": 0.0129238580626074,
+      "uncertainty_metrics": {
+        "pearson": 0.5673189163208008,
+        "pearson_std": 0.09573463350534439,
+        "AUSE": 0.22950923241473534,
+        "AUSE_std": 0.047279897239834695
+      }
+    }
+  }
+}
