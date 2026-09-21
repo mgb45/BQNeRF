@@ -38,7 +38,7 @@ stage () { local n="$1" wd="$2"; shift 2
 
 for spec in "${JOBS[@]}"; do
   L="${spec%%|*}"; IMG="${spec#*|}"
-  SRC=$GAPS/${L}_gap
+  SRC=$GAPS/${L}_cone
   M=$ROOT/gs_experiment/local_runs/arc_$L
   LOGD=$ROOT/gs_experiment/local_runs/pipeline_logs/${L}_arc; mkdir -p "$LOGD"
   echo "######## $L ########"; date
