@@ -92,13 +92,49 @@ budget to make use of them.
 loop is tolerable. **Three seeds on random**, non-negotiable: a discarded
 run in this project once had a random arm go 11.56 -> 10.84 -> 10.90 dB.
 
-**Candidate pool**: the unvisited photographs of the capture itself, so
-ground truth exists at every acquirable pose and no renderer or simulator is
-needed. Pool-based acquisition, which is also what makes it reproducible by
-anyone holding the same public scene.
+**Candidate pool: the capture's own photographs, one COLMAP solve, fixed
+poses.** The alternative -- re-running COLMAP inside the loop as the agent
+acquires, at a real-time splat budget -- is more faithful and would damage
+the experiment, which is a different objection from being expensive.
 
-**Figure**: PSNR of the full-capacity retrain against number of views
-acquired. Three lines, one of them ours and above. No caption required.
+Experiment B persuades for exactly one reason: the arms differ *only* in
+which views they chose, and are then given identical treatment. COLMAP in
+the loop breaks that. Each arm ends with a different SfM solution -- its own
+coordinate frame, its own pose errors, its own registration failures -- so
+the full-capacity retrains are no longer comparable, the held-out test set
+has to be re-registered per arm, and registration failure is itself a
+function of which views were chosen. The number at the end would then mix
+"which strategy reduces render error" with "which strategy makes COLMAP
+happy", and no amount of seeds separates them. We claim the uncertainty
+picks useful views; we do not claim to have built a SLAM system, and the
+harder experiment tests the claim we are not making.
+
+What is worth taking from the SLAM framing, because it costs nothing:
+
+* **A real-time splat budget in the loop.** The in-loop map is deliberately
+  cheap -- capped iterations and splat count -- and only the final
+  evaluation is full capacity. This is the cost argument made concrete: a
+  method needing its own training run cannot be in this loop at all.
+* **A trajectory constraint on acquisition.** At each step the candidate set
+  is restricted to poses reachable from the current one, so an arm builds a
+  *path* rather than a set. A real agent cannot teleport, and this is where
+  unconstrained pool-based acquisition is genuinely unrealistic rather than
+  merely idealised. It also makes the task harder and more discriminating,
+  since a greedy grab at the single most uncertain pose may be unreachable.
+* **Pose noise as an ablation, not SfM.** To test robustness to imperfect
+  localisation, perturb the poses at the magnitude COLMAP would leave. That
+  isolates the effect under control, where running COLMAP confounds it with
+  registration failure.
+
+Fixed poses from a single solve is also the field's convention for
+acquisition experiments (ActiveNeRF, FisherRF), so it keeps us comparable.
+COLMAP-in-the-loop is recorded as future work, and as the thing that would
+be required if the claim ever became "a mapping system" rather than "an
+uncertainty that picks views".
+
+**What this does not show**, stated so it is not discovered later: nothing
+about localisation, loop closure, or drift. The agent is choosing where to
+look, not working out where it is.
 
 ## 3. Budget and disk
 
