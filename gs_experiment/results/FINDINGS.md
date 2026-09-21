@@ -1382,3 +1382,79 @@ is averaging over.
 The honest summary is now two lines rather than one: **second of five on their
 own table in the regime that suits them, and first in the epistemic regime
 they do not measure (section 21), post-hoc, with no retraining.**
+
+## 24. All thirteen scenes: we win the Deep Blending row, and the boundary moves
+
+The Mip-NeRF 360 sweep of section 23 extended to the other two datasets of
+the standard 3DGS benchmark -- their `train.py`, their `train_errors.py`,
+their `uncertainty_metrics.py`, our method reading their finished
+checkpoints post-hoc. Thirteen scenes, every one run end to end.
+
+| dataset | | AUSE-L1 | Pearson-L1 | AUSE-DSSIM | Pearson-DSSIM |
+|---|---|---|---|---|---|
+| Mip-NeRF 360 (9) | U-3DGS | **0.323** | **0.377** | **0.211** | **0.556** |
+| | ours | 0.431 | 0.195 | 0.528 | 0.082 |
+| Tanks & Temples (2) | U-3DGS | **0.311** | **0.423** | **0.220** | **0.587** |
+| | ours | 0.402 | 0.240 | 0.457 | 0.183 |
+| Deep Blending (2) | U-3DGS | 0.370 | 0.248 | 0.361 | 0.242 |
+| | ours | **0.333** | **0.286** | **0.326** | **0.324** |
+
+**We win Deep Blending on all four metrics, on both of its scenes.** That is
+the complete dataset, not a sample from it: `drjohnson` and `playroom` are
+the only two scenes in the standard Deep Blending row.
+
+### The two curves cross, and they cross on the published benchmark
+
+Read down the columns rather than across the rows. Their AUSE-L1 is worst on
+Deep Blending (0.370, against 0.311 and 0.323); ours is **best** there
+(0.333, against 0.402 and 0.431). The dataset that is hardest for them is
+the easiest for us, and the ordering inverts in between.
+
+This is the crossover that `EPISTEMIC_PLAN.md` proposed building a 65-cell
+severity sweep to produce. It is already present in the standard benchmark,
+across three datasets everyone in the field already runs, which is a far
+cheaper and far more explainable way to show it.
+
+### What it does to the claim of section 22
+
+Section 22 drew the boundary as **dense capture** against **coverage gap**,
+from five Mip-NeRF 360 scenes. That is the wrong axis. Deep Blending scenes
+are not sparsely captured -- `drjohnson` has 263 images, more than `bonsai`
+-- and we win them anyway.
+
+The axis is **saturated** against **unsaturated**. A Mip-NeRF 360 capture is
+a turntable orbit: every surface is photographed from many directions, the
+epistemic content is near zero, and what is left is aleatoric detail that a
+residual-supervised channel models well and we do not. A Deep Blending
+capture is a large interior walked through once with a handheld camera: many
+images, but most surfaces seen from a narrow range of directions and some
+barely at all. The images are plentiful and the *coverage* is not.
+
+So "more images" was never the relevant quantity, and section 22's framing
+is corrected accordingly. This also predicts which of the two existing
+results generalises: section 21's trajectory hold-outs are the extreme of
+the same axis, not a separate phenomenon.
+
+### Cost, measured over the same thirteen runs
+
+| stage | mean | what it needs |
+|---|---|---|
+| 3DGS training | 23.4 min | shared by both methods |
+| their `train_errors.py` | 2.7 min | plus a modified training run |
+| **ours** | **0.9 min** | the finished checkpoint, nothing else |
+| scoring | 0.1 min | -- |
+
+Ours is 2.9x cheaper than their uncertainty stage and 3.8% of the training
+it reads. It is also the only one of the two that can be run on a checkpoint
+someone else trained, which is how every number in the tables above was in
+fact produced.
+
+### Caveats
+
+Tanks & Temples is n=2 and Deep Blending is n=2, because those rows have two
+scenes each. The Deep Blending win is 2/2 on 4 metrics with both scenes
+agreeing, but two scenes cannot establish the saturation mechanism on their
+own -- they are consistent with it, and section 21's hold-outs are the
+independent evidence for it. Our U-3DGS reproduction remains validated only
+against their published Mip-NeRF 360 average (section 23, within 0.009); we
+have no published numbers to check the other two rows against.
