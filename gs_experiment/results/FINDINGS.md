@@ -1323,3 +1323,62 @@ That is a narrower claim than "better uncertainty for 3DGS", and it is the
 one the evidence supports. It is also the claim that matters for an agent
 deciding where to look next, which is the setting section 21 measures and
 which their evaluation does not cover at all.
+
+## 23. The complete Mip-NeRF 360 row: second of five on their own table
+
+All nine Mip-NeRF 360 scenes, their `train.py`, their `train_errors.py`,
+their `uncertainty_metrics.py`, our method reading their checkpoints
+post-hoc. Section 22's "we lose 0/5" stands scene-by-scene, but it was the
+wrong frame: the question is not whether we beat U-3DGS, it is where we sit
+among the methods their table compares.
+
+### The reproduction is essentially exact
+
+| | AUSE-L1 | Pearson-L1 | AUSE-DSSIM | Pearson-DSSIM |
+|---|---|---|---|---|
+| U-3DGS, published Table 1 | 0.328 | 0.369 | 0.214 | 0.547 |
+| U-3DGS, our reproduction | **0.323** | **0.377** | **0.211** | **0.556** |
+
+Within 0.009 on every metric across nine scenes. That validates the whole
+apparatus -- their training, their fitting, their scorer, our camera and
+resolution conventions -- and it is what licenses putting our row beside
+their published baselines.
+
+### Where we sit
+
+| method | AUSE-L1 ↓ | Pearson-L1 ↑ | AUSE-DSSIM ↓ | Pearson-DSSIM ↑ |
+|---|---|---|---|---|
+| U-3DGS | **0.328** | **0.369** | **0.214** | **0.547** |
+| **ours (post-hoc)** | **0.431** | **0.195** | 0.528 | 0.082 |
+| Manifold | 0.520 | 0.070 | 0.559 | -0.005 |
+| Var3DGS | 0.558 | 0.118 | 0.495 | 0.160 |
+| FisherRF | 0.708 | -0.055 | 0.606 | 0.009 |
+
+**Second of five on both L1 metrics**, ahead of Manifold, Var3DGS and
+FisherRF, behind only U-3DGS -- and this is the SATURATED regime, the one
+sections 13-22 predict is our weakest. On DSSIM we are third, behind Var3DGS,
+which is expected rather than surprising: their fit target is a convex
+combination of L1 and DSSIM, so they optimise those columns directly and we
+do not model DSSIM at all.
+
+Per scene, the pattern is consistent with everything else here -- we are
+closest on the indoor scenes (bonsai 0.308 against 0.282, room 0.335 against
+0.306) and furthest on the outdoor ones (treehill 0.573 against 0.348,
+flowers 0.524 against 0.320). Outdoor captures are larger, sparser in angular
+coverage per unit of scene, and dominated by far-field content our appearance
+posterior says little about.
+
+### Why the partial table was misleading in both directions
+
+Section 20 read bonsai alone as "second, close" and was too optimistic.
+Section 22 read five scenes as "we lose 0/5" and, while true scene-by-scene,
+implied a weaker position than the full nine show. The five we had were four
+indoor plus garden; the four that were missing were all outdoor, where we do
+worst -- so the partial mean flattered us on AUSE while the framing
+understated our standing among the baselines. Both readings were artefacts of
+an incomplete dataset average, which is precisely what their per-dataset table
+is averaging over.
+
+The honest summary is now two lines rather than one: **second of five on their
+own table in the regime that suits them, and first in the epistemic regime
+they do not measure (section 21), post-hoc, with no retraining.**
