@@ -1523,3 +1523,58 @@ Every scene was refit from its checkpoint and rescored, because the maps had
 been deleted. All twenty-six rescored metrics reproduce the archived values
 to four decimal places, so the per-view material and the published table
 describe the same fits.
+
+## 26. Four of thirteen captures cannot be given a coverage gap at all
+
+Experiment A's gap row needed a hold-out built on every benchmark scene, so
+`build_colmap_gap_scene.py` was run on all thirteen at the pre-registered
+`train_fraction = 0.7`. The admission rule of `EPISTEMIC_PLAN.md` -- median
+angular isolation of the held-out views >= 5 degrees, computed before any
+training and therefore blind to results -- admits nine and rejects four.
+
+| scene | median isolation, deg | | scene | median isolation, deg |
+|---|---|---|---|---|
+| kitchen | 24.2 | | playroom | 8.4 |
+| stump | 22.1 | | flowers | 7.7 |
+| bonsai | 17.0 | | **drjohnson** | **4.0** |
+| counter | 16.5 | | **room** | **2.2** |
+| bicycle | 14.4 | | **truck** | **1.2** |
+| garden | 12.6 | | **train** | **0.9** |
+| treehill | 11.1 | | | |
+
+### The rejection is a property of the captures, not of the setting
+
+The obvious response is that 30% is simply not enough to hold out. It is
+not: halving the training set barely moves the number.
+
+| scene | iso at 70% train | iso at 50% train |
+|---|---|---|
+| room | 2.2 | 3.4 |
+| drjohnson | 4.0 | 4.5 |
+| truck | 1.2 | 1.2 |
+| train | 0.9 | 0.8 |
+
+`truck` and `train` are orbits: the camera comes back round, so every
+direction a held-out view looks from has already been looked from, and
+withholding half the sequence leaves the remainder just as well covered as
+withholding a third. **No trajectory prefix can carve a gap out of a loop.**
+This is the same thing section 21 found on `room` -- which appears here at
+2.2 degrees, reproduced exactly -- generalised from one scene to four.
+
+It also disposes of the severity sweep that the first draft of
+`EPISTEMIC_PLAN.md` proposed. Sweeping `train_fraction` was supposed to
+produce a continuous axis of gap severity; on four of thirteen scenes it
+produces no severity at all, and on the rest the relationship between the
+setting and the measured isolation is scene-dependent enough that the
+setting was never the right x-axis. Section 24's crossover across the three
+published datasets does the job instead, for free.
+
+### The cost to the experiment, stated plainly
+
+The gap row is therefore eight Mip-NeRF 360 scenes plus `playroom`. Tanks &
+Temples contributes nothing, and Deep Blending contributes one of its two.
+So the gap row cannot test the saturation axis ACROSS datasets the way
+sections 24 and 25 do; it is, with one exception, the Mip-NeRF 360 scenes
+re-cut. That is still n=9 against section 21's n=3, and it has the
+compensating virtue of being the same scenes as the dense row -- the
+comparison is a construction changing, not a dataset changing.

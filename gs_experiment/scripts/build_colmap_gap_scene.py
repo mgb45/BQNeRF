@@ -216,6 +216,12 @@ if __name__ == "__main__":
     ap.add_argument("--half_width_deg", type=float, default=45.0)
     ap.add_argument("--split_mode", default="trajectory", choices=["trajectory", "cone"])
     ap.add_argument("--train_fraction", type=float, default=0.7)
+    # Tanks & Temples and Deep Blending live outside mipnerf360_raw and ship a
+    # single full-resolution `images/`, so both defaults have to be reachable
+    # from the command line to cover the whole benchmark.
+    ap.add_argument("--root", default=None)
+    ap.add_argument("--image_dirs", default="images_2,images_4")
     a = ap.parse_args()
     for s in a.scenes:
-        run(s, a.half_width_deg, split_mode=a.split_mode, train_fraction=a.train_fraction)
+        run(s, a.half_width_deg, image_dirs=tuple(a.image_dirs.split(",")),
+            root=a.root, split_mode=a.split_mode, train_fraction=a.train_fraction)
