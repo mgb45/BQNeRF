@@ -69,6 +69,35 @@ sentence, and `room` genuinely needs it -- 30% held out, 2.2 degrees of
 isolation, no gap at all); and the cost column in seconds, since "nearly
 free" is a claim with a number in it.
 
+## 1a. AMENDMENT, after construction and before any gap training
+
+Building the hold-outs revealed that the admission rule rejects four of the
+thirteen scenes -- `room`, `truck`, `train`, `drjohnson` -- and that halving
+their training set does not rescue them (FINDINGS section 26). They are
+multi-loop captures: any contiguous PREFIX has already covered every viewing
+direction, so a gap in them is not a moment in time but a DIRECTION.
+
+**The construction rule becomes a function of the capture, applied uniformly
+to all thirteen**: a trajectory prefix where that admits, otherwise a 30
+degree arc, otherwise excluded. An incomplete loop -- the agent never went
+round that side -- is the most ordinary partial capture there is, and it
+gives the four rejected scenes 25.5 to 31.8 degrees of median isolation,
+the same range as the trajectory cells (kitchen 24.2, stump 22.1). The gap
+row then covers every benchmark scene with no exclusions at all.
+
+**This is an amendment to a pre-registration and is flagged as one.**
+What protects it: the isolation that drives it is computed before any
+training and is blind to every result; 30 degrees is the *smallest* width
+tested that admits all four, not a tuned one; and the choice was fixed
+before a single gap checkpoint existed. What it costs: the gap row now
+contains two constructions, and the tables say per scene which one was used
+rather than averaging over the distinction.
+
+At 45 degrees `room` blows up to 137 degrees of isolation -- held-out views
+never observed from any direction at all -- which is why the width is not
+simply made large enough to be safe. Section 21 rejected the arc
+construction on exactly that pathology; at 30 degrees it does not occur.
+
 ## 2. Experiment B -- the SLAM-like loop
 
 The combined result, and the one that needs no protocol explained at all:
