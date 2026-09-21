@@ -163,6 +163,12 @@ def run(model_dir, source, images_dir, iteration=30000, out_name="error_masks_ou
     ply = model_dir / "point_cloud" / f"iteration_{iteration}" / "point_cloud.ply"
     ck = read_3dgs_ply(str(ply))
     degree = ck["sh_degree"]
+    # read_3dgs_ply returns float64. At 6M splats that is ~2.6 GB of arrays
+    # which are only ever consumed as float32 tensors anyway, and this script
+    # runs alongside a 3DGS process that caches every training image. Downcast
+    # immediately rather than carrying both.
+    for k in ("positions", "scales", "rotations", "opacities", "sh_coeffs"):
+        ck[k] = np.asarray(ck[k], dtype=np.float32)
 
     # Their own saved originals define the test set, its order and its size.
     orig_dir = model_dir / renders_folder / split / "original"
@@ -206,7 +212,8 @@ def run(model_dir, source, images_dir, iteration=30000, out_name="error_masks_ou
     frames = [(c["img_name"], c2w_for_helper(c)) for c in train_cams]
     data = accumulate_sh_precision_rasterized(
         ck, frames, np.array(intrinsics(test_cams[0], width, height)), width, height, degree,
-        n_probes=N_PROBES, seed=SEED, device=device, progress_every=0) / (sigma_n ** 2)
+        n_probes=N_PROBES, seed=SEED, device=device, progress_every=0,
+        out_dtype=np.float32) / np.float32(sigma_n ** 2)
     if prior == "evidence":
         band = fit_band_precision_evidence(ck["sh_coeffs"], data, device=device, verbose=True)
     elif prior == "population":

@@ -1276,3 +1276,50 @@ indistinguishable from a genuine negative finding. Its cone split swings to
 the opposite extreme (137 degrees, never observed from any direction), which
 is not a plausible capture either. The angular-isolation check that caught
 this is now computed and stored at construction time for every gap scene.
+
+## 22. Saturated real captures: we lose 0/5, and the boundary is now sharp
+
+Five Mip-NeRF 360 scenes completed end to end on their pipeline -- their
+`train.py`, their `train_errors.py`, their `uncertainty_metrics.py`, our
+method reading their checkpoint post-hoc.
+
+| scene | U-3DGS AUSE-L1 | ours AUSE-L1 | U-3DGS Pearson | ours Pearson |
+|---|---|---|---|---|
+| room | **0.306** | 0.335 | **0.447** | 0.297 |
+| counter | **0.264** | 0.367 | **0.458** | 0.210 |
+| kitchen | **0.305** | 0.389 | **0.432** | 0.218 |
+| bonsai | **0.282** | 0.308 | **0.526** | 0.313 |
+| garden | **0.310** | 0.487 | **0.418** | 0.153 |
+| **mean** | **0.293** | 0.377 | **0.456** | 0.238 |
+
+**We lose all five.** Section 20 reported bonsai alone as "second, close"
+(0.308 against 0.282); across five scenes that generalises badly -- garden is
+0.487 against 0.310, and the mean gap is 0.084 AUSE and 0.218 Pearson. The
+earlier reading was n=1 optimism and is withdrawn, the same way section 14
+withdrew the n=1 claim from lego.
+
+Our reproduction of their method is sound: their mean here (0.293 AUSE-L1) is
+close to their published 9-scene average (0.328), on the five scenes we ran.
+
+### What this does to the claim
+
+Set beside section 21, the boundary is now sharp rather than hedged:
+
+| regime, real captures, their scorer | winner |
+|---|---|
+| dense capture (5 scenes) | **U-3DGS, 5/5** |
+| trajectory hold-out / unvisited region (3 scenes) | **ours, 2 wins + 1 tie** |
+
+The same method, the same scorer, the same scenes in the case of bonsai,
+which appears in both rows and flips. So this is not a method that estimates
+photometric uncertainty well in general -- on a thoroughly photographed scene
+a residual-supervised channel beats it consistently and by a clear margin.
+It is a signal about **epistemic coverage**: what the training views failed
+to determine. Where that is the dominant source of error it wins; where it
+is not, it loses, and it loses on every one of five scenes rather than
+narrowly.
+
+That is a narrower claim than "better uncertainty for 3DGS", and it is the
+one the evidence supports. It is also the claim that matters for an agent
+deciding where to look next, which is the setting section 21 measures and
+which their evaluation does not cover at all.

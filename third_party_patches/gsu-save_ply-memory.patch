@@ -1,0 +1,36 @@
+--- a/scene/gaussian_model.py
++++ b/scene/gaussian_model.py
+@@ -256,7 +256,15 @@
+ 
+         elements = np.empty(xyz.shape[0], dtype=dtype_full)
+         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+-        elements[:] = list(map(tuple, attributes))
++        # PATCHED (BQNeRF): column-wise assignment instead of
++        # `elements[:] = list(map(tuple, attributes))`, which materialises one
++        # Python tuple per splat holding one Python float per attribute --
++        # ~11 GB of interpreter objects for a 5.5M-splat Mip-NeRF 360 outdoor
++        # scene, on top of the numpy array already holding the same data. That
++        # OOM-killed garden at checkpoint save after 32 minutes of training.
++        # Pure serialisation: the resulting file is byte-identical.
++        for _i, (_name, _) in enumerate(dtype_full):
++            elements[_name] = attributes[:, _i]
+         el = PlyElement.describe(elements, 'vertex')
+         PlyData([el]).write(path)
+ 
+@@ -530,7 +538,15 @@
+ 
+         elements = np.empty(xyz.shape[0], dtype=dtype_full)
+         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation, change_feature), axis=1)
+-        elements[:] = list(map(tuple, attributes))
++        # PATCHED (BQNeRF): column-wise assignment instead of
++        # `elements[:] = list(map(tuple, attributes))`, which materialises one
++        # Python tuple per splat holding one Python float per attribute --
++        # ~11 GB of interpreter objects for a 5.5M-splat Mip-NeRF 360 outdoor
++        # scene, on top of the numpy array already holding the same data. That
++        # OOM-killed garden at checkpoint save after 32 minutes of training.
++        # Pure serialisation: the resulting file is byte-identical.
++        for _i, (_name, _) in enumerate(dtype_full):
++            elements[_name] = attributes[:, _i]
+         el = PlyElement.describe(elements, 'vertex')
+         PlyData([el]).write(path)
+ 

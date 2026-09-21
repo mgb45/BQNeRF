@@ -137,14 +137,20 @@ def probe_squared_footprint_weights(
 def accumulate_sh_precision_rasterized(
     checkpoint, frames, K, width, height, degree: int,
     n_probes: int = 32, seed: int = 0, device: str = "cuda", visibility_eps: float = 1e-6,
-    progress_every: int = 20, camera_indices=None,
+    progress_every: int = 20, camera_indices=None, out_dtype=np.float64,
 ):
     """`D_i = sum_p (sum_q beta_{q,i,p}^2) phi(d_{i,p}) phi(d_{i,p})^T` over
     every real training camera in `frames`, accumulated on GPU.
 
-    Returns `(n_splats, n_coeffs, n_coeffs)` float64 -- the raw Fisher
-    information, with NO prior and NO `1/sigma_n^2` folded in, so both can be
-    chosen (and re-chosen) afterwards without re-paying for this.
+    Returns `(n_splats, n_coeffs, n_coeffs)` -- the raw Fisher information,
+    with NO prior and NO `1/sigma_n^2` folded in, so both can be chosen (and
+    re-chosen) afterwards without re-paying for this.
+
+    `out_dtype` matters on real captures. This array is `N * 16 * 16` numbers:
+    10.5 GB in float64 for a 5.5M-splat Mip-NeRF 360 outdoor scene, against
+    2.1 GB for the 1.07M-splat bonsai that ran fine. Accumulation stays in
+    float64 for numerical headroom; pass `np.float32` to halve the array that
+    is handed back and lives in host RAM for the rest of the pipeline.
 
     One forward+backward render per camera, against the real rasterizer --
     versus one KNN candidate search per camera in the surrogate this
@@ -206,7 +212,13 @@ def accumulate_sh_precision_rasterized(
         if progress_every and (n_done + 1) % progress_every == 0:
             print(f"    camera {n_done + 1}/{len(selected)}: {int(visible.sum())} visible splats")
 
-    return precision.cpu().numpy()
+    # Cast on the GPU, before crossing to host. `.cpu().numpy().astype(f32)`
+    # materialises the float64 array in host RAM first and then copies it:
+    # 8.1 GB + 4.0 GB = a 12.1 GB transient peak for a 4.1M-splat scene, which
+    # is a bigger spike than not downcasting at all. It OOM-killed garden
+    # under a 13 GB cap even though the array that survives is only 4.0 GB.
+    torch_dtype = {np.float32: torch.float32, np.float64: torch.float64}[np.dtype(out_dtype).type]
+    return precision.to(torch_dtype).cpu().numpy()
 
 
 def estimate_noise_variance(checkpoint, frames, K, width, height, image_dir,
