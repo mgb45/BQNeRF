@@ -28,7 +28,58 @@ resolution, brace and environment balance, figure paths) -- compile it with
 before submission, since six new tables/figures were added. Do this before
 any submission.
 
-## 1. DONE -- comparative baselines, calibration-led
+## 1. THE HEADLINE -- epistemic uncertainty in gaps
+
+Pre-registered in full in
+[`gs_experiment/results/EPISTEMIC_PLAN.md`](gs_experiment/results/EPISTEMIC_PLAN.md),
+committed before any run. The aleatoric within-view table (FINDINGS section
+23, second of five on their own Table 1) is a secondary result; this is the
+claim the paper leads with.
+
+**Absorbs and replaces the old "next-best-view selection (demoted)" item.**
+That item was demoted because competing head-on meant reimplementing four
+baselines on datasets this project does not use. Experiment B below is the
+same question asked in a way that needs none of them: the verdict is a
+full-capacity retrain, not a comparison against someone's acquisition score.
+
+**Gate -- PASSED.** The risk was never U-3DGS; it was the *free* baseline,
+angular distance to the nearest training view. FINDINGS section 21 has it
+ahead of us on rank correlation, 0.767 to 0.716. Scored as a decision
+instead -- which of N unvisited poses would an agent revisit, and how much
+error does that catch, on a random = 0 / oracle = 1 scale -- ours 0.736,
+U-3DGS 0.660, farthest-point 0.446, best on 3 of 3. Isolation ranks
+isolation well and chooses badly.
+
+**Experiment A -- the 2x2.** Two binary axes: regime (dense capture /
+coverage gap) against question (within-view / per-view). Three of the four
+cells already have evidence; fill all four on the same scenes, same
+checkpoints, same scorer. 13 scenes already on disk, one gap construction
+each, ~5 GPU-hours. The first draft of this plan crossed severity x scene x
+arm x metric into a 65-cell factorial and was cut: every extra axis is
+another thing a reader must be taught before the result lands.
+
+**Experiment B -- the SLAM-like loop.** Cheap map on a short trajectory
+prefix, score the candidate poses, acquire the best, refit cheaply, repeat;
+then **evaluate by retraining at full capacity** on whatever view set each
+arm assembled. That last step separates "did the cheap uncertainty choose
+well" from "was the cheap map any good" -- the arms differ only in which
+views they picked. Arms: ours, farthest-point, random (>=3 seeds; a
+discarded run here had a random arm go 11.56 -> 10.84 -> 10.90 dB), U-3DGS
+if its in-loop cost is tolerable. The loop is also the cost argument made
+concrete: you can only afford uncertainty at every step if it is post-hoc.
+
+**The falsification that matters** is B. If the full-capacity retrain shows
+no gap against random, the signal is not useful whatever it correlates with,
+and nothing about that verdict depends on a metric we chose.
+
+**Carried over from the retired NBV item**, worth one ablation inside B:
+FINDINGS section 7 found that adding geometry (opacity) to the posterior
+made CALIBRATION worse, while OUGS includes all geometry parameters and wins
+at VIEW SELECTION. Those are different questions, not a contradiction. B's
+acquisition loop is the common harness on which to find out whether geometry
+helps selection even where it hurts calibration.
+
+## 2. DONE -- comparative baselines, calibration-led
 
 Completed; results in FINDINGS sections 13-18. Six baselines reimplemented in
 our harness and scored by the pre-registered protocol on identical
@@ -43,31 +94,9 @@ interval 11x narrower than the closest competitor; in the saturated regime
 per-pixel wins split evenly and a deep ensemble is better calibrated, though
 its margin collapses 45-65% at full capacity for 240-290x the compute.
 
-## 2. Next-best-view selection (demoted)
-
-Demoted from item 1 -- see FINDINGS section 12.2/12.3. The field is crowded
-(ActiveNeRF, FisherRF, Bayes' Rays, GauSS-MI, OUGS, `xue2026`), competing
-head-on means reimplementing four strong baselines on three datasets this
-project does not use, and none of them measures calibration.
-
-What remains genuinely novel here is one sharp question neither paper can
-answer alone: section 7 found that adding geometry (opacity) to the posterior
-made CALIBRATION worse, while OUGS includes all geometry parameters and wins
-at VIEW SELECTION. Those are different questions, not a contradiction. Run
-both uncertainties through the same acquisition loop on a common harness and
-find out whether geometry helps view selection even where it hurts
-calibration.
-
-Per-VIEW uncertainty tracks per-view held-out error at Spearman 0.97 in the
-epistemic regime and 0.61 on a fully-observed checkpoint (FINDINGS section
-8), and a per-view aggregate is exactly what NBV consumes, so the signal is
-there. Baselines: farthest-point (model-free, and the honest bar -- random
-alone would flatter any method) and FisherRF-style acquisition. >=3 seeds:
-a discarded run had a random arm go 11.56 -> 10.84 -> 10.90 dB.
-
 ## 3. `mic`, and the limits of a scalar `c`
 
-Item 2 as originally posed is answered (FINDINGS section 10): `s` transfers,
+The calibration-transfer question as originally posed is answered (FINDINGS section 10): `s` transfers,
 `sigma_0` does not, and anchoring the floor to each scene's own training
 residual recovers 66% of the calibration gain with no held-out views.
 
