@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_garden",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.027044063123563923,
+      "psnr": 27.48664093017578,
+      "ssim": 0.8682490984598795,
+      "lpips": 0.10644706121335426
+    },
+    "L1": {
+      "rgb_mean-error": 0.027044065141429503,
+      "rgb_mean-error_std": 0.006068062112566404,
+      "uncertainty_metrics": {
+        "pearson": 0.4176470935344696,
+        "pearson_std": 0.09035538882017136,
+        "AUSE": 0.309992890805006,
+        "AUSE_std": 0.06254203500111899
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.13175086304545403,
+      "rgb_mean-error_std": 0.040374722052174836,
+      "uncertainty_metrics": {
+        "pearson": 0.5506208539009094,
+        "pearson_std": 0.09151707589626312,
+        "AUSE": 0.21822673392792544,
+        "AUSE_std": 0.059394147824795365
+      }
+    }
+  }
+}

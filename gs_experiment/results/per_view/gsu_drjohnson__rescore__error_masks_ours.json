@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_drjohnson",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.020882920926493225,
+      "psnr": 29.505522005485766,
+      "ssim": 0.9061142585494302,
+      "lpips": 0.2392293977918047
+    },
+    "L1": {
+      "rgb_mean-error": 0.020882922478697517,
+      "rgb_mean-error_std": 0.007129914710929941,
+      "uncertainty_metrics": {
+        "pearson": 0.24702515900046307,
+        "pearson_std": 0.08866329729424535,
+        "AUSE": 0.34101927370736096,
+        "AUSE_std": 0.061752620464319584
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.09388568670009122,
+      "rgb_mean-error_std": 0.03895202477968835,
+      "uncertainty_metrics": {
+        "pearson": 0.27668194162068926,
+        "pearson_std": 0.10019434176617795,
+        "AUSE": 0.32586568187583576,
+        "AUSE_std": 0.06900979908548006
+      }
+    }
+  }
+}

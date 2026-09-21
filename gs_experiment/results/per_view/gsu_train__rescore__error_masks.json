@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_train",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.05483444755602824,
+      "psnr": 22.256829010812858,
+      "ssim": 0.8226649416120428,
+      "lpips": 0.19634264472283813
+    },
+    "L1": {
+      "rgb_mean-error": 0.054834451820505295,
+      "rgb_mean-error_std": 0.02056095400464364,
+      "uncertainty_metrics": {
+        "pearson": 0.34896931052207947,
+        "pearson_std": 0.14900507032871246,
+        "AUSE": 0.3449734214105104,
+        "AUSE_std": 0.10892209611497486
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.17733499309734294,
+      "rgb_mean-error_std": 0.06694906378057078,
+      "uncertainty_metrics": {
+        "pearson": 0.6142013669013977,
+        "pearson_std": 0.1148308590054512,
+        "AUSE": 0.21648898014896795,
+        "AUSE_std": 0.07447781397194886
+      }
+    }
+  }
+}

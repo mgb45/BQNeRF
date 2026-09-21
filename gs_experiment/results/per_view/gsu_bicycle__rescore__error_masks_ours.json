@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_bicycle",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.038690071105957034,
+      "psnr": 25.26697219848633,
+      "ssim": 0.7659759640693665,
+      "lpips": 0.20859484791755678
+    },
+    "L1": {
+      "rgb_mean-error": 0.03869007185101509,
+      "rgb_mean-error_std": 0.01323261528512244,
+      "uncertainty_metrics": {
+        "pearson": 0.18268517573335125,
+        "pearson_std": 0.05927540928237602,
+        "AUSE": 0.43155500054359436,
+        "AUSE_std": 0.05001799392023551
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.23402400255203248,
+      "rgb_mean-error_std": 0.08208513341663984,
+      "uncertainty_metrics": {
+        "pearson": 0.06362596452888947,
+        "pearson_std": 0.14831051044142862,
+        "AUSE": 0.5601711535453796,
+        "AUSE_std": 0.11793828708822111
+      }
+    }
+  }
+}

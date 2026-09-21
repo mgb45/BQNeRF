@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_playroom",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.021072993151329714,
+      "psnr": 30.3669244832006,
+      "ssim": 0.9090593498328636,
+      "lpips": 0.24523134786507178
+    },
+    "L1": {
+      "rgb_mean-error": 0.02107299494974572,
+      "rgb_mean-error_std": 0.008048389791723108,
+      "uncertainty_metrics": {
+        "pearson": 0.32438947211689373,
+        "pearson_std": 0.09409723299826234,
+        "AUSE": 0.32400597734697933,
+        "AUSE_std": 0.06241337530938913
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.09094061201502537,
+      "rgb_mean-error_std": 0.03628819427588914,
+      "uncertainty_metrics": {
+        "pearson": 0.35077445855650324,
+        "pearson_std": 0.10773143550009304,
+        "AUSE": 0.2692402169622224,
+        "AUSE_std": 0.06579572601925368
+      }
+    }
+  }
+}

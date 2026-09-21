@@ -1458,3 +1458,68 @@ own -- they are consistent with it, and section 21's hold-outs are the
 independent evidence for it. Our U-3DGS reproduction remains validated only
 against their published Mip-NeRF 360 average (section 23, within 0.009); we
 have no published numbers to check the other two rows against.
+
+## 25. The per-view question, across all thirteen: the same boundary, twice
+
+Section 24 established that the axis is saturation, not image count, for the
+WITHIN-view question. This asks the per-VIEW one on the same thirteen
+checkpoints: given a pose an agent has not occupied, how much should it
+distrust the render there?
+
+Scored as a decision rather than a correlation -- the agent may revisit `K`
+of `N` held-out poses and picks the `K` it distrusts most; its value is the
+error it thereby catches, on a scale where random = 0 and oracle = 1,
+averaged over `K`. `scripts/reduce_per_view.py` recovers the per-view
+scalars; the aggregate JSONs cannot answer this.
+
+| dataset | n | U-3DGS | ours | ours wins |
+|---|---|---|---|---|
+| Mip-NeRF 360 | 9 | **0.694** | 0.452 | 2/9 |
+| Tanks & Temples | 2 | **0.362** | 0.154 | 0/2 |
+| Deep Blending | 2 | 0.622 | **0.681** | **2/2** |
+
+**The boundary is the same one.** We lose the saturated datasets and win the
+unsaturated one, exactly as in section 24's within-view table. One mechanism
+accounts for both questions: where the training views left something
+undetermined we measure it, and where they did not there is nothing for us
+to measure and a residual-supervised channel does better.
+
+### An n=1 reading, corrected before it reached the file
+
+With `drjohnson` alone the Deep Blending result was 0.635 against 0.629 --
+six thousandths, a coin flip -- and the working conclusion was that the
+saturation axis does *not* carry from the within-view question to the
+per-view one, that our per-view advantage exists only on the constructed
+trajectory hold-outs of section 21, and that Experiment A's 2x2 would
+therefore have two different boundaries in it rather than one.
+
+`playroom` is 0.726 against 0.614. The dataset mean is 0.681 against 0.622
+and both scenes go our way. The narrowing was wrong. This is the same n=1
+failure as sections 14 and 20, caught one scene later rather than one
+section later.
+
+### What is genuinely narrower
+
+Two of the nine Mip-NeRF 360 scenes do go to us, and `garden` is the useful
+one. It is our **worst** scene of the thirteen within-view -- AUSE-L1 0.487
+against their 0.310 -- and we **beat** them on it per-view, 0.655 to 0.577.
+Same checkpoint, same maps, same scorer, opposite verdicts.
+
+That is the clearest available evidence that "where in this image is the
+error" and "which of these views should I distrust" are different
+quantities, and it does not rely on scene selection to make the point, since
+both numbers come from one scene. `room` is the second such win and is
+consistent: section 21 had to exclude it from the gap experiment because its
+capture revisits the same directions, so it is a dense capture where we win
+the per-view question anyway.
+
+Tanks & Temples is worth one note: both methods score far below everything
+else there (0.362 and 0.154 against ~0.69 and ~0.45 on Mip-NeRF 360), so
+per-view selection is simply hard on those two scenes for both methods.
+
+### The refits are exact
+
+Every scene was refit from its checkpoint and rescored, because the maps had
+been deleted. All twenty-six rescored metrics reproduce the archived values
+to four decimal places, so the per-view material and the published table
+describe the same fits.

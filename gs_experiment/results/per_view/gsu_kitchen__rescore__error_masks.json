@@ -1,0 +1,31 @@
+{
+  "experiment_name": "gsu_kitchen",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.01699972152709961,
+      "psnr": 31.394973155430385,
+      "ssim": 0.9280965566635132,
+      "lpips": 0.12709284275770186
+    },
+    "L1": {
+      "rgb_mean-error": 0.016999721846410205,
+      "rgb_mean-error_std": 0.0034232295210549074,
+      "uncertainty_metrics": {
+        "pearson": 0.4317907989025116,
+        "pearson_std": 0.09135439246892929,
+        "AUSE": 0.304615672145571,
+        "AUSE_std": 0.03378940728772358
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.07190344291073936,
+      "rgb_mean-error_std": 0.046534834457385585,
+      "uncertainty_metrics": {
+        "pearson": 0.43779799342155457,
+        "pearson_std": 0.11043716222047806,
+        "AUSE": 0.2621114718062537,
+        "AUSE_std": 0.0526260276060939
+      }
+    }
+  }
+}
