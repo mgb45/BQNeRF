@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_counter",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.080393446298937,
+      "psnr": 18.387394905090332,
+      "ssim": 0.6919485454758008,
+      "lpips": 0.3641154679159323
+    },
+    "L1": {
+      "rgb_mean-error": 0.08039344769592087,
+      "rgb_mean-error_std": 0.013153518843233559,
+      "uncertainty_metrics": {
+        "pearson": 0.26815924048423767,
+        "pearson_std": 0.061277665197849274,
+        "AUSE": 0.35963672523697215,
+        "AUSE_std": 0.07009437407640515
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.30805145638684434,
+      "rgb_mean-error_std": 0.04059313084397255,
+      "uncertainty_metrics": {
+        "pearson": 0.2841140329837799,
+        "pearson_std": 0.09661715477705002,
+        "AUSE": 0.33319205169876415,
+        "AUSE_std": 0.07810586904354247
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_stump",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.04649126214476732,
+      "psnr": 24.033981323242188,
+      "ssim": 0.6630940964588753,
+      "lpips": 0.2949492083146022
+    },
+    "L1": {
+      "rgb_mean-error": 0.04649126443725366,
+      "rgb_mean-error_std": 0.008988611534750057,
+      "uncertainty_metrics": {
+        "pearson": 0.07258396209130345,
+        "pearson_std": 0.07366951542948447,
+        "AUSE": 0.53599980702767,
+        "AUSE_std": 0.0531978211779053
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.33690590583361113,
+      "rgb_mean-error_std": 0.07281171293507749,
+      "uncertainty_metrics": {
+        "pearson": -0.12428913017660605,
+        "pearson_std": 0.12318940032715629,
+        "AUSE": 0.6294225041682904,
+        "AUSE_std": 0.12189089977920693
+      }
+    }
+  }
+}

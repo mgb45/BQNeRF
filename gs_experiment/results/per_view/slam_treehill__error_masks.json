@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_treehill",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.07124733353654543,
+      "psnr": 20.703654034932455,
+      "ssim": 0.6021833578745523,
+      "lpips": 0.3701282501220703
+    },
+    "L1": {
+      "rgb_mean-error": 0.07124734098712603,
+      "rgb_mean-error_std": 0.01782543994473599,
+      "uncertainty_metrics": {
+        "pearson": 0.04286834970116615,
+        "pearson_std": 0.08366233110427856,
+        "AUSE": 0.5062366406122843,
+        "AUSE_std": 0.056931069494268086
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.3978166143099467,
+      "rgb_mean-error_std": 0.07036332357009562,
+      "uncertainty_metrics": {
+        "pearson": 0.2622675895690918,
+        "pearson_std": 0.1802099198102951,
+        "AUSE": 0.3356479942798615,
+        "AUSE_std": 0.06482888557609892
+      }
+    }
+  }
+}

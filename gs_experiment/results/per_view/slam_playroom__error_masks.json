@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_playroom",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.021442503546891003,
+      "psnr": 29.932861825694207,
+      "ssim": 0.9173781534899835,
+      "lpips": 0.25485609471797943
+    },
+    "L1": {
+      "rgb_mean-error": 0.0214425055715053,
+      "rgb_mean-error_std": 0.006333457680671992,
+      "uncertainty_metrics": {
+        "pearson": 0.16540952026844025,
+        "pearson_std": 0.14489828050136566,
+        "AUSE": 0.4299402709888375,
+        "AUSE_std": 0.10042995855424289
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.08262179160247678,
+      "rgb_mean-error_std": 0.025438622084776038,
+      "uncertainty_metrics": {
+        "pearson": 0.20703570544719696,
+        "pearson_std": 0.17110376060009003,
+        "AUSE": 0.424760033255038,
+        "AUSE_std": 0.14977273500741783
+      }
+    }
+  }
+}

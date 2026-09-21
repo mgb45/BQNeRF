@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_garden",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.03753699205423656,
+      "psnr": 25.2487850189209,
+      "ssim": 0.7790729152528862,
+      "lpips": 0.16262414502470116
+    },
+    "L1": {
+      "rgb_mean-error": 0.037536994210983575,
+      "rgb_mean-error_std": 0.00430397474899524,
+      "uncertainty_metrics": {
+        "pearson": 0.09312050063775006,
+        "pearson_std": 0.04873874004176131,
+        "AUSE": 0.5400876198944292,
+        "AUSE_std": 0.04907621057008195
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.22092704474925995,
+      "rgb_mean-error_std": 0.03852855736048925,
+      "uncertainty_metrics": {
+        "pearson": 0.10982077711140824,
+        "pearson_std": 0.07964536720195117,
+        "AUSE": 0.5466125199669286,
+        "AUSE_std": 0.07961379395067442
+      }
+    }
+  }
+}

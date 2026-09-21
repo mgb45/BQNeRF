@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_bicycle",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.04907068964093924,
+      "psnr": 22.779287910461427,
+      "ssim": 0.65431407392025,
+      "lpips": 0.29962088316679003
+    },
+    "L1": {
+      "rgb_mean-error": 0.0490706916898489,
+      "rgb_mean-error_std": 0.0091069660019872,
+      "uncertainty_metrics": {
+        "pearson": 0.23995299637317657,
+        "pearson_std": 0.05850687623023987,
+        "AUSE": 0.39580207467079165,
+        "AUSE_std": 0.0500582413310144
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.3456858843564987,
+      "rgb_mean-error_std": 0.06659211480238565,
+      "uncertainty_metrics": {
+        "pearson": 0.24504832923412323,
+        "pearson_std": 0.18105600774288177,
+        "AUSE": 0.3416757546365261,
+        "AUSE_std": 0.08704112823661703
+      }
+    }
+  }
+}

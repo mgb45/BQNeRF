@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_flowers",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.08024335652589798,
+      "psnr": 18.55993609958225,
+      "ssim": 0.5157858977715174,
+      "lpips": 0.3866193956798977
+    },
+    "L1": {
+      "rgb_mean-error": 0.08024336128599113,
+      "rgb_mean-error_std": 0.011707299287763784,
+      "uncertainty_metrics": {
+        "pearson": 0.38517314195632935,
+        "pearson_std": 0.048448290675878525,
+        "AUSE": 0.31175648007127976,
+        "AUSE_std": 0.07013768958964399
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.48421408732732135,
+      "rgb_mean-error_std": 0.07396482449912144,
+      "uncertainty_metrics": {
+        "pearson": 0.5672188997268677,
+        "pearson_std": 0.05982637777924538,
+        "AUSE": 0.19192597932285732,
+        "AUSE_std": 0.04433965964827151
+      }
+    }
+  }
+}

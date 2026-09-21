@@ -1,0 +1,31 @@
+{
+  "experiment_name": "slam_bonsai",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.05668647177517414,
+      "psnr": 21.805889701843263,
+      "ssim": 0.8248060603936513,
+      "lpips": 0.29435416211684545
+    },
+    "L1": {
+      "rgb_mean-error": 0.05668647351364295,
+      "rgb_mean-error_std": 0.011279717675876627,
+      "uncertainty_metrics": {
+        "pearson": 0.14762255549430847,
+        "pearson_std": 0.1297280192375183,
+        "AUSE": 0.5334552029768626,
+        "AUSE_std": 0.07892528633447866
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.1751939023534457,
+      "rgb_mean-error_std": 0.02603796312972014,
+      "uncertainty_metrics": {
+        "pearson": 0.2974422872066498,
+        "pearson_std": 0.11671867966651917,
+        "AUSE": 0.4195995638767878,
+        "AUSE_std": 0.0976529865208716
+      }
+    }
+  }
+}
