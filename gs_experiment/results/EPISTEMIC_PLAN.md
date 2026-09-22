@@ -192,3 +192,73 @@ run trains on `images_4`.
   curve and random, the signal is not *useful* whatever it correlates with.
   This is the harsher of the two tests and it is the one a reader will
   believe, because nothing about it depends on a metric we chose.
+
+## 5. Amendment: capacity withheld, and a prediction registered against us
+
+Views withheld is one way to remove information. **Capacity withheld** is the
+other, and it is a sharper test because it separates two things the paper has
+so far only asserted are different.
+
+Same scenes, same views, same train/test split. The only change is the splat
+budget, controlled through `--densify_grad_threshold` (raising it produces
+progressively fewer splats). Error rises as capacity falls; the question is
+what our uncertainty does.
+
+### The prediction, registered before the run
+
+**Our sigma should FALL as splats are removed, while error RISES.** This is
+not a hedge written after seeing a bad result -- it follows directly from the
+construction. The per-splat posterior precision is
+
+    P_i = Lambda + D_i / sigma_n^2,   D_i = sum_q beta_{q,i}^2
+
+and `D_i` accumulates the squared compositing weight over every pixel the
+splat touches. Fewer splats means each surviving splat covers more pixels,
+so `D_i` grows, precision grows, and sigma falls. Meanwhile the
+representation can express less, so error grows.
+
+If that is what happens, the two curves move in opposite directions and any
+correlation across capacity levels is negative.
+
+### Why registering a prediction against ourselves is the point
+
+The claim this project makes is narrow and specific: the posterior estimates
+**what the training views failed to determine**, not what the representation
+cannot express. Those are different quantities, and section 5 of FINDINGS
+already says so. A capacity sweep is the experiment that makes the
+distinction falsifiable rather than rhetorical.
+
+There are three outcomes and all three are informative:
+
+* **sigma falls while error rises** -- the prediction. The method does not
+  see representational inadequacy, exactly as claimed, and the claim is now
+  demonstrated rather than asserted. This also gives ROADMAP item 5
+  (`u_spatial_BQ`, the finite-representation term, currently orphaned) a
+  concrete job: it answers "is the node set adequate?", which is precisely
+  the question capacity withheld asks and the coefficient posterior cannot.
+* **sigma rises with error** -- the prediction is wrong and the separation
+  between epistemic and representational uncertainty is not as clean as
+  claimed. That would need reporting prominently.
+* **sigma is flat** -- the construction is insensitive to capacity in either
+  direction, which is weaker than the first outcome but still consistent
+  with the claim.
+
+What must NOT happen is reporting only a within-capacity-level correlation
+and quietly omitting the across-level one. Both are recorded.
+
+### Design
+
+* scenes: `bonsai` (indoor), `garden` (outdoor), `playroom` (Deep Blending)
+* capacity levels: `densify_grad_threshold` in {0.0002 (default), 0.0008,
+  0.0032, 0.0128}, giving four budgets per scene
+* held-out views and split: **unchanged** from the standard benchmark, so
+  the only varying quantity is capacity
+* recorded per level: splat count, PSNR, per-view and per-pixel error, our
+  sigma, theirs, and AUSE under their scorer
+* 12 cells at ~25 min, about 5 GPU-hours
+
+Reported as two separate numbers, not one: the correlation **within** each
+capacity level (does sigma find the error at a fixed budget?) and the
+relationship **across** levels (does sigma track the error that removing
+capacity caused?). Conflating them is how this experiment would be made to
+look better than it is.
