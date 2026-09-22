@@ -50,13 +50,20 @@ error does that catch, on a random = 0 / oracle = 1 scale -- ours 0.736,
 U-3DGS 0.660, farthest-point 0.446, best on 3 of 3. Isolation ranks
 isolation well and chooses badly.
 
-**Experiment A -- the 2x2.** Two binary axes: regime (dense capture /
-coverage gap) against question (within-view / per-view). Three of the four
-cells already have evidence; fill all four on the same scenes, same
-checkpoints, same scorer. 13 scenes already on disk, one gap construction
-each, ~5 GPU-hours. The first draft of this plan crossed severity x scene x
-arm x metric into a 65-cell factorial and was cut: every extra axis is
-another thing a reader must be taught before the result lands.
+**Experiment A -- the 2x2. DONE** (FINDINGS sections 24-28). All four cells
+filled on all thirteen benchmark scenes, each carrying both a dense and a
+gap cell under their pipeline and their scorer.
+
+| | AUSE theirs/ours | ours wins | selection theirs/ours | ours wins |
+|---|---|---|---|---|
+| dense capture | 0.329/0.411 | 2/13 | 0.632/0.441 | 4/13 |
+| coverage gap | 0.516/0.493 | 7/13 | 0.383/0.449 | 10/13 |
+
+Both quantities cross. The result worth leading with is the asymmetry rather
+than the win: from dense to gap their AUSE goes 0.329 to 0.516 and their
+selection 0.632 to 0.383, while ours move 0.411 to 0.493 and 0.441 to 0.449.
+That does not depend on who wins, which makes it the harder claim to argue
+with.
 
 **Experiment B -- the SLAM-like loop.** Cheap map on a short trajectory
 prefix, score the candidate poses, acquire the best, refit cheaply, repeat;
