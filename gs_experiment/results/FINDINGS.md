@@ -1782,3 +1782,59 @@ acquisition winning.
 The random spread is also a result in its own right: at 1.77 dB on `truck`,
 any acquisition experiment reported on a single random seed is
 uninterpretable, whoever runs it.
+
+## 30. The per-splat precision is badly non-diagonal and it does not matter
+
+Per-pixel variance has a closed form, because the render is linear in the SH
+coefficients and the posterior is per-splat independent:
+
+    Var[C(q)] = sum_i beta_{q,i}^2 v_i,    v_i = phi(d)^T Sigma_i phi(d)
+
+A rasterizer that accumulates `v_i * vis * vis` beside the colour therefore
+gets uncertainty for one fused multiply-add per (pixel, splat), using `vis =
+alpha * T` which is already in a register at
+`RasterizeToPixels3DGSFwd.cu:160`. No probes, no draws, exact. The whole cost
+moves into `v_i`, and `Sigma_i` is a 16x16 inverse per splat -- 136 floats,
+550 MB per million splats, not shippable.
+
+`posterior_structure_probe.py` measures whether it can be compressed, on
+`arc_drjohnson` (3.8M splats, 171 training views, 96.9% observed).
+
+| | p10 | p25 | p50 | p75 | p90 |
+|---|---|---|---|---|---|
+| top-1 eigenvalue / trace of `D_i` | 0.386 | 0.482 | **0.636** | 0.767 | 0.856 |
+| top-2 / trace | 0.647 | 0.761 | **0.880** | 0.946 | 0.974 |
+| off-diagonal / diagonal mass | 5.06 | 5.99 | **7.03** | 8.29 | 9.44 |
+
+`D_i` is emphatically **not** diagonal: off-diagonal mass runs 5-9x the
+diagonal. It is not rank-1 either -- the top eigenvalue carries 64% of the
+trace at the median, and two components are needed for 88%.
+
+### What matters is `v_i`, not `D_i`, and there the structure is irrelevant
+
+| approximation | median rel. error | p90 | Spearman vs exact | floats/splat |
+|---|---|---|---|---|
+| band-diagonal | 0.024 | 0.383 | **0.9954** | **1** |
+| rank-1 | 0.020 | 0.340 | 0.9962 | 4 |
+| exact | -- | -- | 1.0 | 136 |
+
+**The one-float model is as good as the four-float one**, and both are within
+2% of exact at the median with rank correlation 0.995. The reason is that
+`v_i = phi^T (Lambda + D_i/sigma_n^2)^{-1} phi` is dominated by the prior in
+most directions, so `D_i`'s off-diagonal structure is largely inverted away.
+
+### A consequence worth stating: `v_i` is direction-independent
+
+Under the band-diagonal model, `v_i = sum_l (sum_{k in l} phi_k(d)^2) /
+(lambda_l + c w_i)`, and by the spherical harmonic addition theorem
+`sum_m Y_lm(d)^2` is a constant per band. So `v_i` does not depend on the
+viewing direction at all: it is **one scalar per splat, computed once**, and
+the per-frame cost of uncertainty is a single extra accumulator.
+
+That it survives at Spearman 0.995 says the directional variation of `v_i`
+within a splat is small next to its variation across splats, which differ by
+orders of magnitude in how much they were observed. It also means the fast
+path deliberately discards view-dependent uncertainty, and the p90 relative
+error of 0.38 is where that shows. Whether it survives end to end -- AUSE and
+Pearson under their scorer, against the sampled maps already on disk -- is
+the next measurement, and is not assumed here.
