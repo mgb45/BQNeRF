@@ -1,0 +1,31 @@
+{
+  "experiment_name": "arc_room",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.06949135337186896,
+      "psnr": 18.947369782820992,
+      "ssim": 0.7157398747361224,
+      "lpips": 0.3800401583961818
+    },
+    "L1": {
+      "rgb_mean-error": 0.06949135790700497,
+      "rgb_mean-error_std": 0.012490297044096935,
+      "uncertainty_metrics": {
+        "pearson": 0.18119932321523435,
+        "pearson_std": 0.09783435472812463,
+        "AUSE": 0.5441295258376909,
+        "AUSE_std": 0.15333872112089497
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.2842601064754569,
+      "rgb_mean-error_std": 0.028405083458569808,
+      "uncertainty_metrics": {
+        "pearson": 0.19582860745524644,
+        "pearson_std": 0.10280425305243901,
+        "AUSE": 0.537752593341081,
+        "AUSE_std": 0.08278038118196633
+      }
+    }
+  }
+}

@@ -175,5 +175,42 @@
    "median_iso_deg": 11.134739878608158
   }
  ],
- "30 deg arc gap": []
+ "30 deg arc gap": [
+  {
+   "scene": "drjohnson",
+   "dataset": "Deep Blending",
+   "n": 25,
+   "U-3DGS": 0.6385480867871733,
+   "ours": 0.6787512274267575,
+   "farthest-point": -0.41606676195797715,
+   "median_iso_deg": 25.981941394933834
+  },
+  {
+   "scene": "room",
+   "dataset": "Mip-NeRF 360",
+   "n": 23,
+   "U-3DGS": 0.3906438420425898,
+   "ours": 0.3940219225810097,
+   "farthest-point": 0.011032731072442833,
+   "median_iso_deg": 31.841878702909774
+  },
+  {
+   "scene": "train",
+   "dataset": "Tanks & Temples",
+   "n": 32,
+   "U-3DGS": 0.43103996274520595,
+   "ours": 0.3202436545789254,
+   "farthest-point": -0.24683109017009133,
+   "median_iso_deg": 25.584150638578
+  },
+  {
+   "scene": "truck",
+   "dataset": "Tanks & Temples",
+   "n": 28,
+   "U-3DGS": 0.24491903831124842,
+   "ours": 0.765297736107872,
+   "farthest-point": 0.6413862219045726,
+   "median_iso_deg": 25.53771199855404
+  }
+ ]
 }

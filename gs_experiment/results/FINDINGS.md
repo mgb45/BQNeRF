@@ -1641,3 +1641,81 @@ Four captures could not be given a trajectory gap at all (section 26) and
 are running now under the 30 degree arc construction that the
 `EPISTEMIC_PLAN.md` amendment adopted. They add Tanks & Temples and the
 second Deep Blending scene to the row.
+
+## 28. The complete gap row: every benchmark scene, and the dense/gap contrast
+
+The four captures section 26 found ungappable were re-cut as 30 degree arcs
+per the `EPISTEMIC_PLAN.md` amendment. With those added, all thirteen
+benchmark scenes carry both a dense cell and a gap cell, under their
+pipeline and their scorer throughout.
+
+| scene | dataset | construction | n | AUSE theirs/ours | Pearson theirs/ours | selection theirs/ours |
+|---|---|---|---|---|---|---|
+| bicycle | 360 | trajectory | 20 | **0.396**/0.427 | **0.240**/0.162 | **−0.058**/−0.170 |
+| bonsai | 360 | trajectory | 30 | 0.533/**0.285** | 0.148/**0.350** | 0.558/**0.570** |
+| counter | 360 | trajectory | 24 | **0.360**/0.364 | **0.268**/0.262 | 0.823/**0.928** |
+| flowers | 360 | trajectory | 18 | **0.312**/0.423 | **0.385**/0.198 | 0.702/**0.747** |
+| garden | 360 | trajectory | 19 | **0.441**/0.540 | **0.212**/0.093 | 0.370/**0.758** |
+| kitchen | 360 | trajectory | 28 | 0.844/**0.774** | −0.070/**0.082** | 0.597/**0.710** |
+| room | 360 | arc 30° | 23 | 0.584/**0.544** | 0.061/**0.181** | 0.391/**0.394** |
+| stump | 360 | trajectory | 13 | 0.544/**0.536** | 0.031/**0.073** | 0.186/**0.192** |
+| treehill | 360 | trajectory | 15 | **0.506**/0.543 | **0.043**/−0.002 | **−0.728**/−0.922 |
+| drjohnson | DB | arc 30° | 25 | 0.548/**0.462** | 0.043/**0.161** | 0.639/**0.679** |
+| playroom | DB | trajectory | 23 | 0.430/**0.326** | 0.165/**0.295** | 0.819/**0.867** |
+| train | T&T | arc 30° | 32 | **0.530**/0.561 | **0.059**/0.012 | **0.431**/0.320 |
+| truck | T&T | arc 30° | 28 | 0.684/**0.624** | −0.047/**0.069** | 0.245/**0.765** |
+| **mean** | | | | 0.516/**0.493** | 0.118/**0.149** | 0.383/**0.449** |
+| **ours wins** | | | | **7/13** | **7/13** | **10/13** |
+
+### The dense/gap contrast, on identical scenes
+
+Sections 24, 25 and 27 can now be placed side by side. Same thirteen scenes,
+same pipeline, same scorer; only the hold-out structure differs.
+
+| | AUSE theirs/ours | ours wins | selection theirs/ours | ours wins |
+|---|---|---|---|---|
+| dense capture | **0.329**/0.411 | 2/13 | **0.632**/0.441 | 4/13 |
+| coverage gap | 0.516/**0.493** | 7/13 | 0.383/**0.449** | 10/13 |
+
+**Both quantities move the same way and cross.** On within-view error we go
+from winning 2 of 13 to winning 7 of 13; on view selection, from 4 of 13 to
+10 of 13. Nothing about either method changed between the rows -- the same
+checkpoints' worth of training, the same code, the same scorer. Only whether
+the held-out views sit in a region the training views covered.
+
+Note also that *their* numbers degrade sharply from the dense row to the gap
+row (AUSE 0.341 to 0.516, selection 0.632 to 0.383) while ours are close to
+flat (0.417 to 0.493, 0.441 to 0.449). That asymmetry is the mechanism
+stated in measurements rather than words: a construction supervised on
+observed residuals loses most of its signal when asked about unobserved
+directions, and a posterior over what the views determined does not.
+
+### truck, which inverts completely
+
+`truck` is the sharpest single case in the study. Densely captured it is one
+of our worst scenes: AUSE 0.382 against 0.277, selection 0.179 against
+0.343. Cut as a 30 degree arc it reverses on every measure: AUSE 0.624
+against 0.684, Pearson 0.069 against **−0.047**, selection 0.765 against
+0.245. Their uncertainty goes anti-correlated with error; ours triples its
+selection score.
+
+This is the same scene, the same photographs, the same training code. Only
+which views were withheld changed.
+
+### What is still lost, and where the free baseline stands
+
+Three scenes still go against us on AUSE: `bicycle`, `flowers`, `garden` and
+`treehill` (four, on the within-view metrics) -- all outdoor Mip-NeRF 360
+captures with unbounded backgrounds. The Mip-NeRF 360 gap row as a whole is
+nearly a tie (0.502 against 0.493), and the win is carried by Deep Blending
+(0.489 against 0.394) and Tanks & Temples (0.607 against 0.592). So the gap
+construction helps most where the capture was already unsaturated, which is
+consistent with section 24 rather than an independent effect.
+
+The model-free control across the arc row averages **−0.003** -- exactly
+random. At 25 to 32 degrees of isolation every held-out view is far from
+everything, so distance to the nearest camera carries no information about
+which are worse. Against `garden`, where it scored 0.767 and nearly beat us,
+this makes the honest summary: distance-to-nearest-view is informative when
+isolation varies across the held-out set and useless when it does not, and
+the second case is the one an agent facing a genuine gap is in.

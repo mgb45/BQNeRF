@@ -1,0 +1,31 @@
+{
+  "experiment_name": "arc_truck",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.06707087358725922,
+      "psnr": 19.378282853535243,
+      "ssim": 0.7109921106270382,
+      "lpips": 0.2469747300658907
+    },
+    "L1": {
+      "rgb_mean-error": 0.06707087757864169,
+      "rgb_mean-error_std": 0.011667143277385317,
+      "uncertainty_metrics": {
+        "pearson": 0.06893171325371172,
+        "pearson_std": 0.09019842598107561,
+        "AUSE": 0.6235241996390479,
+        "AUSE_std": 0.20157257741821533
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.28900786648903576,
+      "rgb_mean-error_std": 0.053164317089457694,
+      "uncertainty_metrics": {
+        "pearson": 0.07676585789647962,
+        "pearson_std": 0.057837353009993674,
+        "AUSE": 0.546543510896819,
+        "AUSE_std": 0.06759341755339401
+      }
+    }
+  }
+}

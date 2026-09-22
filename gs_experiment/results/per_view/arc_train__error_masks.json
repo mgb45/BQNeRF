@@ -1,0 +1,31 @@
+{
+  "experiment_name": "arc_train",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.17026054300367832,
+      "psnr": 12.96200343966484,
+      "ssim": 0.4332164702937007,
+      "lpips": 0.5009047696366906
+    },
+    "L1": {
+      "rgb_mean-error": 0.1702605546452105,
+      "rgb_mean-error_std": 0.02028553415370376,
+      "uncertainty_metrics": {
+        "pearson": 0.058867551386356354,
+        "pearson_std": 0.1548096388578415,
+        "AUSE": 0.5295567819848657,
+        "AUSE_std": 0.09744201923897522
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.5667834915220737,
+      "rgb_mean-error_std": 0.08716004894684634,
+      "uncertainty_metrics": {
+        "pearson": 0.3658111095428467,
+        "pearson_std": 0.12083139270544052,
+        "AUSE": 0.2979492205195129,
+        "AUSE_std": 0.07459445639448678
+      }
+    }
+  }
+}

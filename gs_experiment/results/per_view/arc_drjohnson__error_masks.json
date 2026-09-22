@@ -1,0 +1,31 @@
+{
+  "experiment_name": "arc_drjohnson",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.05472882267087698,
+      "psnr": 22.119243774414063,
+      "ssim": 0.7628149199485779,
+      "lpips": 0.4010778123140335
+    },
+    "L1": {
+      "rgb_mean-error": 0.05472882609814406,
+      "rgb_mean-error_std": 0.016578907133980674,
+      "uncertainty_metrics": {
+        "pearson": 0.04331095144152641,
+        "pearson_std": 0.17672047019004822,
+        "AUSE": 0.5477592134475708,
+        "AUSE_std": 0.19669188707540888
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.23718503803014757,
+      "rgb_mean-error_std": 0.07083208082982169,
+      "uncertainty_metrics": {
+        "pearson": 0.043083786964416504,
+        "pearson_std": 0.15706484019756317,
+        "AUSE": 0.5505386519432068,
+        "AUSE_std": 0.15202997366731605
+      }
+    }
+  }
+}
