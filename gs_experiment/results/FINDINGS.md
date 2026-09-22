@@ -1684,8 +1684,8 @@ checkpoints' worth of training, the same code, the same scorer. Only whether
 the held-out views sit in a region the training views covered.
 
 Note also that *their* numbers degrade sharply from the dense row to the gap
-row (AUSE 0.341 to 0.516, selection 0.632 to 0.383) while ours are close to
-flat (0.417 to 0.493, 0.441 to 0.449). That asymmetry is the mechanism
+row (AUSE 0.329 to 0.516, selection 0.632 to 0.383) while ours degrade far
+less (0.411 to 0.493, 0.441 to 0.449). That asymmetry is the mechanism
 stated in measurements rather than words: a construction supervised on
 observed residuals loses most of its signal when asked about unobserved
 directions, and a posterior over what the views determined does not.
