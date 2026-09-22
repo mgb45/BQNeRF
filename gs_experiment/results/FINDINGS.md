@@ -1719,3 +1719,66 @@ which are worse. Against `garden`, where it scored 0.767 and nearly beat us,
 this makes the honest summary: distance-to-nearest-view is informative when
 isolation varies across the held-out set and useless when it does not, and
 the second case is the one an agent facing a genuine gap is in.
+
+## 29. The acquisition loop: a win on one scene, a null on the other
+
+The experiment whose verdict depends on no metric we chose. Each arm starts
+from the same 38-view prefix of the capture, acquires 32 further views under
+its own strategy with a cheap in-loop map, and is then retrained at full
+capacity on what it assembled and scored on 10 test views no arm could take.
+Candidates at each step are the 20 nearest unacquired poses to the agent's
+current position, so an arm builds a path rather than teleporting.
+
+| | truck | drjohnson |
+|---|---|---|
+| ours | **21.98** | 24.88 |
+| farthest-point | 21.56 | 24.76 |
+| random s0 | 21.37 | 25.03 |
+| random s1 | 18.15 | **25.33** |
+| random s2 | 18.46 | 24.48 |
+| random mean | 19.32 ± 1.77 | 24.95 ± 0.43 |
+
+**On `truck` the signal is worth something**: first on PSNR, SSIM and LPIPS,
+ahead of the free geometric strategy by 0.42 dB and ahead of random's *best*
+seed by 0.61 dB.
+
+**On `drjohnson` it is worth nothing.** Ours sits at 24.88 against a random
+mean of 24.95, below two of the three random seeds, and 0.12 dB above
+farthest-point. Every arm lands between 24.48 and 25.33. There is no effect
+to detect.
+
+### This is the falsification test, and it half-failed
+
+`EPISTEMIC_PLAN.md` section 2 states it plainly: *if the full-capacity
+retrain shows no gap against random, the signal is not useful whatever it
+correlates with.* On `drjohnson` there is no gap. That has to be reported as
+what it is rather than averaged away with `truck`.
+
+### The likely reason, and it is checkable rather than a story
+
+The random standard deviation differs by 4x between the scenes: 1.77 dB on
+`truck`, 0.43 dB on `drjohnson`. **Where the choice cannot matter, no
+strategy can beat another.** `truck` is an orbit whose 38-view prefix leaves
+a large arc unseen, so which way the agent goes round changes what gets
+reconstructed. `drjohnson` is an interior walked through once, where views
+are mutually redundant and any 32 of them support about the same
+reconstruction.
+
+So the prediction this makes is falsifiable and has not been tested: **the
+acquisition gain should scale with the spread of the random arm.** Two scenes
+is not enough to fit that, and n=2 with one win and one null is exactly the
+sample size this project has been caught out by four times already (sections
+14, 20, 25, 27). It should not be reported as "our acquisition works" on this
+evidence.
+
+### What does hold up regardless
+
+Cost. The entire loop -- four cheap maps and four rounds of scoring twenty
+candidates -- took 411 s on `truck` and 637 s on `drjohnson`, against a
+30,000-iteration retrain per arm. A method requiring its own training run per
+step could not be in this loop at all. That claim does not depend on the
+acquisition winning.
+
+The random spread is also a result in its own right: at 1.77 dB on `truck`,
+any acquisition experiment reported on a single random seed is
+uninterpretable, whoever runs it.
