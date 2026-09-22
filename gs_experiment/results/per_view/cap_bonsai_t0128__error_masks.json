@@ -1,0 +1,31 @@
+{
+  "experiment_name": "cap_bonsai_t0128",
+  "results": {
+    "quality_metrics": {
+      "l1": 0.048596213143822314,
+      "psnr": 22.12533002286344,
+      "ssim": 0.8393091849378638,
+      "lpips": 0.3448291968654942
+    },
+    "L1": {
+      "rgb_mean-error": 0.048596213999632244,
+      "rgb_mean-error_std": 0.01579899366724783,
+      "uncertainty_metrics": {
+        "pearson": 0.5485281944274902,
+        "pearson_std": 0.06324556469917297,
+        "AUSE": 0.19865998424388268,
+        "AUSE_std": 0.05148029958287339
+      }
+    },
+    "DSSIM": {
+      "rgb_mean-error": 0.160690776601031,
+      "rgb_mean-error_std": 0.04601722384995943,
+      "uncertainty_metrics": {
+        "pearson": 0.4926948547363281,
+        "pearson_std": 0.09672768414020538,
+        "AUSE": 0.2376885184565106,
+        "AUSE_std": 0.06134304903106621
+      }
+    }
+  }
+}
